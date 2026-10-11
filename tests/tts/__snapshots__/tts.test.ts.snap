@@ -1,0 +1,9 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ssml 构造（快照） > sentence 模式：自然韵律（无 phoneme 注入） > sentence 1`] = `"<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US"><voice name="en-US-AriaNeural">The hotel can accommodate 500 guests.</voice></speak>"`;
+
+exports[`ssml 构造（快照） > syllable 模式：单音节请求 > syllable 1`] = `"<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US"><voice name="en-US-AriaNeural"><phoneme alphabet="ipa" ph="ˈkɒm">kɒm</phoneme></voice></speak>"`;
+
+exports[`ssml 构造（快照） > word 模式：IPA phoneme 注入 > word 1`] = `"<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US"><voice name="en-US-AriaNeural"><phoneme alphabet="ipa" ph="əˈkɒm.ə.deɪt">accommodate</phoneme></voice></speak>"`;
+
+exports[`ssml 构造（快照） > word_by_word 模式：词间 break 禁连读 > word_by_word 1`] = `"<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US"><voice name="en-US-AriaNeural">look<break time="150ms"/>after</voice></speak>"`;
