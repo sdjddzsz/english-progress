@@ -20,8 +20,17 @@ import {
 import type { Book, BookWord, Tier, Word } from '../types/domain';
 import { TIERS } from '../scheduler';
 import { getRepos, useAppStore } from '../store/useAppStore';
+import { seedLibraryToCloud, type SeedProgress } from '../data/seedBootstrap';
 
 const TIER_LABEL: Record<Tier, string> = { 1: 'T1 已掌握', 2: 'T2 熟词', 3: 'T3 半熟', 4: 'T4 生词' };
+
+const STEP_LABEL: Record<SeedProgress['step'], string> = {
+  fetching: '下载词库数据…',
+  words: '导入词条',
+  book_words: '建立词书关联',
+  book: '创建词书',
+  done: '完成',
+};
 
 export default function BookPage() {
   const navigate = useNavigate();
@@ -33,6 +42,29 @@ export default function BookPage() {
   const [wordMap, setWordMap] = useState<Record<string, Word>>({});
   const [loadingWords, setLoadingWords] = useState(false);
   const [error, setError] = useState('');
+  const [seedProgress, setSeedProgress] = useState<SeedProgress | null>(null);
+  const [seedError, setSeedError] = useState('');
+
+  const runSeed = useCallback(async () => {
+    const { userId: uid } = useAppStore.getState();
+    if (!uid) {
+      setSeedError('尚未登录，无法初始化词库。');
+      return;
+    }
+    setSeedError('');
+    setSeedProgress({ step: 'fetching', done: 0, total: 0 });
+    try {
+      const result = await seedLibraryToCloud(uid, (p) => setSeedProgress(p));
+      await bootstrap();
+      if (!result.skipped) {
+        setSelectedBookId(result.bookId);
+      }
+    } catch (e) {
+      setSeedError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSeedProgress(null);
+    }
+  }, [bootstrap]);
 
   useEffect(() => {
     void bootstrap();
@@ -82,8 +114,30 @@ export default function BookPage() {
         <Paper sx={{ mt: 2, p: 3 }}>
           <Typography variant="body1">还没有词书</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            样例种子（60 词）与 ECDICT 全量导入将在 T05 批次接入部署流程。
+            首次使用：一键导入 ECDICT 六级全量词库（5407 词，含音标/释义/词频/四六级标记），需联网，约半分钟。
           </Typography>
+          <Button
+            variant="contained"
+            sx={{ mt: 2 }}
+            disabled={seedProgress !== null}
+            onClick={() => void runSeed()}
+          >
+            初始化六级词库
+          </Button>
+          {seedProgress && (
+            <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+              <CircularProgress size={20} />
+              <Typography variant="body2">
+                {STEP_LABEL[seedProgress.step]}
+                {seedProgress.total > 0 && ` ${seedProgress.done}/${seedProgress.total}`}
+              </Typography>
+            </Box>
+          )}
+          {seedError && (
+            <Typography variant="body2" color="error" sx={{ mt: 1 }}>
+              初始化失败：{seedError}（可重试，已导入部分自动跳过）
+            </Typography>
+          )}
         </Paper>
       ) : (
         <>
