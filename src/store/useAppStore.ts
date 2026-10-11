@@ -172,6 +172,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set({ cloudReady: true, userId, books, loading: false });
       const preferred = books.find((b) => b.status === 'active') ?? books[0];
       if (preferred) await get().setActiveBook(preferred.id);
+      // T05 boot 链路：TTS 密钥云端文档 → 会话内存注入；前两周每日校准（>10% → Confirm 提案）
+      const { bootRuntime } = await import('../offline/bootConfig');
+      const boot = await bootRuntime();
+      if (!boot.cloudReady && boot.message) {
+        set({ error: boot.message });
+      }
     } catch (e) {
       set({ loading: false, error: errMsg(e) });
     }

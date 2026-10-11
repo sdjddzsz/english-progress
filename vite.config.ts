@@ -16,9 +16,10 @@ export default defineConfig({
       includeAssets: ['manifest.webmanifest', 'icons/icon.svg'],
       manifest: false, // manifest 由 public/manifest.webmanifest 提供
       workbox: {
+        // T05：espeak-ng WASM/词典改为运行时懒加载，移出预缓存（glob v8 不支持 ! 负模式，用 globIgnores）
         globPatterns: ['**/*.{js,css,html,svg,png,woff,woff2}'],
-        // espeak WASM 兜底轨约 2MB，放宽单文件预缓存上限
-        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+        globIgnores: ['**/espeak-engine-*.js', '**/*.wasm', '**/*.data'],
+        maximumFileSizeToCacheInBytes: 2 * 1024 * 1024,
         navigateFallback: 'index.html',
       },
     }),
@@ -26,6 +27,14 @@ export default defineConfig({
   build: {
     target: 'es2020',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // meSpeak（espeak 兜底轨）单独分包：动态 import 已懒加载，配合 workbox 排除项不进 precache
+        manualChunks(id: string) {
+          if (id.includes('node_modules/mespeak')) return 'espeak-engine';
+        },
+      },
+    },
   },
   test: {
     environment: 'node', // 调度器与数据层测试均为纯 Node 环境（Dexie 用 fake-indexeddb）

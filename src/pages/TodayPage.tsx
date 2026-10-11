@@ -1,7 +1,7 @@
 /**
  * TodayPage.tsx —— 今日页（PRD §5.2.1）：
- * 今日队列（真实词表路径，store.refreshToday）/ 欠账守卫（四策略大白话预览，UI 级拦截；
- * 路由级拦截在 T05 批次）/ 距考试天数 / 计划概览。
+ * 今日队列（真实词表路径，store.refreshToday）/ 计划概览 / 距考试天数。
+ * 欠账守卫：UI 提示（ReschedulePanel 弹窗，T05 抽出复用）+ 路由级拦截（OverdueGuardRoute）。
  * 页面不含调度逻辑：队列、校验、欠账预览全部来自 useAppStore。
  */
 import { useEffect, useMemo, useState } from 'react';
@@ -13,22 +13,20 @@ import {
   Chip,
   CircularProgress,
   Dialog,
-  DialogActions,
   DialogContent,
-  DialogContentText,
   DialogTitle,
   Divider,
   Paper,
-  Radio,
   Stack,
   Typography,
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import EditCalendarIcon from '@mui/icons-material/EditCalendar';
-import { diffDays, type RescheduleStrategy } from '../scheduler';
+import { diffDays } from '../scheduler';
 import { EXAM_DATE } from '../config/constants';
-import { todayISO, useAppStore } from '../store/useAppStore';
+import { useAppStore } from '../store/useAppStore';
 import PlanSummaryCard from '../components/plan/PlanSummaryCard';
+import ReschedulePanel from '../components/plan/ReschedulePanel';
 
 const TIER_LABEL: Record<number, string> = { 1: 'T1', 2: 'T2', 3: 'T3', 4: 'T4' };
 
@@ -45,22 +43,17 @@ export default function TodayPage() {
     todayPendingCount,
     wordMap,
     overdue,
-    overduePreviews,
-    bootstrap,
-    rescheduleNow,
     refreshToday,
+    bootstrap,
   } = useAppStore();
 
-  const [chosen, setChosen] = useState<RescheduleStrategy | null>(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [acting, setActing] = useState(false);
-  const [actMsg, setActMsg] = useState('');
+  const [guardOpen, setGuardOpen] = useState(false);
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
 
-  const today = todayISO();
+  const today = new Date().toISOString().slice(0, 10);
   const daysToExam = useMemo(() => diffDays(EXAM_DATE, today), [today]);
   const inSprint = activePlan ? today >= activePlan.sprintStartDate : false;
 
@@ -69,16 +62,6 @@ export default function TodayPage() {
     for (const h of todayHits) g[h.tier].push(h);
     return g;
   }, [todayHits]);
-
-  const handleReschedule = async () => {
-    if (!chosen) return;
-    setActing(true);
-    const r = await rescheduleNow(chosen);
-    setActing(false);
-    setConfirmOpen(false);
-    setActMsg(r.ok ? '重排已生效，今日队列已刷新。' : `重排未生效：${r.message}`);
-    if (r.ok) setChosen(null);
-  };
 
   // ===== 引导态 =====
   if (!cloudReady && error) {
@@ -120,10 +103,13 @@ export default function TodayPage() {
         <Paper sx={{ mt: 2, p: 3 }}>
           <Typography variant="h6">还没有生效中的计划</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            先到「词书」页选择词书，再到「计划编辑」里确定档位与预算，系统会生成可解释的轮次安排。
+            先到「词书」页选择词书，再到摸底页完成分层，或直接在「计划编辑」里确定档位与预算。
           </Typography>
-          <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-            <Button variant="contained" onClick={() => navigate('/book')}>
+          <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
+            <Button variant="contained" onClick={() => navigate('/placement')}>
+              去摸底分层
+            </Button>
+            <Button variant="outlined" onClick={() => navigate('/book')}>
               去词书页
             </Button>
             <Button variant="outlined" onClick={() => navigate('/plan-editor')}>
@@ -157,25 +143,19 @@ export default function TodayPage() {
             </Stack>
           </Paper>
 
-          {/* 欠账守卫（UI 级；路由级拦截 T05） */}
+          {/* 欠账提示（UI 级；mustReschedule 时路由级拦截已兜底，这里提供主动入口） */}
           {overdue && overdue.count > 0 && (
             <Alert
               severity={overdue.mustReschedule ? 'warning' : 'info'}
               sx={{ mt: 2 }}
               action={
-                <Button color="inherit" size="small" onClick={() => setConfirmOpen(true)}>
+                <Button color="inherit" size="small" onClick={() => setGuardOpen(true)}>
                   去处理
                 </Button>
               }
             >
               欠账 {overdue.count} 条（阈值 {overdue.threshold}）
               {overdue.mustReschedule ? '：已超阈值，需要重排后才能继续新任务。' : '：可在队列中顺带补上。'}
-            </Alert>
-          )}
-
-          {actMsg && (
-            <Alert severity="info" sx={{ mt: 2 }} onClose={() => setActMsg('')}>
-              {actMsg}
             </Alert>
           )}
 
@@ -228,44 +208,12 @@ export default function TodayPage() {
         </>
       )}
 
-      {/* 重排确认框（Require 级：用户显式选择策略 + 确认放行） */}
-      <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)} maxWidth="sm" fullWidth>
+      {/* 重排弹窗（复用 T05 抽出的 ReschedulePanel；mustReschedule 时另有路由级拦截） */}
+      <Dialog open={guardOpen} onClose={() => setGuardOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>欠账重排</DialogTitle>
         <DialogContent>
-          <DialogContentText sx={{ mb: 1 }}>
-            欠账 {overdue?.count ?? 0} 条。选一种处理方式（每条都有大白话解释，改前可看清后果）：
-          </DialogContentText>
-          <Stack spacing={1}>
-            {overduePreviews.map((p) => (
-              <Paper
-                key={p.strategy}
-                variant="outlined"
-                sx={{ p: 1.5, opacity: p.available ? 1 : 0.45, cursor: p.available ? 'pointer' : 'not-allowed' }}
-                onClick={() => p.available && setChosen(p.strategy)}
-              >
-                <Stack direction="row" alignItems="center" spacing={1}>
-                  <Radio checked={chosen === p.strategy} disabled={!p.available} />
-                  <Box>
-                    <Typography variant="body2" fontWeight={600}>
-                      {p.plainWords}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      日均变 ~{p.newDailyHits} 个 · 预计完成 {p.newFinishDate}
-                      {p.deadlineExceeded ? ' · 突破截止日，不可选' : ''}
-                      {p.strategy === 'drop_round' && !p.available ? ' · 各层已是最少轮次' : ''}
-                    </Typography>
-                  </Box>
-                </Stack>
-              </Paper>
-            ))}
-          </Stack>
+          <ReschedulePanel onDone={() => setGuardOpen(false)} />
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setConfirmOpen(false)}>先不处理</Button>
-          <Button variant="contained" disabled={!chosen || acting} onClick={() => void handleReschedule()}>
-            {acting ? <CircularProgress size={20} /> : '确认执行'}
-          </Button>
-        </DialogActions>
       </Dialog>
     </Box>
   );

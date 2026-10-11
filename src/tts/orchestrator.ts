@@ -11,6 +11,8 @@ import type { TTSProvider, TTSRequest, TTSResult } from './types';
 export interface AudioCache {
   get(key: string): Promise<{ audio: ArrayBuffer; engine: TTSEngine } | null>;
   put(key: string, audio: ArrayBuffer, engine: TTSEngine): Promise<void>;
+  /** LRU 淘汰用（T05 audioCacheManager）；实现可选提供 */
+  remove?(key: string): Promise<void>;
 }
 
 /** Cache Storage 实现（浏览器）；engine 存于 Response header，音频反序列化即可播 */
@@ -27,6 +29,10 @@ export function cacheStorageCache(cacheName = 'tts-audio'): AudioCache {
       const c = await caches.open(cacheName);
       await c.put(key, new Response(audio, { headers: { 'x-engine': engine, 'Content-Type': 'audio/mpeg' } }));
     },
+    async remove(key) {
+      const c = await caches.open(cacheName);
+      await c.delete(key);
+    },
   };
 }
 
@@ -39,6 +45,9 @@ export function inMemoryAudioCache(): AudioCache {
     },
     async put(key, audio, engine) {
       map.set(key, { audio, engine });
+    },
+    async remove(key) {
+      map.delete(key);
     },
   };
 }

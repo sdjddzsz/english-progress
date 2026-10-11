@@ -5,7 +5,8 @@
  */
 import { useCallback, useState } from 'react';
 import type { TTSEngine } from '../types/domain';
-import { cacheStorageCache, consumeFallbackNotice, createOrchestrator, inMemoryAudioCache, type TTSOrchestrator } from '../tts/orchestrator';
+import { cacheStorageCache, consumeFallbackNotice, createOrchestrator, inMemoryAudioCache, type AudioCache, type TTSOrchestrator } from '../tts/orchestrator';
+import { LruAudioCache } from '../offline/audioCacheManager';
 import type { TTSRequest } from '../tts/types';
 import { getRepos, useAppStore } from '../store/useAppStore';
 
@@ -27,7 +28,21 @@ let orchestratorSingleton: TTSOrchestrator | null = null;
 
 function getOrchestrator(): TTSOrchestrator {
   if (orchestratorSingleton) return orchestratorSingleton;
-  const cache = typeof caches !== 'undefined' ? cacheStorageCache() : inMemoryAudioCache();
+  const inner = (typeof caches !== 'undefined' ? cacheStorageCache() : inMemoryAudioCache()) as AudioCache & {
+    remove(key: string): Promise<void>;
+  };
+  // T05：LRU 预算 50MB；当日队列词（按词形前缀匹配 cache key）优先保留
+  const cache = new LruAudioCache(inner, {
+    protectedKeys: async () => {
+      const state = useAppStore.getState();
+      const prefixes = new Set<string>();
+      for (const h of state.todayHits) {
+        const lemma = state.wordMap[h.wordId]?.lemma;
+        if (lemma) prefixes.add(`${lemma}|`);
+      }
+      return [...prefixes];
+    },
+  });
   orchestratorSingleton = createOrchestrator({
     cache,
     getConfig: async () => {
