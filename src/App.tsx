@@ -1,60 +1,72 @@
-import { BottomNavigation, BottomNavigationAction, Container, Typography, Box } from '@mui/material';
+import { Box, BottomNavigation, BottomNavigationAction } from '@mui/material';
 import TodayIcon from '@mui/icons-material/Today';
 import SchoolIcon from '@mui/icons-material/School';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import InsightsIcon from '@mui/icons-material/Insights';
 import SettingsIcon from '@mui/icons-material/Settings';
-import { useState } from 'react';
-import { Route, Routes, useNavigate } from 'react-router-dom';
+import { Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import TodayPage from './pages/TodayPage';
+import StudyPage from './pages/StudyPage';
+import TrainingPage from './pages/TrainingPage';
+import AudioRecallPage from './pages/AudioRecallPage';
+import CnToEnPage from './pages/CnToEnPage';
+import BookPage from './pages/BookPage';
+import PlanEditorPage from './pages/PlanEditorPage';
+import DashboardPage from './pages/DashboardPage';
+import AiPlanPage from './pages/AiPlanPage';
+import SettingsPage from './pages/SettingsPage';
 
 /**
  * 应用外壳：底部 5 Tab（Today / 训练 / 词书 / 后台 / 设置），对应 PRD §5.1。
- * T04 批次会用真实页面替换占位组件；本文件只负责路由与布局骨架。
+ * 子路由：/study 逐 hit 学习流、/training/{audio,cn2en} 训练、/plan-editor 计划编辑、
+ * /ai-plan AI 方案。欠账守卫的路由级拦截在 T05 批次接入。
  */
 
-function Placeholder({ title, hint }: { title: string; hint: string }) {
-  return (
-    <Container maxWidth="sm" sx={{ py: 6 }}>
-      <Typography variant="h5" gutterBottom>
-        {title}
-      </Typography>
-      <Box sx={{ color: 'text.secondary' }}>
-        <Typography variant="body2">{hint}</Typography>
-      </Box>
-    </Container>
-  );
+const TAB_DEFS = [
+  { path: '/', icon: <TodayIcon />, label: 'Today' },
+  { path: '/training', icon: <SchoolIcon />, label: '训练' },
+  { path: '/book', icon: <MenuBookIcon />, label: '词书' },
+  { path: '/dashboard', icon: <InsightsIcon />, label: '后台' },
+  { path: '/settings', icon: <SettingsIcon />, label: '设置' },
+] as const;
+
+function activeTabIndex(pathname: string): number {
+  if (pathname.startsWith('/study')) return 0;
+  if (pathname.startsWith('/training')) return 1;
+  if (pathname.startsWith('/book') || pathname.startsWith('/plan-editor')) return 2;
+  if (pathname.startsWith('/dashboard') || pathname.startsWith('/ai-plan')) return 3;
+  if (pathname.startsWith('/settings')) return 4;
+  return 0;
 }
 
-const TAB_PATHS = ['/', '/training', '/book', '/dashboard', '/settings'] as const;
-
 export default function App() {
-  const [tab, setTab] = useState(0);
   const navigate = useNavigate();
+  const { pathname } = useLocation();
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <Box sx={{ flex: 1 }}>
         <Routes>
-          <Route path="/" element={<Placeholder title="Today" hint="今日队列 / 欠账状态 / 距出师天数（T04 实现）" />} />
-          <Route path="/training" element={<Placeholder title="训练" hint="听词联想 / 中→英 / 融会贯通 / 模考（锁定态）（T04 实现）" />} />
-          <Route path="/book" element={<Placeholder title="词书" hint="分层视图 / 计划编辑 / 导入（T04 实现）" />} />
-          <Route path="/dashboard" element={<Placeholder title="后台" hint="各层进度 / 欠账 / 诊断（无总分正确率）（T04 实现）" />} />
-          <Route path="/settings" element={<Placeholder title="设置" hint="TTS / 调度参数 / AI 端点（T04 实现）" />} />
+          <Route path="/" element={<TodayPage />} />
+          <Route path="/study" element={<StudyPage />} />
+          <Route path="/training" element={<TrainingPage />} />
+          <Route path="/training/audio" element={<AudioRecallPage />} />
+          <Route path="/training/cn2en" element={<CnToEnPage />} />
+          <Route path="/book" element={<BookPage />} />
+          <Route path="/plan-editor" element={<PlanEditorPage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/ai-plan" element={<AiPlanPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </Box>
       <BottomNavigation
-        value={tab}
-        onChange={(_, newValue: number) => {
-          setTab(newValue);
-          navigate(TAB_PATHS[newValue]);
-        }}
+        value={activeTabIndex(pathname)}
+        onChange={(_, newValue: number) => navigate(TAB_DEFS[newValue].path)}
         sx={{ position: 'sticky', bottom: 0 }}
       >
-        <BottomNavigationAction label="Today" icon={<TodayIcon />} />
-        <BottomNavigationAction label="训练" icon={<SchoolIcon />} />
-        <BottomNavigationAction label="词书" icon={<MenuBookIcon />} />
-        <BottomNavigationAction label="后台" icon={<InsightsIcon />} />
-        <BottomNavigationAction label="设置" icon={<SettingsIcon />} />
+        {TAB_DEFS.map((t) => (
+          <BottomNavigationAction key={t.path} label={t.label} icon={t.icon} />
+        ))}
       </BottomNavigation>
     </Box>
   );
