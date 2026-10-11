@@ -1,0 +1,486 @@
+/**
+ * 领域类型与枚举 —— 数据模型 24 集合（架构文档第二部分 / PRD 第六章）。
+ *
+ * ⚠ 反自测物理锁死（PRD §6.3 硬约束 #1）：
+ *   Feedback / TrainingRecord / AbilitySnapshot 三个类型中
+ *   【物理上不存在】 score / accuracy / rating 字段。
+ *   code review 时以 src/config/constants.ts 的 FORBIDDEN_SELF_TEST_TERMS 核对。
+ *
+ * 字段命名约定：TS 侧统一 camelCase；云数据库集合名 snake_case（见 COLLECTIONS）。
+ */
+
+// ===== 基础枚举 =====
+
+export type Tier = 1 | 2 | 3 | 4; // T1 已掌握 / T2 熟词 / T3 半熟 / T4 生词
+export type Modality = 'visual' | 'audio';
+export type PlanMode = 'recommended' | 'fallback'; // Q2：推荐/保底双档
+export type HitStatus = 'pending' | 'done' | 'overdue' | 'deferred'; // 硬约束 #2：overdue 与 deferred 是一等公民
+export type BookSource = 'builtin' | 'import' | 'manual';
+export type BookStatus = 'active' | 'finished' | 'archived';
+export type WordStatus = 'normal' | 'deferred' | 'mastered' | 'steady';
+export type PlanStatus = 'draft' | 'active' | 'maintenance' | 'finished'; // maintenance = 实习期维持模式
+export type RoundStatus = 'pending' | 'in_progress' | 'done';
+export type Device = 'mobile' | 'desktop';
+
+// ===== 反馈标签体系（PRD §4.6）=====
+
+/** L1 认知状态（必选单选）：😀秒认 / 😐认得 / 😵见过想不起 / ❌不认识 */
+export type L1State = 'instant' | 'recognized' | 'familiar_but_forgotten' | 'unknown';
+
+export type L2Category = 'meaning' | 'form' | 'pronunciation' | 'usage' | 'context' | 'material';
+
+/** L2 问题定位（可选多选 ≤3），标签原文与 PRD §4.6 一致 */
+export type L2Tag =
+  | '词义记不住'
+  | '中文释义太抽象易混'
+  | '多义项分不清'
+  | '拼写词形记不住'
+  | '形近词混淆'
+  | '词根词缀不熟'
+  | '发音读不准'
+  | '重音位置记不住'
+  | '听不出这个词'
+  | '词性判断错'
+  | '搭配介词不会用'
+  | '知道意思但造句造不出'
+  | '例句看不懂'
+  | '阅读里没反应过来'
+  | '听力里没反应过来'
+  | '释义有误'
+  | '例句不当'
+  | '音标有误';
+
+/** L3 处置动作（可选，直接改变调度） */
+export type L3Action =
+  | 'extra_practice' // 加练：本轮再多出现 1 次
+  | 'postpone' // 暂缓：本轮不再出现，移到末轮复查
+  | 'skip_round' // 跳过本轮：标 deferred，末轮出现一次
+  | 'star' // 重点收藏
+  | 'pronunciation_doubt' // 发音存疑 → Issue
+  | 'pronunciation_error' // 发音错误 → Issue
+  | 'content_doubt'; // 释义/例句存疑 → Issue
+
+// ===== TTS / AI / 训练 枚举 =====
+
+export type TTSEngine = 'neural_tts' | 'ipa_espeak';
+export type TTSProviderName = 'azure' | 'openai_compatible';
+export type TTSConfigStatus = 'pending_user_setup' | 'active' | 'error'; // 硬约束 #7：默认 pending_user_setup
+export type AIProviderType = 'workbuddy' | 'openai_compatible';
+export type TrainingItemType = 'listen_recall' | 'cn_to_en' | 'listening' | 'reading' | 'speaking' | 'writing';
+export type TrainingSource = 'exam' | 'ai' | 'tts' | 'user';
+export type IssueType = 'pronunciation' | 'definition' | 'example' | 'ipa';
+export type IssueStatus = 'open' | 'resolved';
+export type SessionType = 'vocab_visual' | 'vocab_audio' | 'cn_to_en' | 'integrated' | 'mock_exam';
+
+// ===== AI 授权与版本化 =====
+
+export type RiskLevel = 'auto' | 'confirm' | 'require';
+export type ProposalStatus = 'pending' | 'approved' | 'rejected' | 'applied';
+export type ChangedBy = 'user' | 'ai' | 'system';
+export type MockRuleStatus = 'draft' | 'approved' | 'active' | 'revoked';
+
+// ===== 能力画像词级状态（PRD §4.8.2，无总分）=====
+
+export type WordTierState = 'untouched' | 'rusty' | 'familiar' | 'steady' | 'integrated';
+
+// ===== 24 集合实体 =====
+
+export interface User {
+  id: string;
+  email?: string;
+  phone?: string;
+  timezone: string;
+  /** 非计划参数偏好（通知等） */
+  settings: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface Book {
+  id: string;
+  userId: string;
+  name: string;
+  source: BookSource;
+  wordCount: number;
+  tierCount: number;
+  listSize: number;
+  status: BookStatus;
+  createdAt: string;
+}
+
+/** 词本体（ECDICT 裁剪或导入） */
+export interface Word {
+  id: string;
+  lemma: string;
+  ipa: string;
+  pos?: string;
+  senses: string[];
+  examples: { en: string; zh: string }[];
+  frequency: number;
+  /** 'cet4' | 'cet6' | 'kaoyan' 等 */
+  tags: string[];
+}
+
+/** 词书-词关联；难度层 tier 在此（Q1 决策） */
+export interface BookWord {
+  id: string;
+  bookId: string;
+  wordId: string;
+  listNo: number;
+  orderInList: number;
+  tier: Tier;
+  tierUpdatedAt: string;
+  status: WordStatus;
+}
+
+export interface StudyPlan {
+  id: string;
+  bookId: string;
+  userId: string;
+  /** 各层轮次：推荐档默认 {1:2,2:2,3:3,4:3}，保底档全 2 */
+  tierRounds: Record<Tier, number>;
+  planMode: PlanMode;
+  startDate: string;
+  /** 默认 2026-12-05，硬约束：展期不得突破 */
+  deadlineDate: string;
+  /** 默认 2026-12-05；冲刺周 12-05~12-12 不排轮次 */
+  sprintStartDate: string;
+  /** 默认 60（可调 30–120） */
+  dailyBudgetMin: number;
+  /** 默认 12，首周真实数据校准 */
+  avgHitSec: number;
+  /** 轮间隔下限，默认 = 轮窗口 × 0.6 */
+  gapMinDays: number;
+  /** 逐层听觉占比，默认 {1:0.7,2:0.5,3:0.3,4:0.2} */
+  modalRatio: Record<Tier, number>;
+  /** 掌握度降频，默认 true（Q3，硬约束 #3） */
+  masteryDecayEnabled: boolean;
+  /** 逐层逐轮天数（不等分手调），key 为 tier 数字字符串 */
+  tierRoundDays?: Record<string, number[]>;
+  version: number;
+  status: PlanStatus;
+  createdAt: string;
+}
+
+export interface PlanRound {
+  id: string;
+  planId: string;
+  tier: Tier;
+  roundNo: number;
+  startDate: string;
+  endDate: string;
+  coverageTarget: number;
+  coveredCount: number;
+  status: RoundStatus;
+}
+
+/** 一次覆盖任务（含模态）。id 为确定性 ID：{planId}_{wordId}_{roundNo}_{scheduledDate} */
+export interface Hit {
+  id: string;
+  planId: string;
+  wordId: string;
+  userId: string;
+  tier: Tier;
+  roundNo: number;
+  listNo: number;
+  scheduledDate: string;
+  modality: Modality;
+  status: HitStatus;
+  completedAt?: string;
+  /** 可解释性冗余（S3"为什么是这些词"直接取用） */
+  explain: HitExplain;
+}
+
+export interface HitExplain {
+  roundIdxInWindow: number;
+  lastSeen?: { date: string; roundNo: number; modality: Modality };
+}
+
+export interface StudySession {
+  id: string;
+  userId: string;
+  type: SessionType;
+  startedAt: string;
+  endedAt?: string;
+  device: Device;
+  hitCount: number;
+}
+
+/**
+ * 反馈标记，每次 hit 一条（hit_id unique）。
+ * ⚠ 硬约束 #1：无 score / accuracy / rating 字段（反自测物理锁死）。
+ * reactionMs 为隐式评估输入，不展示前台。
+ */
+export interface Feedback {
+  id: string;
+  hitId: string;
+  sessionId: string;
+  wordId: string;
+  userId: string;
+  l1State: L1State;
+  reactionMs: number;
+  /** ≤3（MAX_L2_TAGS） */
+  l2Tags: L2Tag[];
+  confusionWordId?: string;
+  l3Actions: L3Action[];
+  /** ≤60 字，供 AI 读取 */
+  note?: string;
+  modality: Modality;
+  roundNo: number;
+  tier: Tier;
+  device: Device;
+  createdAt: string;
+}
+
+/** 会话摘要（PRD §4.6；架构文档补齐的集合） */
+export interface SessionSummary {
+  id: string;
+  sessionId: string;
+  hitCount: number;
+  l1Distribution: Record<L1State, number>;
+  l2Top: { tag: L2Tag; count: number }[];
+  newConfusionPairs: number;
+  newIssues: number;
+  avgReactionMs: number;
+  modalityDistribution: Record<Modality, number>;
+  createdAt: string;
+}
+
+export interface ConfusionPair {
+  id: string;
+  userId: string;
+  wordA: string;
+  wordB: string;
+  count: number;
+  lastAt: string;
+}
+
+export interface Issue {
+  id: string;
+  userId: string;
+  wordId: string;
+  type: IssueType;
+  note?: string;
+  status: IssueStatus;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+/** 发音引擎成功/回退日志 */
+export interface PronunciationLog {
+  id: string;
+  wordId: string;
+  engine: TTSEngine;
+  success: boolean;
+  fallbackUsed: boolean;
+  error?: string;
+  createdAt: string;
+}
+
+/**
+ * TTS 插拔配置。key 存云端配置文档（本系统已声明的例外，见架构文档 §8 #2），
+ * 运行时取入内存，不入 localStorage / 代码。api_key_ref 指向配置文档内的密钥字段。
+ * 硬约束 #7：status 默认 'pending_user_setup'。
+ */
+export interface TTSProviderConfig {
+  id: string;
+  userId: string;
+  provider: TTSProviderName;
+  endpoint?: string;
+  apiKeyRef?: string;
+  voice?: string;
+  ssmlPhonemeEnabled: boolean;
+  status: TTSConfigStatus;
+  fallbackEngine: 'ipa_espeak';
+  lastTestAt?: string;
+}
+
+export interface AIProviderConfig {
+  id: string;
+  userId: string;
+  providerType: AIProviderType;
+  baseUrl?: string;
+  model?: string;
+  apiKeyRef?: string;
+  isDefault: boolean;
+  lastTestAt?: string;
+}
+
+export interface TrainingItem {
+  id: string;
+  type: TrainingItemType;
+  source: TrainingSource;
+  content: Record<string, unknown>;
+  /** 目标词 100% 来自当前队列（四阶共同规则） */
+  targetWords: string[];
+  createdBy: ChangedBy;
+}
+
+/**
+ * 训练记录。
+ * ⚠ 硬约束 #1：无 score / accuracy / rating 字段（反自测物理锁死）。
+ */
+export interface TrainingRecord {
+  id: string;
+  sessionId: string;
+  itemId: string;
+  userId: string;
+  /** 用户产出（口述转写/拼写/造句原文等） */
+  userOutput: Record<string, unknown>;
+  /** 本次训练命中的目标词 hit */
+  wordHits: string[];
+  createdAt: string;
+}
+
+/** 初始摸底与分层校准记录 */
+export interface TierSnapshot {
+  id: string;
+  userId: string;
+  sampledWordIds: string[];
+  responses: Record<string, L1State>;
+  computedTiers: Record<string, Tier>;
+  calibratedAt: string;
+}
+
+/**
+ * 后台隐式评估周度快照（P1-04）。
+ * ⚠ 硬约束 #1：无总分/正确率/评级/预计考试分数字段（反自测物理锁死）。
+ */
+export interface AbilitySnapshot {
+  id: string;
+  userId: string;
+  weekStart: string;
+  /** 按词级状态计数 */
+  wordStatesSummary: Record<WordTierState, number>;
+  weakPoints: {
+    forgetfulWords: string[];
+    topConfusionPairs: { wordA: string; wordB: string; count: number }[];
+    l2CategoryCounts: Record<L2Category, number>;
+  };
+  /** 视觉/听觉差距曲线数据（v1.0 核心） */
+  modalityGap: {
+    visualShare: number;
+    audioShare: number;
+    curve: { date: string; visual: number; audio: number }[];
+  };
+  /** 各层贯通率（诊断口径） */
+  tierPassRates: Record<Tier, number>;
+  createdAt: string;
+}
+
+/** 模考记录（diag_report 仅后台 DiagReportView 渲染，前台不可达） */
+export interface MockExamRecord {
+  id: string;
+  userId: string;
+  paperRef: string;
+  takenAt: string;
+  unlockRuleId?: string;
+  diagReport: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** 模考解锁规则（AI 制定，用户批准；不预设固定分数线） */
+export interface MockUnlockRule {
+  id: string;
+  userId: string;
+  ruleJson: Record<string, unknown>;
+  status: MockRuleStatus;
+  createdBy: 'ai';
+  reason: string;
+  approvedAt?: string;
+}
+
+/** AI 方案提案。硬约束 #6：reason 与 changes(diff) 必填，缺则拒绝落地 */
+export interface AIProposal {
+  id: string;
+  planId: string;
+  proposer: ChangedBy;
+  changes: Record<string, unknown>;
+  reason: string;
+  riskLevel: RiskLevel;
+  status: ProposalStatus;
+  createdAt: string;
+  decidedAt?: string;
+}
+
+/** 计划版本快照，用于回滚（回滚本身也记版本） */
+export interface PlanVersion {
+  id: string;
+  planId: string;
+  versionNo: number;
+  snapshot: Record<string, unknown>;
+  changedBy: ChangedBy;
+  reason: string;
+  diffSummary: string;
+  createdAt: string;
+}
+
+/** AI 工具调用审计 */
+export interface ToolCallLog {
+  id: string;
+  actor: ChangedBy;
+  toolName: string;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  applied: boolean;
+  proposalId?: string;
+  createdAt: string;
+}
+
+// ===== 集合清单（24 个，云文档数据库 / PostgREST 表）=====
+
+export const COLLECTIONS = [
+  'users',
+  'books',
+  'words',
+  'book_words',
+  'study_plans',
+  'plan_rounds',
+  'hits',
+  'sessions',
+  'feedbacks',
+  'session_summaries',
+  'confusion_pairs',
+  'issues',
+  'pronunciation_logs',
+  'tts_provider_configs',
+  'ai_provider_configs',
+  'training_items',
+  'training_records',
+  'tier_snapshots',
+  'ability_snapshots',
+  'mock_exam_records',
+  'mock_unlock_rules',
+  'ai_proposals',
+  'plan_versions',
+  'tool_call_logs',
+] as const;
+
+export type CollectionName = (typeof COLLECTIONS)[number];
+
+/** 集合名 → 文档类型映射 */
+export interface CollectionDocMap {
+  users: User;
+  books: Book;
+  words: Word;
+  book_words: BookWord;
+  study_plans: StudyPlan;
+  plan_rounds: PlanRound;
+  hits: Hit;
+  sessions: StudySession;
+  feedbacks: Feedback;
+  session_summaries: SessionSummary;
+  confusion_pairs: ConfusionPair;
+  issues: Issue;
+  pronunciation_logs: PronunciationLog;
+  tts_provider_configs: TTSProviderConfig;
+  ai_provider_configs: AIProviderConfig;
+  training_items: TrainingItem;
+  training_records: TrainingRecord;
+  tier_snapshots: TierSnapshot;
+  ability_snapshots: AbilitySnapshot;
+  mock_exam_records: MockExamRecord;
+  mock_unlock_rules: MockUnlockRule;
+  ai_proposals: AIProposal;
+  plan_versions: PlanVersion;
+  tool_call_logs: ToolCallLog;
+}

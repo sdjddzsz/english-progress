@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+dev-dist/
+coverage/
+
+# env（云服务 publicConfig 由开通后填入，不入库）
+.env
+.env.local
+.env.*.local
+
+# editor / os
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+npm-debug.log*
+
+# local data dumps
+*.local.json
