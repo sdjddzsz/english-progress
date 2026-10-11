@@ -71,15 +71,29 @@ describe('对抗：reason 缺失 / 空白 / 超长（硬约束 #6）', () => {
     expect(d.kind).toBe('rejected');
   });
 
-  it('超长 reason（100KB）：不被静默执行——仍走提案通道（Require 级不落地）', async () => {
+  it('超长 reason（100KB）：原始超限内容不落地、截断入库且截断事实记 ToolCallLog、仍走提案通道（P2-3 口径）', async () => {
     const d = await executeTool({ ctx }, {
       toolName: 'switch_plan_mode',
       input: { planMode: 'fallback' },
       reason: 'r'.repeat(100_000),
     });
     expect(d.kind).toBe('require'); // 只创建提案，不直接落地
+    // 原始 100KB 不入库：提案内 reason 截断至 2000
+    const proposals = (await db.from('ai_proposals').select()) as unknown as { data: AIProposal[] };
+    expect(proposals.data.length).toBe(1);
+    expect(proposals.data[0].reason.length).toBe(2000);
+    // 截断事实可审计
+    const logs = (await db.from('tool_call_logs').select()) as unknown as { data: ToolCallLog[] };
+    const entry = logs.data.find((l) => l.toolName === 'switch_plan_mode');
+    expect(entry?.output).toMatchObject({ reasonTruncated: true, originalReasonLength: 100_000 });
+    // 数据未变
     const plans = (await db.from('study_plans').select()) as unknown as { data: StudyPlan[] };
-    expect(plans.data[0].planMode).toBe('recommended'); // 数据未变
+    expect(plans.data[0].planMode).toBe('recommended');
+  });
+
+  it('validateProposal：reason 超过 2000 字符硬拒收（原始超限不落地）', () => {
+    expect(() => validateProposal({ reason: 'r'.repeat(2001), changes: { a: 1 } })).toThrow(ProposalValidationError);
+    expect(() => validateProposal({ reason: 'r'.repeat(2000), changes: { a: 1 } })).not.toThrow();
   });
 
   it('validateProposal：缺 reason / 空白 reason / 缺 changes / 空 changes 全部拒绝', () => {
@@ -187,6 +201,35 @@ describe('对抗：Require 级穷举——不存在跳过确认直接落地的�
 
   it('提案不存在 / 非 pending 状态时 decideProposal 拒绝', async () => {
     expect((await decideProposal({ ctx }, 'no-such-id', true)).kind).toBe('rejected');
+  });
+
+  it('P2-1 回归锚点：提案执行失败 → 标记 failed 终态、异常不裸传、failed 不可重试', async () => {
+    // switch_plan_mode 提案落地时 ctx 无 plan（changes.input 未带 planId、ctx.planId 未设）→ 执行必抛
+    const ctxNoPlan = createToolContext(db, { planId: undefined });
+    const d = await executeTool({ ctx: ctxNoPlan }, { toolName: 'switch_plan_mode', input: { planMode: 'fallback' }, reason: '切换' });
+    expect(d.kind).toBe('require');
+    if (d.kind !== 'require') return;
+    const r = await decideProposal({ ctx: ctxNoPlan }, d.proposalId, true);
+    expect(r.kind).toBe('rejected');
+    if (r.kind === 'rejected') expect(r.reason).toContain('proposal execution failed');
+    // 提案进入 failed 终态
+    const proposals = (await db.from('ai_proposals').select()) as unknown as { data: AIProposal[] };
+    expect(proposals.data.find((p) => p.id === d.proposalId)?.status).toBe('failed');
+    // failed 终态不可重试（二次决定仍拒绝）
+    const again = await decideProposal({ ctx: ctxNoPlan }, d.proposalId, true);
+    expect(again.kind).toBe('rejected');
+    if (again.kind === 'rejected') expect(again.reason).toContain('failed');
+  });
+
+  it('P2-1 回归锚点：auto 写分支执行抛错 → 结构化 rejected 而非异常裸传', async () => {
+    // annotate_word 为 auto 级；目标词不存在时实现层抛错——修复后应被捕获转为 rejected
+    const d = await executeTool({ ctx }, { toolName: 'annotate_word', input: { wordId: 'ghost-word', sense: '不存在的词' } });
+    expect(d.kind).toBe('rejected');
+    if (d.kind === 'rejected') expect(d.reason).toContain('failed');
+    // 失败调用记审计日志 applied=false
+    const logs = (await db.from('tool_call_logs').select()) as unknown as { data: ToolCallLog[] };
+    const entry = logs.data.find((l) => l.toolName === 'annotate_word');
+    expect(entry?.applied).toBe(false);
   });
 });
 

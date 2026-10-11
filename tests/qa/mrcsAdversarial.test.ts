@@ -110,11 +110,13 @@ describe('对抗边界：极端输入', () => {
     expect(resolveDegradePath(input)).toBe('exceed_deadline');
   });
 
-  it('deadline 已过但零负载：validate 不抛异常且通过（空计划平凡可行）', () => {
+  it('deadline 已过但零负载：validate 不抛异常且通过；resolveDegradePath 优先报 exceed_deadline（P2-4 修复）', () => {
     const params = sensParams({ startDate: '2026-12-06', deadlineDate: '2026-12-05' });
     const r = validatePlan({ params, tierCounts: {}, steadyWords: [] });
     expect(r.pass).toBe(true);
     expect(r.windowDays).toBe(1); // 负窗口被钳到 1，不产生 NaN/负数
+    // 修复后：非法窗口是结构性错误，优先于负载判定（修前零负载会返回 'fallback'）
+    expect(resolveDegradePath({ params, tierCounts: {}, steadyWords: [] })).toBe('exceed_deadline');
   });
 
   it('start === deadline：windowDays 钳为 1，重负载不通过且数字有限', () => {

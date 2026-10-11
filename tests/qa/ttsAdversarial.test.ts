@@ -150,34 +150,52 @@ describe('TTS 编排：配置缺失与降级', () => {
   });
 });
 
-describe('对抗：缓存键碰撞与陈旧', () => {
-  it('缓存键不含 IPA：同词改音标后仍返回旧音频（P2 陈旧缓存向量）', async () => {
-    const { deps } = mkDeps();
+describe('回归锚点：缓存键含 IPA 且长度前缀无歧义（P2-2 修复，ed2e8dd）', () => {
+  it('① 同词改音标后：cacheKey 必不相等、fromCache=false、返回新合成音频', async () => {
+    // 修前快照：两请求同 key → 返回陈旧音频（P2-2 实证）。修复语义与"碰撞成立"不可兼得，反转为回归断言。
+    let call = 0;
+    const neural = mkNeural({ audio: AUDIO_A, engine: 'neural_tts', fromCache: false });
+    neural.synthesize = vi.fn(async (): Promise<TTSResult> => {
+      call += 1;
+      return call === 1 ? { audio: AUDIO_A, engine: 'neural_tts', fromCache: false } : { audio: AUDIO_B, engine: 'neural_tts', fromCache: false };
+    });
+    const { deps } = mkDeps({ neural });
     const orch = createOrchestrator(deps);
-    const r1 = await orch.getAudio({ text: 'abandon', mode: 'word', ipa: '/əˈbændən/' });
+    await orch.getAudio({ text: 'abandon', mode: 'word', ipa: '/əˈbændən/' });
     const r2 = await orch.getAudio({ text: 'abandon', mode: 'word', ipa: '/əˈbændɒn/' }); // 音标已修正
-    expect(cacheKey({ text: 'abandon', mode: 'word', ipa: '/əˈbændən/' })).toBe(
+    expect(cacheKey({ text: 'abandon', mode: 'word', ipa: '/əˈbændən/' })).not.toBe(
       cacheKey({ text: 'abandon', mode: 'word', ipa: '/əˈbændɒn/' }),
     );
-    expect(r2.fromCache).toBe(true);
-    expect(r2.audio).toBe(r1.audio); // 旧音频被复用
+    expect(r2.fromCache).toBe(false); // 不再命中旧音频
+    expect(r2.audio).toBe(AUDIO_B); // 返回按新音标重新合成的音频
   });
 
-  it('voice 含 "|" 可构造跨请求缓存碰撞（text 不同的两个请求命中同一条目）', () => {
-    // cacheKey = `${text}|${mode}|${voice}` 无转义：
+  it('② voice 含 "|" 不再与 text 串音：旧碰撞对现在 key 不同、第二次请求重新合成', async () => {
     const a: TTSRequest = { text: 'x', mode: 'word', voice: 'word|v' };
     const b: TTSRequest = { text: 'x|word', mode: 'word', voice: 'v' };
     expect(a.text).not.toBe(b.text);
-    expect(cacheKey(a)).toBe(cacheKey(b)); // 碰撞成立
+    expect(cacheKey(a)).not.toBe(cacheKey(b)); // 长度前缀消歧后旧碰撞对失效
+    let call = 0;
+    const neural = mkNeural();
+    neural.synthesize = vi.fn(async (): Promise<TTSResult> => {
+      call += 1;
+      return call === 1 ? { audio: AUDIO_A, engine: 'neural_tts', fromCache: false } : { audio: AUDIO_B, engine: 'neural_tts', fromCache: false };
+    });
+    const { deps } = mkDeps({ neural });
+    const orch = createOrchestrator(deps);
+    const first = await orch.getAudio(a);
+    const second = await orch.getAudio(b);
+    expect(second.fromCache).toBe(false);
+    expect(second.audio).not.toBe(first.audio); // 不串音
   });
 
-  it('碰撞实际生效：第一个请求的音频被第二个请求命中', async () => {
-    const { deps } = mkDeps({ neural: mkNeural({ audio: AUDIO_A, engine: 'neural_tts', fromCache: false }) });
-    const orch = createOrchestrator(deps);
-    const first = await orch.getAudio({ text: 'x', mode: 'word', voice: 'word|v' });
-    const second = await orch.getAudio({ text: 'x|word', mode: 'word', voice: 'v' });
-    expect(second.fromCache).toBe(true);
-    expect(second.audio).toBe(first.audio); // 串音：读出了另一个"词"的音频
+  it('③ 新 key 为长度前缀格式，形如 7:abandon|4:word|10:/əˈbændən/|0:', () => {
+    const key = cacheKey({ text: 'abandon', mode: 'word', ipa: '/əˈbændən/' });
+    expect(key).toBe(`7:abandon|4:word|${'/əˈbændən/'.length}:/əˈbændən/|0:`);
+    expect('/əˈbændən/'.length).toBe(10);
+    // 字段含 '|' 时长度前缀保证唯一解码（任意切分都会校验长度失败）
+    const tricky = cacheKey({ text: 'a|4:x', mode: 'word', voice: 'v' });
+    expect(tricky).toBe('5:a|4:x|4:word|0:|1:v');
   });
 });
 

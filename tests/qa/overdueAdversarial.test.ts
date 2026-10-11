@@ -164,16 +164,20 @@ describe('compress（压缩）—— PRD §4.4.4-B「日额度上浮至时间校
     assertDebtCleared(outcome as never, overdue);
   });
 
-  it('超阈值欠账（12000 条）：日额度必须仍被 maxDailyHits 封顶（PRD「上浮至…上限」）', () => {
+  it('超阈值欠账（12000 条）：日额度必须被 maxDailyHits 封顶（PRD「上浮至…上限」）——P1-1 回归锚点', () => {
     const input = mkInput(undefined, { 3: 1050 });
     const overdue = mkOverdue(12000, '2026-10-20');
     const maxDaily = maxDailyHits(input.params);
     expect(maxDaily).toBe(300);
-    // 无封顶时摊入 35 天 → ceil(12000/35)+39 = 382 > 300，PRD 明确上浮上限为时间校验上限
+    // 未封顶时摊入 35 天 → ceil(12000/35)+39 = 382 > 300；修复后 preview 封顶显示并标记引导
     const preview = previewStrategy('compress', input, overdue, HORIZON_TODAY);
     expect(preview.newDailyHits).toBeLessThanOrEqual(maxDaily);
+    expect(preview.capacityExceeded).toBe(true);
+    expect(preview.capacityOverflow).toBe(382 - 300);
+    // apply 层：超容量 → 结构化拒绝（不再静默产出不可行计划）
     const outcome = applyStrategy('compress', input, overdue, undefined, HORIZON_TODAY);
-    if (outcome.ok) expect(outcome.newDailyHits).toBeLessThanOrEqual(maxDaily);
+    expect(outcome).toMatchObject({ ok: false, error: 'CapacityExceeded' });
+    if (!outcome.ok) expect(outcome.message).toContain('drop_round');
   });
 
   it('compress 不改变总工期（deadlineExceeded 恒 false，newFinishDate 不变）', () => {
