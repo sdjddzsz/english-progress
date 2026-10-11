@@ -6,10 +6,18 @@ import type { Repository } from '../data/repository';
 
 export class ProposalValidationError extends Error {}
 
+/** P2-3：reason 长度上限（超限拒收，防超长 payload 撑爆提案存储 / UI） */
+export const MAX_PROPOSAL_REASON_LENGTH = 2000;
+
 export function validateProposal(input: { reason?: string; changes?: unknown }): void {
   const reason = input.reason?.trim();
   if (!reason) {
     throw new ProposalValidationError('proposal rejected: reason is required (PRD §7.6 — 无理由提案拒绝落地)');
+  }
+  if (reason.length > MAX_PROPOSAL_REASON_LENGTH) {
+    throw new ProposalValidationError(
+      `proposal rejected: reason exceeds maximum length of ${MAX_PROPOSAL_REASON_LENGTH} characters (got ${reason.length})`,
+    );
   }
   if (
     input.changes == null ||

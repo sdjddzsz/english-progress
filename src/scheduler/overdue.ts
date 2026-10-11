@@ -111,6 +111,14 @@ function revalidate(params: PlanParams, input: ValidationInput): ValidationResul
   return validatePlan({ params, tierCounts: input.tierCounts, steadyWords: input.steadyWords });
 }
 
+/**
+ * 日额度物理上限（PRD §4.4.4-B）：maxDailyHits = floor(日预算分钟 × 60 / 单词均耗时秒)。
+ * compress 摊入后的近期日额度不得超过此值——超过即物理上不可完成（P1-1 修复）。
+ */
+export function maxDailyHitsCap(params: PlanParams): number {
+  return Math.max(1, Math.floor((params.dailyBudgetMin * 60) / Math.max(1, params.avgHitSec)));
+}
+
 // ===== 影响预览 =====
 
 /**
@@ -146,7 +154,11 @@ export function previewStrategy(
     case 'compress': {
       const H = horizonDays(input, today);
       // 欠账摊入摊入窗口：近期日额度上浮（validation 保留整体校验口径，newDailyHits 为近期上浮值）
-      const newDailyHits = Math.ceil((overdue.length + base.dailyHits * H) / H);
+      // P1-1：raw 值超 maxDailyHits 物理上限时封顶显示，并标记 capacityExceeded 引导换策略
+      const rawDailyHits = Math.ceil((overdue.length + base.dailyHits * H) / H);
+      const cap = maxDailyHitsCap(params);
+      const capacityExceeded = rawDailyHits > cap;
+      const newDailyHits = Math.min(rawDailyHits, cap);
       return {
         strategy: s,
         plainWords,
@@ -155,6 +167,7 @@ export function previewStrategy(
         validation: base,
         affectedWordCount: affected,
         deadlineExceeded: false,
+        ...(capacityExceeded ? { capacityExceeded: true, capacityOverflow: rawDailyHits - cap } : {}),
       };
     }
     case 'drop_round': {
@@ -282,6 +295,16 @@ export function applyStrategy(
     case 'compress': {
       // 欠账摊入本轮剩余天 + 下一轮；总工期不变，日额度上浮
       const H = horizonDays(input, today);
+      // P1-1（PRD §4.4.4-B）：摊入后近期日额度超物理上限 → 结构化拒绝，引导换策略
+      const rawDailyHits = Math.ceil((overdue.length + base.dailyHits * H) / H);
+      const cap = maxDailyHitsCap(params);
+      if (rawDailyHits > cap) {
+        return {
+          ok: false,
+          error: 'CapacityExceeded',
+          message: `Compress would need ${rawDailyHits} hits/day for ${H} days, exceeding the physical cap of ${cap} (dailyBudgetMin ${params.dailyBudgetMin} × 60 / avgHitSec ${params.avgHitSec}). Use drop_round / freeze instead, or raise the daily budget.`,
+        };
+      }
       const dates = spreadDates(sorted.length, startFrom, H);
       sorted.forEach((h, i) => {
         if (deferredSet.has(h.id)) {
@@ -296,8 +319,7 @@ export function applyStrategy(
           });
         }
       });
-      const newDailyHits = Math.ceil((overdue.length + base.dailyHits * H) / H);
-      return { ok: true, newPlan: params, hitMutations: mutations, newFinishDate: planFinishDate(params, tierCounts), newDailyHits };
+      return { ok: true, newPlan: params, hitMutations: mutations, newFinishDate: planFinishDate(params, tierCounts), newDailyHits: rawDailyHits };
     }
     case 'drop_round': {
       const tier = tierOfMostOverdue(overdue);

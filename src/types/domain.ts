@@ -75,7 +75,7 @@ export type SessionType = 'vocab_visual' | 'vocab_audio' | 'cn_to_en' | 'integra
 // ===== AI 授权与版本化 =====
 
 export type RiskLevel = 'auto' | 'confirm' | 'require';
-export type ProposalStatus = 'pending' | 'approved' | 'rejected' | 'applied';
+export type ProposalStatus = 'pending' | 'approved' | 'rejected' | 'applied' | 'failed';
 export type ChangedBy = 'user' | 'ai' | 'system';
 export type MockRuleStatus = 'draft' | 'approved' | 'active' | 'revoked';
 

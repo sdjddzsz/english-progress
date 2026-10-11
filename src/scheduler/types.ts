@@ -150,6 +150,10 @@ export interface StrategyPreview {
   affectedWordCount: number;
   /** 仅 extend 可能 true：新完成日突破 deadline */
   deadlineExceeded: boolean;
+  /** 仅 compress 可能 true：近期日额度超过物理上限（PRD §4.4.4-B），需换策略或上调预算 */
+  capacityExceeded?: boolean;
+  /** capacityExceeded 为 true 时：raw 日额度 − maxDailyHits 的超出量 */
+  capacityOverflow?: number;
 }
 
 export interface HitMutation {
@@ -168,7 +172,7 @@ export type StrategyOutcome =
       newFinishDate: string;
       newDailyHits: number;
     }
-  | { ok: false; error: 'DeadlineExceeded'; message: string };
+  | { ok: false; error: 'DeadlineExceeded' | 'CapacityExceeded'; message: string };
 
 // ===== preview.ts =====
 

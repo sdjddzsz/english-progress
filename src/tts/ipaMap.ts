@@ -36,7 +36,10 @@ export function mapIpaToAzure(ipa: string): string {
   let i = 0;
   while (i < src.length) {
     const two = src.slice(i, i + 2);
-    if (IPA_CHAR_MAP[two] !== undefined && two === 'ʧ' || two === 'ʤ') {
+    // P2-4：双字符键（ʧ/ʤ）优先按两字符消费。显式加括号——
+    // 原写法 `A && B || C` 依赖 && 高于 || 的隐式优先级，易误读为 `A && (B || C)` 以外
+    // 的结合方式；加括号后语义自明（对现行行为无变化，仅消除歧义）
+    if (IPA_CHAR_MAP[two] !== undefined && (two === 'ʧ' || two === 'ʤ')) {
       out += IPA_CHAR_MAP[two];
       i += 2;
       continue;

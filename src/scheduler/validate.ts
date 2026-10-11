@@ -93,6 +93,10 @@ export function applyTierFreeze(tierRounds: Record<Tier, number>, frozenTiers: T
  * 其余 → 'raise_budget'。
  */
 export function resolveDegradePath(input: ValidationInput): DegradePath {
+  // P2-4：非法窗口（start ≥ deadline）是结构性错误，优先于一切负载/冻结/预算判定——
+  // 即使负载极小（recommended/frozen 可能被钳 windowDays=1 而"通过"），也必须报 exceed_deadline
+  if (diffDays(input.params.deadlineDate, input.params.startDate) <= 0) return 'exceed_deadline';
+
   const { recommended, fallback } = generateBothPlans(input);
   if (recommended.pass) return 'fallback';
   if (fallback.pass) return 'fallback';
@@ -105,8 +109,6 @@ export function resolveDegradePath(input: ValidationInput): DegradePath {
   const frozen = validatePlan({ params: frozenParams, tierCounts: input.tierCounts, steadyWords: input.steadyWords });
   if (frozen.pass) return 'freeze_t1';
 
-  const T = diffDays(input.params.deadlineDate, input.params.startDate);
-  if (T <= 0) return 'exceed_deadline';
   if (input.params.dailyBudgetMin < MAINTENANCE_MODE_BUDGET_MIN) return 'maintenance_mode';
   return 'raise_budget';
 }

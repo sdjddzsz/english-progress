@@ -52,8 +52,19 @@ export function inMemoryAudioCache(): AudioCache {
   };
 }
 
+/**
+ * 缓存键（P2-2 修复）：
+ * - 加入 ipa：同一 text 换音标必须产生新 key，杜绝改音标后返回陈旧音频；
+ * - 长度前缀编码：text/mode/voice/ipa 任意字段含 '|' 时不再产生歧义碰撞
+ *   （如 voice="a|word" 与 text="a" + mode="word" 的旧实现会同 key 串音）。
+ * 旧格式 key 自然失效（不迁移），按 LRU 预算逐步淘汰。
+ */
+function lenPrefixed(part: string): string {
+  return `${part.length}:${part}`;
+}
+
 export function cacheKey(req: TTSRequest): string {
-  return `${req.text}|${req.mode}|${req.voice ?? ''}`;
+  return [req.text, req.mode, req.ipa ?? '', req.voice ?? ''].map(lenPrefixed).join('|');
 }
 
 // ===== 前台轻提示（本会话仅一次）=====
