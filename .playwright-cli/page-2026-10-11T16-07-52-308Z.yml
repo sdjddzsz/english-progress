@@ -1,0 +1,8 @@
+- generic [ref=e3]:
+  - progressbar [ref=e6]
+  - generic [ref=e9]:
+    - button "Today" [ref=e10] [cursor=pointer]
+    - button "训练" [ref=e14] [cursor=pointer]
+    - button "词书" [ref=e18] [cursor=pointer]
+    - button "后台" [ref=e23] [cursor=pointer]
+    - button "设置" [ref=e28] [cursor=pointer]
