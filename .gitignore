@@ -25,5 +25,10 @@ npm-debug.log*
 # local data dumps
 *.local.json
 
+# ECDICT 原始 CSV（65MB，只在重建词书时需要；用
+# npx tsx src/data/seed/buildSeed7000.ts --ecdict <路径> 传入）
+.ecdict.tmp.csv
+ecdict.csv
+
 # Playwright CLI 临时产物（会话截图/快照，不入库）
 .playwright-cli/

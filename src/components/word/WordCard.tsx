@@ -1,14 +1,16 @@
 /**
  * WordCard.tsx —— 词卡（视觉/听觉双模态共用）：
  * 词形 + 音标 + 释义 + 例句；TTS 发音（单词/例句两档）；
+ * ⚠ 多读音词必须按义项逐条列出读音与词性（用户 2026-10-13：不同词性/词义对应不同读音要明确标识）；
  * explain 区展示轮次与上次出现（"为什么是这些词"可解释性，S3）。
  * 展示型组件：不含调度逻辑；数据由页面/store 注入。
  */
 import { Box, Chip, IconButton, Stack, Tooltip, Typography } from '@mui/material';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
-import type { Word } from '../../types/domain';
+import type { Word, WordSense } from '../../types/domain';
 import { useTTS } from '../../hooks/useTTS';
+import { describeSenses, senseLabel } from '../../features/senses';
 
 export interface WordCardProps {
   word: Word | null;
@@ -19,11 +21,21 @@ export interface WordCardProps {
   roundNo?: number;
   tier?: number;
   compact?: boolean;
+  /** 限定展示某一个义项（学习流按判定单位给词时传进来）；不给则展示全部义项 */
+  sense?: WordSense;
 }
 
 const TIER_LABEL: Record<number, string> = { 1: 'T1 已掌握', 2: 'T2 熟词', 3: 'T3 半熟', 4: 'T4 生词' };
 
-export default function WordCard({ word, hideText = false, lastSeen, roundNo, tier, compact = false }: WordCardProps) {
+export default function WordCard({
+  word,
+  hideText = false,
+  lastSeen,
+  roundNo,
+  tier,
+  compact = false,
+  sense,
+}: WordCardProps) {
   const { speak, loading } = useTTS();
 
   if (!word) {
@@ -34,8 +46,20 @@ export default function WordCard({ word, hideText = false, lastSeen, roundNo, ti
     );
   }
 
-  // arpabet 透传：DashScope 主轨 <phoneme alphabet="cmu"> 零转换直用（CMUdict 发音真源）
-  const speakWord = () => void speak({ text: word.lemma, ipa: word.ipa, arpabet: word.arpabet, mode: 'word' }, word.id);
+  const entries = describeSenses(word);
+  const multiPron = entries.length > 1;
+  // 发音目标：限定义项 → 用它的读音；否则用首个义项（= 单词级 ipa/arpabet 兼容口径）
+  const target = sense ?? entries[0]?.sense ?? null;
+  const speakTarget = () =>
+    void speak(
+      {
+        text: word.lemma,
+        ipa: target?.ipa || word.ipa,
+        arpabet: target?.arpabet || word.arpabet,
+        mode: 'word',
+      },
+      word.id,
+    );
   const firstExample = word.examples[0];
   const speakExample = () => {
     if (firstExample) void speak({ text: firstExample.en, mode: 'sentence' }, word.id);
@@ -43,20 +67,24 @@ export default function WordCard({ word, hideText = false, lastSeen, roundNo, ti
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} alignItems="center">
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
         {!hideText && (
           <Typography variant={compact ? 'h6' : 'h4'} component="span">
             {word.lemma}
           </Typography>
         )}
-        {word.ipa && !hideText && (
+        {!hideText && sense && <Typography variant="body1" color="text.secondary">{senseLabel(sense)}</Typography>}
+        {!hideText && !sense && word.ipa && (
           <Typography variant={compact ? 'body2' : 'body1'} color="text.secondary">
             /{word.ipa.replace(/^\/|\/$/g, '')}/
           </Typography>
         )}
+        {multiPron && !hideText && (
+          <Chip size="small" color="warning" variant="outlined" label={`${entries.length} 种读音/词性`} />
+        )}
         <Tooltip title={loading ? '合成中…' : '发音'}>
           <span>
-            <IconButton onClick={speakWord} disabled={loading} aria-label="play word">
+            <IconButton onClick={speakTarget} disabled={loading} aria-label="play word">
               <VolumeUpIcon />
             </IconButton>
           </span>
@@ -74,17 +102,49 @@ export default function WordCard({ word, hideText = false, lastSeen, roundNo, ti
 
       {!hideText && (
         <>
-          {word.pos && (
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              {word.pos}
-            </Typography>
-          )}
+          {/* 义项表：每个词性一行，行内带该义项自己的读音；多读音词在这里被明确区分 */}
           <Stack spacing={0.5} sx={{ mt: 1 }}>
-            {word.senses.slice(0, 3).map((s, i) => (
-              <Typography key={i} variant="body1">
-                {i + 1}. {s}
-              </Typography>
-            ))}
+            {entries.map(({ sense: s }, i) => {
+              const active = target != null && s.senseId === target.senseId;
+              return (
+                <Stack
+                  key={s.senseId}
+                  direction="row"
+                  spacing={1}
+                  alignItems="baseline"
+                  sx={{
+                    px: 0.75,
+                    py: 0.25,
+                    borderRadius: 1,
+                    bgcolor: active ? 'action.selected' : 'transparent',
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary" sx={{ minWidth: 34 }}>
+                    {i + 1}.
+                  </Typography>
+                  <Typography variant="body1" sx={{ flex: 1 }}>
+                    {s.zh || s.pos}
+                  </Typography>
+                  {/* 读音列：与该义项绑定（不是单词级那一个） */}
+                  {s.ipa && (
+                    <Typography variant="body2" color={multiPron ? 'warning.dark' : 'text.secondary'}>
+                      /{s.ipa.replace(/^\/|\/$/g, '')}/
+                    </Typography>
+                  )}
+                  {multiPron && (
+                    <IconButton
+                      size="small"
+                      onClick={() =>
+                        void speak({ text: s.lemma, ipa: s.ipa, arpabet: s.arpabet, mode: 'word' }, s.senseId)
+                      }
+                      aria-label={`play sense ${i + 1}`}
+                    >
+                      <VolumeUpIcon fontSize="small" />
+                    </IconButton>
+                  )}
+                </Stack>
+              );
+            })}
           </Stack>
           {firstExample && (
             <Box sx={{ mt: 1, pl: 1.5, borderLeft: 3, borderColor: 'divider' }}>

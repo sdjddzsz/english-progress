@@ -1,9 +1,15 @@
 /**
- * calibration.ts —— 前两周每日校准（PRD §4.3 摸底后校准）：
- * 计划开始 14 天内，按近 2 日反馈对词层做增量修正建议；
- * 批量变动 >10% 由 recompute_word_tiers 的动态风险路由为 Confirm 提案（>10% → confirm），
- * ≤10% 自动落地（authz.ts effectiveRiskLevel 已实现，本模块只负责产 assignments 并调用）。
- * 纯函数 + 一个执行入口；不做任何 UI。
+ * calibration.ts —— **按练习成绩持续判定掌握程度**（用户 2026-10-13：
+ * 「掌握程度根据练习成绩判定」，导入时不再按词频猜层级）。
+ *
+ * 每次反馈落库后按反馈证据调整词层：
+ *  - 证据充分且连续「秒认」⇒ 上移一层（更熟 ⇒ 更少轮次）；
+ *  - 出现「不认识」/「见过想不起」⇒ 下移一层（宁严勿松）；
+ *  - 证据不足 ⇒ **不动**（不猜）。
+ *
+ * ⚠ 与旧实现的区别（重要）：旧版是「前 14 天校准窗口」，过了就彻底不再判定层。
+ *   那意味着 11 月以后掌握程度就永远冻结在初始值 —— 与本项目「进度由真实学习数据驱动」
+ *   的立身之本直接矛盾。现在窗口只影响**观察窗长度**（近 N 日证据），不再决定「是否判定」。
  */
 import { TIER_RECALIBRATION_CONFIRM_RATIO } from '../../config/constants';
 import { diffDays } from '../../scheduler';
@@ -11,26 +17,39 @@ import type { Feedback, L1State, StudyPlan, Tier } from '../../types/domain';
 import { getRepos, getToolCtx } from '../../store/useAppStore';
 import { executeTool } from '../../ai/authz';
 
+/** 观察窗：取近 N 日反馈作为证据（不再是「判定窗口」） */
+export const CALIBRATION_LOOKBACK_DAYS = 7;
+/** 兼容旧名：不再表示「校准窗口」，仅保留给引用方，避免误解为「14 天后不判定」 */
 export const CALIBRATION_WINDOW_DAYS = 14;
-/** 观察窗：近 2 日的反馈参与修正 */
-export const CALIBRATION_LOOKBACK_DAYS = 2;
 
-/** 是否处于前两周校准窗口（start 计为第 0 天） */
+/** 保留旧函数签名（测试与旧调用方仍引用）；语义已变为「是否处于观察窗早期」 */
 export function inCalibrationWindow(planStartDate: string, today: string): boolean {
   return diffDays(today, planStartDate) < CALIBRATION_WINDOW_DAYS;
 }
 
-/** 单词近 N 次 L1 → 层修正方向：2 次秒认上移一层；出现"不认识"下移一层（宁严勿松） */
+/** 上移所需的连续秒认次数：>=2 次（单次秒认不足以说明问题） */
+export const PROMOTE_MIN_INSTANT_STREAK = 2;
+
+/** 判定依据的最近证据条数（观察窗内最后 N 条） */
+const EVIDENCE_TAIL = 8;
+
+/**
+ * 单词最近证据 → 层修正方向。
+ * 上移：末尾连续 `PROMOTE_MIN_INSTANT_STREAK` 次秒认且期间无任何其他状态。
+ * 下移：证据里出现「不认识」或「见过想不起」⇒ 宁严勿松，往难里放。
+ * 都不满足 ⇒ 不动。
+ */
 export function suggestTierFromFeedback(l1States: L1State[], current: Tier): Tier {
-  const recent = l1States.slice(-CALIBRATION_LOOKBACK_DAYS * 4); // 防御性截断
+  const recent = l1States.slice(-EVIDENCE_TAIL);
   if (recent.length === 0) return current;
-  const instantStreak =
-    recent.length >= 2 && recent.slice(-2).every((s) => s === 'instant') ? 1 : 0;
-  const downgrade = recent.includes('unknown');
-  let tier = current;
-  if (downgrade) tier = Math.min(4, current + 1) as Tier;
-  else if (instantStreak) tier = Math.max(1, current - 1) as Tier;
-  return tier as Tier;
+  if (recent.includes('unknown') || recent.includes('familiar_but_forgotten')) {
+    return Math.min(4, current + 1) as Tier;
+  }
+  const tail = recent.slice(-PROMOTE_MIN_INSTANT_STREAK);
+  const allInstant =
+    tail.length === PROMOTE_MIN_INSTANT_STREAK && tail.every((s) => s === 'instant');
+  if (allInstant) return Math.max(1, current - 1) as Tier;
+  return current;
 }
 
 export interface CalibrationWordInput {
@@ -68,17 +87,18 @@ export interface CalibrationRunResult {
 
 /**
  * 每日校准执行入口（boot / 打开 App 时调用一次）：
- * 反馈近 2 日 → 按 wordId 聚合 L1 → 对照 book_words 当前层产 assignments → executeTool。
- * >10% 时 authz 动态风险自动升级为 Confirm 提案（等用户在 AI 方案页确认）。
+ * 反馈近 N 日 → 按 wordId 聚合 L1 → 对照 book_words 当前层产 assignments → executeTool。
+ *
+ * ⚠ 与旧版的行为差异（用户 2026-10-13：掌握程度由练习成绩判定）：
+ *   旧版 14 天后直接 `skipped: 'window'` —— 掌握程度从此永久冻结。
+ *   现在**任何时候都判定**，14 天窗口只保留给 UI 提示；无反馈时才是 'no-data'。
+ *   批量变动 >10% 仍由 authz 动态风险升级为 Confirm 提案（等用户在 AI 方案页确认）。
  */
 export async function runDailyCalibration(input: {
   userId: string;
   plan: StudyPlan;
   today: string;
 }): Promise<CalibrationRunResult> {
-  if (!inCalibrationWindow(input.plan.startDate, input.today)) {
-    return { checked: 0, changed: 0, proposalCreated: false, skipped: 'window' };
-  }
   const repos = getRepos();
   const lookbackStart = new Date(Date.now() - CALIBRATION_LOOKBACK_DAYS * 86400000).toISOString();
   const recent: Feedback[] = await repos.feedback.listFeedbacksRange(lookbackStart, new Date().toISOString());

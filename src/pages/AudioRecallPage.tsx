@@ -1,8 +1,14 @@
 /**
  * AudioRecallPage.tsx —— 听词联想（PRD §4.5）：
- * 听发音 → 回想词义 → L1 三键单选即跳（无确认按钮）；犹豫超 3 秒（AUDIO_RECALL_TIMEOUT_MS）
- * 自动记"没想起"；作答后揭晓词形与释义，再进下一个。
- * 目标词 = 今日队列中听觉模态 hit（空则退化为全部今日 hit）；每词反馈挂在其当日 hit 上。
+ * 听发音 → 回想词义 → 三键单选 → 作答后揭晓词形与释义，再进下一个。
+ *
+ * ⚠ 用户 2026-10-13：「哪怕同一个单词只要不同读音对应不同意思，就当成不同的单词判定」。
+ *   因此本练习的**判定单位是义项（senseId）而非单词**：
+ *   多读音词（record 名词 /ˈrekəd/ vs 动词 /rɪˈkɔːd/）会被拆成多个练习项，
+ *   每项播自己的读音、揭晓自己的那一组释义，各自独立记一条反馈。
+ *   界面上必须提前标出「本词有 N 种读音，现在放的是哪一种」，否则用户无法预期答案。
+ *
+ * 目标词 = 今日队列中听觉模态 hit（空则退化为全部今日 hit）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -22,15 +28,18 @@ import { AUDIO_RECALL_TIMEOUT_MS } from '../config/constants';
 import { useAppStore } from '../store/useAppStore';
 import { useFeedback } from '../hooks/useFeedback';
 import { useTTS } from '../hooks/useTTS';
+import { normalizeSenses } from '../features/senses';
+import type { WordSense } from '../types/domain';
 
 interface Item {
   hitId: string;
   wordId: string;
   lemma: string;
-  ipa: string;
-  /** CMUdict ARPAbet（发音真源；透传给 TTS 请求） */
-  arpabet?: string;
-  senses: string[];
+  /** 本次练习针对的义项（判定单位） */
+  sense: WordSense;
+  senses: WordSense[];
+  /** 该词共有几种读音（>1 需在界面上明确标出） */
+  pronunciationCount: number;
 }
 
 export default function AudioRecallPage() {
@@ -45,17 +54,36 @@ export default function AudioRecallPage() {
     const seen = new Set<string>();
     const out: Item[] = [];
     for (const h of pool) {
-      if (seen.has(h.wordId)) continue;
-      seen.add(h.wordId);
       const w = wordMap[h.wordId];
-      out.push({
-        hitId: h.id,
-        wordId: h.wordId,
-        lemma: w?.lemma ?? h.wordId,
-        ipa: w?.ipa ?? '',
-        ...(w?.arpabet ? { arpabet: w.arpabet } : {}),
-        senses: w?.senses ?? [],
-      });
+      if (!w) continue;
+      const senses = normalizeSenses(w);
+      // 按**读音**去重：同一读音的多个词性合并成一项（用户定义：不同读音才算不同的单词）
+      const byPron = new Map<string, WordSense[]>();
+      for (const s of senses) {
+        const key = s.pronunciationKey;
+        const arr = byPron.get(key) ?? [];
+        arr.push(s);
+        byPron.set(key, arr);
+      }
+      const distinct = byPron.size;
+      for (const group of byPron.values()) {
+        const primary = group[0];
+        const senseId = `${primary.senseId}_audio`;
+        if (seen.has(senseId)) continue;
+        seen.add(senseId);
+        out.push({
+          hitId: h.id,
+          wordId: h.wordId,
+          lemma: w.lemma,
+          sense: {
+            ...primary,
+            senseId,
+            zh: group.map((g) => g.zh || g.pos).filter(Boolean).join(' / '),
+          },
+          senses,
+          pronunciationCount: distinct,
+        });
+      }
     }
     return out;
   }, [todayHits, wordMap]);
@@ -103,12 +131,20 @@ export default function AudioRecallPage() {
     [current, answered, todayHits, submit, startSession],
   );
 
-  // 每词开始：计时 + 自动发音 + 3 秒超时自动"没想起"（单选即跳语义）
+  // 每词开始：计时 + 自动发音（**播该义项自己的读音**）+ 3 秒超时自动"没想起"
   useEffect(() => {
     if (!current) return;
     startRef.current = performance.now();
     setAnswered(null);
-    void speak({ text: current.lemma, ipa: current.ipa, arpabet: current.arpabet, mode: 'word' }, current.wordId);
+    void speak(
+      {
+        text: current.lemma,
+        ipa: current.sense.ipa,
+        arpabet: current.sense.arpabet,
+        mode: 'word',
+      },
+      current.sense.senseId,
+    );
     timerRef.current = setTimeout(() => {
       void answer('unknown');
     }, AUDIO_RECALL_TIMEOUT_MS);
@@ -119,7 +155,7 @@ export default function AudioRecallPage() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.wordId]);
+  }, [current?.sense.senseId]);
 
   const next = () => setIdx((i) => i + 1);
 
@@ -168,8 +204,31 @@ export default function AudioRecallPage() {
 
       <Paper sx={{ mt: 2, p: 3, textAlign: 'center' }}>
         <Chip icon={<VolumeUpIcon />} label="听发音，回想词义" variant="outlined" />
+        {current.pronunciationCount > 1 && (
+          <Box sx={{ mt: 1 }}>
+            <Chip
+              color="warning"
+              size="small"
+              variant="outlined"
+              label={`这个词有 ${current.pronunciationCount} 种读音，现在放的是其中一种`}
+            />
+          </Box>
+        )}
         <Box sx={{ mt: 2 }}>
-          <Button size="small" onClick={() => void speak({ text: current.lemma, ipa: current.ipa, arpabet: current.arpabet, mode: 'word' }, current.wordId)}>
+          <Button
+            size="small"
+            onClick={() =>
+              void speak(
+                {
+                  text: current.lemma,
+                  ipa: current.sense.ipa,
+                  arpabet: current.sense.arpabet,
+                  mode: 'word',
+                },
+                current.sense.senseId,
+              )
+            }
+          >
             再听一次
           </Button>
         </Box>
@@ -177,7 +236,7 @@ export default function AudioRecallPage() {
         {!answered ? (
           <>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
-              3 秒内没反应自动记"没想起"；点选即跳下一词。
+              3 秒内没反应自动记"没想起"；点选后看答案再进下一项。
             </Typography>
             <Stack direction="row" spacing={1} justifyContent="center" sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
               <Button variant="contained" color="success" disabled={busy} onClick={() => void answer('instant')}>
@@ -197,16 +256,31 @@ export default function AudioRecallPage() {
             <Typography variant="h4" sx={{ mt: 2 }}>
               {current.lemma}
             </Typography>
-            {current.ipa && <Typography variant="body1" color="text.secondary">/{current.ipa}/</Typography>}
-            <Stack sx={{ mt: 1 }} spacing={0.5}>
-              {current.senses.slice(0, 2).map((s, i) => (
-                <Typography key={i} variant="body1">
-                  {i + 1}. {s}
+            {/* 揭晓：先给本次这一档读音对应的释义，再列出该词其它读音 —— 明确区分 */}
+            <Typography variant="body1" color="warning.dark" sx={{ mt: 0.5 }}>
+              /{current.sense.ipa.replace(/^\/|\/$/g, '')}/ · {current.sense.pos || '义项'}
+            </Typography>
+            <Typography variant="body1" sx={{ mt: 0.5 }}>
+              {current.sense.zh}
+            </Typography>
+            {current.pronunciationCount > 1 && (
+              <Box sx={{ mt: 1.5 }}>
+                <Typography variant="caption" color="text.secondary">
+                  同一个词的其它读音与意思（各算不同的词项）：
                 </Typography>
-              ))}
-            </Stack>
+                <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                  {current.senses
+                    .filter((s) => s.pronunciationKey !== current.sense.pronunciationKey)
+                    .map((s) => (
+                      <Typography key={s.senseId} variant="caption" color="text.secondary">
+                        /{s.ipa.replace(/^\/|\/$/g, '')}/ · {s.zh}
+                      </Typography>
+                    ))}
+                </Stack>
+              </Box>
+            )}
             <Button variant="contained" fullWidth sx={{ mt: 2 }} onClick={next}>
-              下一词
+              下一项
             </Button>
           </>
         )}

@@ -17,9 +17,11 @@ import {
 } from '@mui/material';
 import HearingIcon from '@mui/icons-material/Hearing';
 import TranslateIcon from '@mui/icons-material/Translate';
+import KeyboardIcon from '@mui/icons-material/Keyboard';
 import AllInclusiveIcon from '@mui/icons-material/AllInclusive';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import LockIcon from '@mui/icons-material/Lock';
+import StarIcon from '@mui/icons-material/Star';
 import { getRepos, useAppStore } from '../store/useAppStore';
 
 export default function TrainingPage() {
@@ -48,6 +50,24 @@ export default function TrainingPage() {
   }, [userId]);
 
   const queueCount = [...new Set(todayHits.map((h) => h.wordId))].length;
+  const [bookmarkCount, setBookmarkCount] = useState<number | null>(null);
+
+  // 生词本计数（在「训练」页也露一个入口，避免生词本只有查词页能找到）
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await getRepos().word.listBookmarks(userId);
+        if (!cancelled) setBookmarkCount(list.length);
+      } catch {
+        if (!cancelled) setBookmarkCount(0);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   const entries = [
     {
@@ -62,6 +82,13 @@ export default function TrainingPage() {
       desc: '看中文释义回想词形，单选即跳；默认每日 15 词，可关。',
       icon: <TranslateIcon color="primary" />,
       path: '/training/cn2en',
+      enabled: queueCount > 0,
+    },
+    {
+      title: '拼写 / 听写',
+      desc: '看中文或只听发音，把英文拼写出来；写错会给首字母/长度/逐位提示。',
+      icon: <KeyboardIcon color="primary" />,
+      path: '/training/spelling',
       enabled: queueCount > 0,
     },
     {
@@ -123,6 +150,30 @@ export default function TrainingPage() {
                     {hasMockRule
                       ? '已有批准的解锁规则，报告在「后台」查看。'
                       : '解锁规则由 AI 依据学习数据制定、你批准后开放；不预设固定分数线。'}
+                  </Typography>
+                </Box>
+              </Stack>
+            </CardContent>
+          </CardActionArea>
+        </Card>
+
+        {/* 生词本：不受今日队列为空限制（收藏的是词书里的词，不是今天的任务） */}
+        <Card variant="outlined">
+          <CardActionArea onClick={() => navigate('/bookmarks')}>
+            <CardContent>
+              <Stack direction="row" spacing={2} alignItems="center">
+                <StarIcon color="primary" />
+                <Box>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Typography variant="h6">生词本</Typography>
+                    {bookmarkCount !== null && (
+                      <Typography variant="caption" color="text.secondary">
+                        {bookmarkCount} 词
+                      </Typography>
+                    )}
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary">
+                    查词页点星标收进来的词，随时翻、可清空。
                   </Typography>
                 </Box>
               </Stack>

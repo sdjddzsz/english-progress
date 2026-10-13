@@ -139,7 +139,7 @@ export class Repository<T extends { id: string }> {
   /**
    * 只取 `id` 的分页列表 —— 供**身份级**终局校验读回云端实存 id 集合用。
    *
-   * 为什么不用 `list()`：它 `select('*')`，会把 5407 行的 `senses`/`examples` 等 jsonb 大字段
+   * 为什么不用 `list()`：它 `select('*')`，会把 8296 行的 `senses`/`examples` 等 jsonb 大字段
    * 全部拉下来（一次性导入虽可接受，但纯属白烧带宽）。
    * 为什么固定 `order('id')`：`id` 是主键 ⇒ 稳定序；无稳定排序的 `offset/limit` 分页会**重复或漏行**。
    *
@@ -217,5 +217,27 @@ export class Repository<T extends { id: string }> {
       .select() as unknown as Envelope<T[]>;
     const rows = this.unwrap(env);
     return Boolean(rows && rows.length > 0);
+  }
+
+  /**
+   * 按 id 批量删除（重建词书这类「删大批」的场景）。
+   * ⚠ 必须分片：`in.(…)` 的 URL 会随 id 数线性增长，8296 个 id 远超请求行上限
+   *   （实测 5407 个就 ≈82KB，`TypeError: Failed to fetch`）。这里按 ID_BATCH 切批。
+   * @returns 累计请求成功删除的行数（**不是**精确匹配数：RLS 过滤掉的行同样不计入）
+   */
+  async removeMany(ids: string[], batch = 100): Promise<number> {
+    const unique = [...new Set(ids)].filter(Boolean);
+    let removed = 0;
+    for (let i = 0; i < unique.length; i += batch) {
+      const slice = unique.slice(i, i + batch);
+      const env = await this.db
+        .from(this.table)
+        .delete()
+        .in('id', slice)
+        .select() as unknown as Envelope<T[]>;
+      const rows = this.unwrap(env);
+      removed += rows ? rows.length : 0;
+    }
+    return removed;
   }
 }

@@ -1,7 +1,7 @@
 /**
- * seedBootstrap.ts —— 首次使用初始化：ECDICT 六级全量种子入库（部署补丁，原 T05 导入入口）。
+ * seedBootstrap.ts —— 首次使用初始化：ECDICT 六级种子入库（部署补丁，原 T05 导入入口）。
  *
- * 数据源 public/seed-cet6.json（~1.1MB，5407 词）：
+ * 数据源 public/seed-cet6.json（~4MB，8296 词，由 buildSeed7000.ts 从 ECDICT 全量生成）：
  *  - 不进 PWA precache（vite.config globPatterns 不含 .json），按需 fetch，一次性在线操作；
  *  - 幂等：按 id upsert 冲突跳过；book 行已存在则整体跳过，可安全重复点击；
  *  - 断点续传：本机 localStorage 游标只记录「已确认落库的整片」，失败重试从断点继续，
@@ -11,14 +11,15 @@
  * 不 import ./seed/importEcdict —— 该文件含 process.argv 浏览器端不可用；
  * 词 → 领域文档的转换逻辑在此内联（与 importEcdict.seedToDomainDocs 保持一致）。
  */
-import type { BookWord, Word } from '../types/domain';
+import type { BookWord, TierSnapshot, Word, WordSense } from '../types/domain';
 import { createWordRepo } from './repos/wordRepo';
+import { createConfigRepo } from './repos/configRepo';
 
-/** 六级全量词书 id（seedBootstrap 初始化 + backfillArpabet 回填共用同一常量） */
+/** 六级词书 id（seedBootstrap 初始化 + backfillArpabet 回填共用同一常量） */
 export const CET6_BOOK_ID = 'book_cet6_full';
 const LIST_SIZE = 50;
 const CHUNK = 300; // 每批 upsert 行数，控制单请求体积
-/** 终局身份校验读 id 的每页条数（只取 id；5407 条 ⇒ 6 次/表） */
+/** 终局身份校验读 id 的每页条数（只取 id；8296 条 ⇒ 9 次/表） */
 const ID_PAGE = 1000;
 
 // ===== 断点续传游标（本机 localStorage）=====
@@ -45,7 +46,7 @@ export interface SeedCursor {
 }
 
 /**
- * 种子内容指纹 —— 便宜、稳定、确定性（5407 条零负担）：
+ * 种子内容指纹 —— 便宜、稳定、确定性（8296 条零负担）：
  *   `<len>|<首 lemma>|<末 lemma>|<FNV-1a 校验和>`
  * 刻意不做 `JSON.stringify` 整包 hash（1.1MB 每次白算，没必要且慢）。
  * 校验和按 lemma 逐条 FNV-1a（32 位，`Math.imul` 保精度），词间混入分隔符避免拼接歧义
@@ -144,7 +145,7 @@ function clearCursor(userId: string | null | undefined): void {
 /**
  * 供词书页展示「上次导入中断于 N/M」。
  * ⚠ 必须传**与 seedLibraryToCloud 同一个 userId**，否则页面读到的 key 与实际写入的 key 不一致，
- *    续传提示会与真实续传点对不上（表现为提示 0/5407 但实际从 600 续、或反之）。
+ *    续传提示会与真实续传点对不上（表现为提示 0/8296 但实际从 600 续、或反之）。
  */
 export function getSeedCursor(userId: string | null | undefined): SeedCursor | null {
   return readCursor(userId);
@@ -155,7 +156,13 @@ interface SeedWord {
   ipa: string;
   /** CMUdict ARPAbet 发音真源（T7 seed v2；未命中词无此字段 → P0-9 降级） */
   arpabet?: string;
+  /** 扁平释义（旧字段，= sensesDetail 拼接结果；保留以兼容历史 seed 文件） */
   translation: string;
+  /** 义项列表（v3；同词不同读音 ⇒ 多个义项，各自绑定 arpabet/ipa） */
+  senses?: string[];
+  sensesDetail?: WordSense[];
+  examples?: { en: string; zh: string }[];
+  exchange?: Record<string, string>;
   frq: number;
   tags: string[];
 }
@@ -175,7 +182,16 @@ export interface SeedResult {
   reverted: boolean;
 }
 
-/** 种子词 → Word / BookWord 领域文档（初始分层：词频前 25% → T2，25–60% → T3，其余 → T4；正式分层由摸底校准覆盖） */
+/**
+ * 种子词 → Word / BookWord 领域文档。
+ *
+ * ⚠ 初始分层口径（用户 2026-10-13 明确要求，此前是拍脑袋的）：
+ *   **一律 tier=4（T4 生词）**。原实现按词频先验给 25%→T2、25~60%→T3，
+ *   那是「用词频猜你会哪些词」——既不是测评也不是任何人的判断，属于自欺。
+ *   现在词书刚导入时就是「全生词」，层只由**练习成绩**驱动升降
+ *   （features/placement/calibration.ts 的 runDailyCalibration，按反馈调层）。
+ *   代价：刚导入时全部按 T4 排轮次（最重的一档），预算会偏紧 —— 这是诚实的代价，不回避。
+ */
 export function seedToDocs(
   seed: SeedWord[],
   bookId: string,
@@ -184,7 +200,6 @@ export function seedToDocs(
   const words: Word[] = [];
   const bookWords: BookWord[] = [];
   seed.forEach((w, idx) => {
-    const tier = idx < seed.length * 0.25 ? 2 : idx < seed.length * 0.6 ? 3 : 4;
     const wordId = `word_${w.lemma}`;
     words.push({
       id: wordId,
@@ -192,8 +207,10 @@ export function seedToDocs(
       // ipa 用 seed 文件内派生值（arpabetToIpa 派生的唯一展示真源）；arpabet 命中才透传（P0-9）
       ipa: w.ipa,
       ...(w.arpabet ? { arpabet: w.arpabet } : {}),
-      senses: w.translation ? [w.translation] : [],
-      examples: [],
+      senses: w.senses ?? (w.translation ? [w.translation] : []),
+      ...(w.sensesDetail ? { sensesDetail: w.sensesDetail } : {}),
+      examples: w.examples ?? [],
+      ...(w.exchange ? { exchange: w.exchange } : {}),
       frequency: w.frq,
       tags: w.tags,
     });
@@ -203,7 +220,7 @@ export function seedToDocs(
       wordId,
       listNo: Math.floor(idx / listSize) + 1,
       orderInList: (idx % listSize) + 1,
-      tier: tier as BookWord['tier'],
+      tier: 4 as BookWord['tier'],
       tierUpdatedAt: new Date().toISOString(),
       status: 'normal',
     });
@@ -265,7 +282,62 @@ export function planStart(cursorValue: number, cloudCount: number | null, total:
 }
 
 /**
- * 初始化六级全量词库。userId 为当前登录用户（写进 books 行，便于词书列表归属展示）。
+ * 重建词书（换种子版本时用）。
+ *
+ * ⚠ 为什么必须有这个入口（用户 2026-10-13 的场景）：
+ *   `seedLibraryToCloud` 对已存在的 book 行**直接 skipped**（幂等设计）——
+ *   种子从 5407 词换成 8296 词后，老用户点「初始化」什么都不会发生，
+ *   永远看不到新词书。重跑初始化无效，必须显式重建。
+ *
+ * 安全性：
+ *  - 只删**当前用户**在本 bookId 下的 book_words / words / books 行（按 owner_id + bookId 作用域）；
+ *  - 删除前**必须先备份**词量与层级快照到 tier_snapshots（可追溯，不是"删了就没了"）；
+ *  - 备份失败 ⇒ 不删（fail closed）。
+ *  - 已产生的 hits / feedbacks **不删**（历史学习记录保留；旧 hit 指向的 wordId 在新词书里仍存在，
+ *    因为新词书是旧词书的超集 —— lemmas 与 id 完全兼容，不会产生孤儿 hit）。
+ */
+export async function rebuildWordBook(
+  userId: string,
+  onProgress?: (p: SeedProgress) => void,
+): Promise<SeedResult> {
+  const repo = createWordRepo();
+  const backupAt = new Date().toISOString();
+
+  // ① 备份：把当前词量 + 分层分布写进 tier_snapshots（fail closed 的前提）
+  //    tier_snapshots 属于 configRepo 的集合范围（与 seedBootstrap 原本只碰 wordRepo 的边界不同，
+  //    这里是重建场景的必要例外：删数据前必须留痕）。
+  const bws = await repo.bookWords.list([
+    { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
+    { column: 'owner_id', op: 'eq', value: userId },
+  ]);
+  const tierDist: Record<string, number> = {};
+  for (const bw of bws) tierDist[String(bw.tier)] = (tierDist[String(bw.tier)] ?? 0) + 1;
+  const backupPayload = { bookId: CET6_BOOK_ID, wordCount: bws.length, tierDist };
+  await createConfigRepo().tierSnapshots.insert({
+    userId,
+    sampledWordIds: [],
+    responses: { _backup: backupPayload } as unknown as TierSnapshot['responses'],
+    computedTiers: {},
+    calibratedAt: backupAt,
+  });
+
+  // ② 删除：只删本用户 + 本 bookId 的行
+  onProgress?.({ step: 'book_words', done: 0, total: 1 });
+  for (let i = 0; i < bws.length; i += CHUNK) {
+    const slice = bws.slice(i, i + CHUNK);
+    await repo.bookWords.removeMany(slice.map((b) => b.id));
+    onProgress?.({ step: 'book_words', done: Math.min(i + CHUNK, bws.length), total: bws.length });
+  }
+  const book = await repo.getBook(CET6_BOOK_ID);
+  if (book) await repo.books.remove(CET6_BOOK_ID);
+
+  // ③ 重新走标准导入（幂等 upsert：words 表里同 id 会被覆盖为新种子内容）
+  const result = await seedLibraryToCloud(userId, onProgress);
+  return { ...result, skipped: false };
+}
+
+/**
+ * 初始化六级词库。userId 为当前登录用户（写进 books 行，便于词书列表归属展示）。
  *
  * 续传安全性（三道硬保证，缺一不可）：
  *  ② 游标自校验**以种子内容指纹为准**（`seedFingerprint`）—— 同词数不同内容时旧游标必被丢弃；
@@ -490,7 +562,7 @@ export async function seedLibraryToCloud(
   await repo.createBook({
     id: CET6_BOOK_ID,
     userId,
-    name: '六级全量',
+    name: '六级词书（8296 词）',
     source: 'builtin',
     wordCount: words.length,
     tierCount: 4,

@@ -3,8 +3,8 @@ import { Box, BottomNavigation, BottomNavigationAction, Button, CircularProgress
 import TodayIcon from '@mui/icons-material/Today';
 import SchoolIcon from '@mui/icons-material/School';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
-import InsightsIcon from '@mui/icons-material/Insights';
 import SettingsIcon from '@mui/icons-material/Settings';
+import SearchIcon from '@mui/icons-material/Search';
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import TodayPage from './pages/TodayPage';
 import StudyPage from './pages/StudyPage';
@@ -20,6 +20,9 @@ import SettingsPage from './pages/SettingsPage';
 import PlacementPage from './pages/PlacementPage';
 import MockExamPage from './pages/MockExamPage';
 import LoginPage from './pages/LoginPage';
+import SearchPage from './pages/SearchPage';
+import BookmarkPage from './pages/BookmarkPage';
+import SpellingPage from './pages/SpellingPage';
 import OverdueGuardRoute from './components/guards/OverdueGuardRoute';
 import SyncStatusBanner from './components/offline/SyncStatusBanner';
 import { useAppStore } from './store/useAppStore';
@@ -37,7 +40,7 @@ const TAB_DEFS = [
   { path: '/', icon: <TodayIcon />, label: 'Today' },
   { path: '/training', icon: <SchoolIcon />, label: '训练' },
   { path: '/book', icon: <MenuBookIcon />, label: '词书' },
-  { path: '/dashboard', icon: <InsightsIcon />, label: '后台' },
+  { path: '/search', icon: <SearchIcon />, label: '查词' },
   { path: '/settings', icon: <SettingsIcon />, label: '设置' },
 ] as const;
 
@@ -45,7 +48,10 @@ function activeTabIndex(pathname: string): number {
   if (pathname.startsWith('/study')) return 0;
   if (pathname.startsWith('/training')) return 1;
   if (pathname.startsWith('/book') || pathname.startsWith('/plan-editor') || pathname.startsWith('/placement')) return 2;
-  if (pathname.startsWith('/dashboard') || pathname.startsWith('/ai-plan') || pathname.startsWith('/mock')) return 3;
+  if (pathname.startsWith('/search')) return 3;
+  // 生词本归属「查词」Tab：它是查词/收藏这条线的延续，不单开一个底部栏位（5 个已满）
+  if (pathname.startsWith('/bookmarks')) return 3;
+  if (pathname.startsWith('/dashboard') || pathname.startsWith('/ai-plan') || pathname.startsWith('/mock')) return 4;
   if (pathname.startsWith('/settings')) return 4;
   return 0;
 }
@@ -119,6 +125,9 @@ export default function App() {
               <Route path="/training" element={<OverdueGuardRoute><TrainingPage /></OverdueGuardRoute>} />
               <Route path="/training/audio" element={<OverdueGuardRoute><AudioRecallPage /></OverdueGuardRoute>} />
               <Route path="/training/cn2en" element={<OverdueGuardRoute><CnToEnPage /></OverdueGuardRoute>} />
+              <Route path="/training/spelling" element={<OverdueGuardRoute><SpellingPage /></OverdueGuardRoute>} />
+              <Route path="/search" element={<SearchPage />} />
+              <Route path="/bookmarks" element={<BookmarkPage />} />
               <Route path="/book" element={<BookPage />} />
               <Route path="/plan-editor" element={<PlanEditorPage />} />
               <Route path="/placement" element={<PlacementPage />} />

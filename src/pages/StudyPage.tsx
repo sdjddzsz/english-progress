@@ -25,6 +25,7 @@ import type { FeedbackPanelSubmit } from '../components/feedback/FeedbackPanel';
 import { useTTS } from '../hooks/useTTS';
 import WordCard from '../components/word/WordCard';
 import FeedbackPanel from '../components/feedback/FeedbackPanel';
+import { describeSenses, hasMultiplePronunciations } from '../features/senses';
 
 export default function StudyPage() {
   const navigate = useNavigate();
@@ -147,6 +148,14 @@ export default function StudyPage() {
           roundNo={current.roundNo}
           lastSeen={current.explain.lastSeen}
         />
+
+        {/* 多读音提示：背词主流程里也要提前告诉用户「这个词有几种读音」，
+            否则揭晓时看到多行不同读音会以为是数据错误（用户 2026-10-13 的明确要求） */}
+        {!reveal && word && hasMultiplePronunciations(word) && (
+          <Alert severity="info" sx={{ mb: 1.5 }}>
+            这个词有 {describeSenses(word).length} 种读音 / 词性，揭晓后会逐条列出来。
+          </Alert>
+        )}
 
         {!reveal && (
           <>

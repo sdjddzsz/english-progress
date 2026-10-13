@@ -2,7 +2,7 @@
  * wordRepo.ts —— books / words / book_words 读写 + ECDICT 查询。
  * 词书-词关联（BookWord）持有难度层 tier（Q1 决策）。
  */
-import type { Book, BookWord, Tier, Word, WordStatus } from '../../types/domain';
+import type { Book, BookWord, Tier, Word, WordBookmark, WordStatus } from '../../types/domain';
 import { getDb } from '../cloud';
 import { Repository, type CloudDatabaseLike, type Filter } from '../repository';
 
@@ -10,6 +10,7 @@ export interface WordRepo {
   readonly books: Repository<Book>;
   readonly words: Repository<Word>;
   readonly bookWords: Repository<BookWord>;
+  readonly bookmarks: Repository<WordBookmark>;
 
   createBook(book: Omit<Book, 'id'> & { id?: string }): Promise<Book>;
   getBook(id: string): Promise<Book | null>;
@@ -17,6 +18,7 @@ export interface WordRepo {
 
   upsertWords(words: (Word & Record<string, unknown>)[]): Promise<void>;
   getWordByLemma(lemma: string): Promise<Word | null>;
+  /** 前缀搜索（词形开头匹配）；传空串返回前 limit 个（词书/生词本列表用） */
   searchWordsByPrefix(prefix: string, limit?: number): Promise<Word[]>;
 
   /** 导入词书：批量写 book_words（tier/list 归属） */
@@ -25,13 +27,24 @@ export interface WordRepo {
   listWordsByIds(ids: string[]): Promise<Word[]>;
   updateWordTier(bookWordId: string, tier: Tier): Promise<BookWord | null>;
   updateBookWordStatus(bookWordId: string, status: WordStatus): Promise<BookWord | null>;
+
+  // ===== 收藏 / 生词本（用户 2026-10-13 要求的基础功能）=====
+
+  /** 收藏（幂等：id 固定为 `{userId}_{wordId}`，重复收藏覆盖同一条） */
+  addBookmark(input: Omit<WordBookmark, 'id'> & { id?: string }): Promise<WordBookmark>;
+  /** 取消收藏 */
+  removeBookmark(userId: string, wordId: string): Promise<void>;
+  /** 生词本列表（按收藏时间倒序） */
+  listBookmarks(userId: string): Promise<WordBookmark[]>;
+  /** 批量查是否已收藏（详情页/词卡打星用，避免 N+1 查询） */
+  listBookmarkedWordIds(userId: string, wordIds: string[]): Promise<Set<string>>;
 }
 
 /**
  * `id=in.(…)` **单批** id 数上界 —— 防止 URL 超过请求行上限。
  *
  * 依据（按线上真实数据实测，非拍脑袋）：
- *  - `public/seed-cet6.json` 共 5407 词，id 形如 `word_<lemma>`，长度 min/avg/max = 7 / 12.2 / **21**；
+ *  - `public/seed-cet6.json` 共 8296 词，id 形如 `word_<lemma>`，长度 min/avg/max = 7 / 12.2 / **21**；
  *  - 不分片时该次查询的 URL ≈ **82,121 字符**（`joined` 未编码 71,221 + 逗号被编码为 `%2C`），
  *    是 SDK `urlLengthLimit`(8000) 的 **10 倍**，也超常见网关/服务器的 **8KB 请求行**上限
  *    ⇒ 浏览器直接报 `TypeError: Failed to fetch`。
@@ -44,7 +57,7 @@ export interface WordRepo {
  */
 export const ID_BATCH = 100;
 
-/** 分片读的并发上限：5407/100 = 55 批，串行约 55 个 RTT；限 5 并发兼顾时延与网关压力 */
+/** 分片读的并发上限：8296/100 = 83 批，串行约 83 个 RTT；限 5 并发兼顾时延与网关压力 */
 const ID_BATCH_CONCURRENCY = 5;
 
 /** 限并发映射（结果顺序与输入一致）—— 避免几十个批一次性打满连接 */
@@ -67,11 +80,16 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
   const books = new Repository<Book>(db, 'books');
   const words = new Repository<Word>(db, 'words');
   const bookWords = new Repository<BookWord>(db, 'book_words');
+  const bookmarks = new Repository<WordBookmark>(db, 'word_bookmarks');
+
+  /** 收藏确定性 ID：同一用户同一词永远只有一条（收藏幂等、取消幂等） */
+  const bookmarkId = (userId: string, wordId: string): string => `${userId}_${wordId}`;
 
   return {
     books,
     words,
     bookWords,
+    bookmarks,
 
     createBook: (book) => books.insert(book),
     getBook: (id) => books.getById(id),
@@ -83,7 +101,9 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
       return rows[0] ?? null;
     },
     searchWordsByPrefix: (prefix, limit = 20) =>
-      words.list([{ column: 'lemma', op: 'gte', value: prefix }], { orderBy: 'lemma', ascending: true, limit }),
+      prefix.trim() === ''
+        ? words.list([], { orderBy: 'lemma', ascending: true, limit })
+        : words.list([{ column: 'lemma', op: 'gte', value: prefix.trim() }], { orderBy: 'lemma', ascending: true, limit }),
 
     upsertBookWords: (rows) => bookWords.upsertMany(rows),
     listBookWords: async (bookId, opts) => {
@@ -94,7 +114,7 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
       return bookWords.list(filters, { orderBy: 'orderInList', ascending: true });
     },
     /**
-     * 按 id 批量取词 —— **必须分片**：入参可能上千（摸底页传入全书 5407 个 wordId），
+     * 按 id 批量取词 —— **必须分片**：入参可能上千（摸底页传入全书 8296 个 wordId），
      * 单次 `id=in.(…)` 的 URL 会达到 ~82KB，远超请求行上限 ⇒ 浏览器 `Failed to fetch`。
      * 语义：入参先**去重**（避免同一 id 在多批重复取回），各批并发取回后按批序拼接；
      * 输出天然无重复（id 是主键、入参已去重），顺序与批量分片一致（调用方按 id 建 map，不依赖顺序）。
@@ -112,5 +132,39 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
     updateWordTier: (bookWordId, tier) =>
       bookWords.update(bookWordId, { tier, tierUpdatedAt: new Date().toISOString() } as Partial<BookWord>),
     updateBookWordStatus: (bookWordId, status) => bookWords.update(bookWordId, { status } as Partial<BookWord>),
+
+    // ===== 收藏 / 生词本 =====
+
+    addBookmark: async (input) => {
+      const id = input.id ?? bookmarkId(input.userId, input.wordId);
+      // upsertMany 返回 void（仓库契约），而调用方需要拿到落库后的行 → 写完按确定性 id 读回
+      await bookmarks.upsertMany([{ ...input, id } as WordBookmark & Record<string, unknown>]);
+      const rows = await bookmarks.list([{ column: 'id', op: 'eq', value: id }], { limit: 1 });
+      if (rows[0]) return rows[0];
+      // 读回为空（极端情况下 RLS 过滤）时返回本地构造的行：调用方至少拿到确定性 id，
+      // 不把「写成功但读不到」伪装成失败（该集合 RLS 为 owner-only，命中即本人行）
+      return { ...input, id } as WordBookmark;
+    },
+    removeBookmark: async (userId, wordId) => {
+      await bookmarks.remove(bookmarkId(userId, wordId));
+    },
+    listBookmarks: (userId) => bookmarks.list([{ column: 'userId', op: 'eq', value: userId }], { orderBy: 'createdAt', ascending: false }),
+    listBookmarkedWordIds: async (userId, wordIds) => {
+      const ids = [...new Set(wordIds)].filter(Boolean);
+      if (ids.length === 0) return new Set<string>();
+      // 与 listWordsByIds 同理：id=in.(…) 必须分片，否则 URL 超请求行上限（实测 7000 个 id ≈ 82KB）
+      const batches: string[][] = [];
+      for (let i = 0; i < ids.length; i += ID_BATCH) batches.push(ids.slice(i, i + ID_BATCH));
+      const pages = await mapLimit(batches, ID_BATCH_CONCURRENCY, (batch) =>
+        bookmarks.list(
+          [
+            { column: 'userId', op: 'eq', value: userId },
+            { column: 'wordId', op: 'in', values: batch },
+          ],
+          { limit: batch.length },
+        ),
+      );
+      return new Set(pages.flat().map((b) => b.wordId));
+    },
   };
 }

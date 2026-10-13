@@ -30,6 +30,7 @@ export const COLLECTION_DOC_TYPES: Record<CollectionName, keyof CollectionDocMap
   ability_snapshots: 'ability_snapshots',
   mock_exam_records: 'mock_exam_records',
   mock_unlock_rules: 'mock_unlock_rules',
+  word_bookmarks: 'word_bookmarks',
   ai_proposals: 'ai_proposals',
   plan_versions: 'plan_versions',
   tool_call_logs: 'tool_call_logs',

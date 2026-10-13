@@ -107,19 +107,68 @@ export interface Book {
   createdAt: string;
 }
 
+/**
+ * 词义项（sense）—— 一个 lemma 下的**单个词性 + 释义 + 专属读音**。
+ *
+ * ⚠ 为什么必须有这一层（用户 2026-10-13 明确要求）：
+ *   同一个拼写在不同词性下读音不同且词义不同（record 名词 /ˈrekəd/ 记录 vs 动词 /rɪˈkɔːd/ 录制；
+ *   refuse /ˈrefjuːs/ 废物 vs /rɪˈfjuːz/ 拒绝；live /laɪv/ 活的 vs /lɪv/ 生活）。
+ *   过去只有 `senses: string[]`（一坨字符串）+ 单词级 `ipa/arpabet`（一个读音）⇒
+ *   这类词**无法表达「同一个词的另一读音对应另一批意思」**，
+ *   听音选词时也会把两个不同的词当成同一个词去判分（用户原话：不同读音就当不同的单词判定）。
+ *
+ * 设计约束：
+ *  - senseId 是**稳定可排序**的（`lemma#k`，k 为该 lemma 内的义项序号），云端主键即用它；
+ *  - `pronunciationKey` 标识「这个义项用的是哪一档读音」：同 lemma 下不同读音 ⇒ 不同 key；
+ *    判定粒度（掌握程度、轮次、命中记录）都挂在 senseId 上，不是挂在 lemma 上。
+ *  - `arpabet` 为空表示该义项未绑定读音（CMUdict 只有一档读音时全部义项共用同一档）。
+ */
+export interface WordSense {
+  /** `lemma#序号`，云端主键；**判定与调度的最小单位** */
+  senseId: string;
+  lemma: string;
+  /** 词性标记原文（ECDICT 原文：n. / vt. / a. / [计] …）；无则空串 */
+  pos: string;
+  /** 该义项的中文释义（ECDICT 原文） */
+  zh: string;
+  /** 该义项的专属读音标识：同 lemma 不同读音 ⇒ 不同 key（判定「是不是同一个词」的依据） */
+  pronunciationKey: string;
+  /** 该义项专属 ARPAbet（CMUdict 原值）；未绑定读音时为空 */
+  arpabet: string;
+  /** 该义项专属 IPA（由 arpabet 派生）；未绑定时为空 */
+  ipa: string;
+}
+
 /** 词本体（ECDICT 裁剪或导入） */
 export interface Word {
   id: string;
   lemma: string;
+  /**
+   * 单词级 IPA = **首个义项**的读音（兼容旧调用方 / 列表展示）；
+   * 多读音词请读 `senses[i].ipa`，不要只读这里。
+   */
   ipa: string;
   /**
    * CMUdict ARPAbet 发音真源（命中才有；无该字段 = CMUdict 未命中，P0-9 降级纯文本合成）。
    * DashScope <phoneme alphabet="cmu"> 零转换直用；展示 IPA 由 arpabetToIpa 派生。
+   * 同样 = 首个义项读音；多读音词请读 `senses[i].arpabet`。
    */
   arpabet?: string;
   pos?: string;
+  /** 扁平释义（= 全部义项的 zh 拼接）；⚠ 不含读音信息，多读音词必须走 `senses` */
   senses: string[];
+  /**
+   * 义项列表（词性 + 释义 + 专属读音）。**判定与展示的唯一权威来源**。
+   * 空数组时降级为「单词级单义项」（旧数据兼容路径，见 normalizeSenses）。
+   */
+  sensesDetail?: WordSense[];
   examples: { en: string; zh: string }[];
+  /**
+   * 词形变化（ECDICT `exchange` 解析结果）。
+   * 键：p=过去式 / d=过去分词 / i=现在分词 / 3=三单 / r=比较级 / t=最高级 / 0=原形 / s=复数 / 1=原型变化。
+   * 值形如 `studied/d`（同一格多个变体用 `/` 分隔）。
+   */
+  exchange?: Record<string, string>;
   frequency: number;
   /** 'cet4' | 'cet6' | 'kaoyan' 等 */
   tags: string[];
@@ -406,6 +455,26 @@ export interface MockUnlockRule {
   approvedAt?: string;
 }
 
+/**
+ * 收藏 / 生词本条目（用户 2026-10-13：背单词软件的基础功能）。
+ *
+ * 为什么要独立集合而不是只打标记：收藏是**跨词书**的（用户收藏的词不属于任何一本词书也能存），
+ * 且需要「收藏时间 / 来源 / 备注」这些元信息 —— book_words 上加一个布尔列都表达不了。
+ * id = `{userId}_{wordId}`：天然幂等（重复收藏 = 覆盖），切/删都一条搞定。
+ */
+export interface WordBookmark {
+  id: string;
+  userId: string;
+  wordId: string;
+  /** 收藏时的 lemma 快照（词条被删也不影响生词本可读） */
+  lemma: string;
+  /** 来源上下文：来自哪次练习/哪本词书，便于回溯 */
+  source: string;
+  /** 用户自己写的备注（可选） */
+  note?: string;
+  createdAt: string;
+}
+
 /** AI 方案提案。硬约束 #6：reason 与 changes(diff) 必填，缺则拒绝落地 */
 export interface AIProposal {
   id: string;
@@ -467,6 +536,7 @@ export const COLLECTIONS = [
   'ability_snapshots',
   'mock_exam_records',
   'mock_unlock_rules',
+  'word_bookmarks',
   'ai_proposals',
   'plan_versions',
   'tool_call_logs',
@@ -497,6 +567,7 @@ export interface CollectionDocMap {
   ability_snapshots: AbilitySnapshot;
   mock_exam_records: MockExamRecord;
   mock_unlock_rules: MockUnlockRule;
+  word_bookmarks: WordBookmark;
   ai_proposals: AIProposal;
   plan_versions: PlanVersion;
   tool_call_logs: ToolCallLog;
