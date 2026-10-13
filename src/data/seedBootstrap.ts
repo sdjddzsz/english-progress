@@ -169,6 +169,8 @@ export interface SeedResult {
   words: number;
   bookWords: number;
   skipped: boolean;
+  /** 是否发生过「终局校验不足 → 一次性全量回退」（诊断用；正常路径恒 false） */
+  reverted: boolean;
 }
 
 /** 种子词 → Word / BookWord 领域文档（初始分层：词频前 25% → T2，25–60% → T3，其余 → T4；正式分层由摸底校准覆盖） */
@@ -263,12 +265,19 @@ export function planStart(cursorValue: number, cloudCount: number | null, total:
 /**
  * 初始化六级全量词库。userId 为当前登录用户（写进 books 行，便于词书列表归属展示）。
  *
- * 续传安全性（两处硬保证）：
+ * 续传安全性（三道硬保证，缺一不可）：
  *  ② 游标自校验**以种子内容指纹为准**（`seedFingerprint`）—— 同词数不同内容时旧游标必被丢弃；
  *  ① 续传前**与云端对账**（`Repository.count`，head 请求）—— 续传起点只到「云端确实已存在」的
  *     分片边界，避免某片「假成功」（响应成功却未落库）导致游标超前于现实、永久跳过缺口；
  *     对账失败一律降级为全量幂等。
+ *  ③ **终局校验 + 一次性全量回退**（createBook 之前）—— `min()` 公式只能保证「起点不超过云端计数」，
+ *     并不能证明起点**之前**的行真的存在（缺失集是「前缀」时它无能为力，中段缺失同理）。
+ *     因此写入结束后直接**数**两表：不达标就清游标 + 无条件全量重写一次再数；
+ *     仍不达标则**响亮失败、绝不 createBook**。全量重写按定义填满任何形态的缺口，
+ *     这是「事实判据」而非「关于缺口形态的假设」——这也是它优于 min() 公式的地方。
+ *
  * 其余：某张表云端已齐则整步跳过（零请求）；每个分片确认落库后推进游标；整体成功后清游标。
+ * 代价：正常路径固定 4 次 count（2 次续传前对账 + 2 次终局校验），仅在回退时额外一轮全量写。
  */
 export async function seedLibraryToCloud(
   userId: string,
@@ -279,7 +288,13 @@ export async function seedLibraryToCloud(
   // 幂等：书行已存在视为已初始化
   const existing = await repo.getBook(CET6_BOOK_ID);
   if (existing) {
-    return { bookId: CET6_BOOK_ID, words: existing.wordCount, bookWords: existing.wordCount, skipped: true };
+    return {
+      bookId: CET6_BOOK_ID,
+      words: existing.wordCount,
+      bookWords: existing.wordCount,
+      skipped: true,
+      reverted: false,
+    };
   }
 
   onProgress?.({ step: 'fetching', done: 0, total: 0 });
@@ -302,14 +317,18 @@ export async function seedLibraryToCloud(
   // 云端对账（修缺陷①）：游标不可无条件信任。只允许续传到「云端确实已存在」的分片边界，
   // 否则某片「假成功」（响应成功却未落库）会让游标超前于现实、下次重试永久跳过缺口。
   //   words：**必须显式**按 owner_id 过滤 —— 其 RLS 是 USING(true)，不过滤会数到别人的词。
+  //     ⚠ 这条过滤是让**对账正确**的一步，不是让「多账号可用」的一步：去掉它会数到别人的词行、
+  //       使云端计数虚高 → 跳过自己从未写过的行，等于把缺陷①换个形式装回去。
   //   book_words：按 bookId（RLS 已限 owner，owner_id 作双保险）。
-  const wordsCloud = await countOrNull(() => repo.words.count([{ column: 'owner_id', op: 'eq', value: userId }]));
-  const bookWordsCloud = await countOrNull(() =>
+  const countWords = (): Promise<number> => repo.words.count([{ column: 'owner_id', op: 'eq', value: userId }]);
+  const countBookWords = (): Promise<number> =>
     repo.bookWords.count([
       { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
       { column: 'owner_id', op: 'eq', value: userId },
-    ]),
-  );
+    ]);
+
+  const wordsCloud = await countOrNull(countWords);
+  const bookWordsCloud = await countOrNull(countBookWords);
 
   // 陈旧游标清理：云端一行都没有、游标却声称有进度 → 该游标已不可信，顺手清掉（避免长期驻留）
   if (wordsCloud === 0 && cursor.words > 0) clearCursor(userId);
@@ -321,11 +340,17 @@ export async function seedLibraryToCloud(
     saveCursor(userId, cursor);
   };
 
+  const upsertWords = (b: (Word | BookWord)[]): Promise<void> =>
+    repo.upsertWords(b as (Word & Record<string, unknown>)[]);
+  const upsertBookWords = (b: (Word | BookWord)[]): Promise<void> =>
+    repo.upsertBookWords(b as (BookWord & Record<string, unknown>)[]);
+
   /**
    * 单表续传决策 + 执行：
    * - 云端已齐（count >= 总行数）→ 整步跳过（零请求），仅上报该步完成；
    * - 否则起点 = planStart(游标, 云端实测, 总行数)（对账失败时为 0，即全量）；
    * - 起点已越过总行数 → 同样整步跳过。
+   * `cloudCount === null` 即「无条件全量重写」（回退路径用它）。
    */
   const runTable = async (
     step: 'words' | 'book_words',
@@ -352,23 +377,50 @@ export async function seedLibraryToCloud(
     });
   };
 
-  await runTable(
-    'words',
-    words,
-    cursor.words,
-    wordsCloud,
-    (b) => repo.upsertWords(b as (Word & Record<string, unknown>)[]),
-    (done) => advance({ words: done }),
+  await runTable('words', words, cursor.words, wordsCloud, upsertWords, (done) => advance({ words: done }));
+
+  await runTable('book_words', bookWords, cursor.bookWords, bookWordsCloud, upsertBookWords, (done) =>
+    advance({ bookWords: done }),
   );
 
-  await runTable(
-    'book_words',
-    bookWords,
-    cursor.bookWords,
-    bookWordsCloud,
-    (b) => repo.upsertBookWords(b as (BookWord & Record<string, unknown>)[]),
-    (done) => advance({ bookWords: done }),
-  );
+  // ===== 终局校验（事实判据）+ 一次性全量回退 =====
+  //
+  // 为什么需要它：`planStart` 的 min() 公式只保证「起点 ≤ 云端计数」，**不能证明起点之前的行存在**
+  // —— 缺失集是「前缀」时该公式完全无能为力（游标 600、云端 4807 时 min 仍取 600），「中段缺失」同理。
+  // 这里改成直接**数**两表：数量对不上就清游标 + 无条件全量重写一次（按定义填满任何形态的缺口），
+  // 写完再数；仍对不上则**响亮失败、绝不 createBook**（静默少词是本项目明确不可容忍的失效）。
+  // 计数请求失败（→ -1）同样视为「未达标」：无法证明就不允许声称成功。
+  const measure = async (): Promise<{ words: number; bookWords: number }> => ({
+    words: (await countOrNull(countWords)) ?? -1,
+    bookWords: (await countOrNull(countBookWords)) ?? -1,
+  });
+  const fulfilled = (m: { words: number; bookWords: number }): boolean =>
+    // ⚠ 这里刻意用 `>=` 而非严格 `===`：
+    //   word/book_word 的 id 是**由内容派生**的（`word_<lemma>` / `bw_<bookId>_<lemma>`），
+    //   一旦种子内容变过（lemma 改动），旧行会以「孤儿行」留在云端 → count **大于**期望。
+    //   若用严格相等，用户每次换种子都会「校验未通过 → 不建书」被**永久卡死**，比静默少词更糟
+    //   （而且「种子变过」正是缺陷②自己的场景）。本校验的目的是「不得有静默**短缺**」，故只守下界。
+    m.words >= words.length && m.bookWords >= bookWords.length;
+  const describeCounts = (m: { words: number; bookWords: number }): string =>
+    `words 实测 ${m.words} / 期望 ${words.length}；book_words 实测 ${m.bookWords} / 期望 ${bookWords.length}` +
+    (m.words < 0 || m.bookWords < 0 ? '（-1 表示计数请求失败，无法证明确已写入）' : '');
+
+  let counts = await measure();
+  let reverted = false;
+  if (!fulfilled(counts)) {
+    // 一次性全量回退：清游标 + 从 0 无条件重写两张表（只做一次，防死循环）
+    clearCursor(userId);
+    reverted = true;
+    await runTable('words', words, 0, null, upsertWords, (done) => advance({ words: done }));
+    await runTable('book_words', bookWords, 0, null, upsertBookWords, (done) => advance({ bookWords: done }));
+    counts = await measure();
+    if (!fulfilled(counts)) {
+      throw new Error(
+        `词书初始化校验未通过（已做过一次全量重写仍不足）：${describeCounts(counts)}。` +
+          '为避免出现「词书声称 N 词、实际更少」的静默错误，本次不创建词书；已导入部分会保留，请重试。',
+      );
+    }
+  }
 
   onProgress?.({ step: 'book', done: 0, total: 1 });
   await repo.createBook({
@@ -386,5 +438,5 @@ export async function seedLibraryToCloud(
   clearCursor(userId);
   onProgress?.({ step: 'done', done: 1, total: 1 });
 
-  return { bookId: CET6_BOOK_ID, words: words.length, bookWords: bookWords.length, skipped: false };
+  return { bookId: CET6_BOOK_ID, words: words.length, bookWords: bookWords.length, skipped: false, reverted };
 }
