@@ -25,13 +25,45 @@ const CHUNK = 300; // 每批 upsert 行数，控制单请求体积
 // 隔离：key 必须按 **userId** 隔离（同浏览器换账号时不能继承他人进度），见 seedCursorKey。
 // 语义：游标只在「某个分片已确认落库」之后前进，因此它永远不会声称未确认的进度；
 //       配合 upsert(onConflict:'id')，即便游标落后（例如响应丢失但已写入），也只是重复写同一批，绝不丢数据。
+// 信任：游标**不**被无条件信任 —— 接受前必须过两道校验：内容指纹（seedFingerprint）+ 云端行数对账
+//       （planStart）。二者任一不通过即降级为全量幂等。
 
-/** 续传游标：两张表各自已确认落库的行数 + 种子文件当时的行数（用于自校验） */
+/** 续传游标：两张表各自已确认落库的行数 + 种子文件当时的行数 + 种子内容指纹 */
 export interface SeedCursor {
   words: number;
   bookWords: number;
+  /** 仅供 UI 展示「上次中断于 N/M」；**不得**作为「是否接受游标」的判据（判据是 fingerprint） */
   totalWords: number;
   totalBookWords: number;
+  /**
+   * 种子内容指纹（修缺陷②：同词数、不同内容时必须丢弃旧游标）。
+   * 由 seedFingerprint 从**当次 fetch 到的种子**派生；与游标里的值不一致 → 丢弃游标走全量。
+   */
+  fingerprint: string;
+}
+
+/**
+ * 种子内容指纹 —— 便宜、稳定、确定性（5407 条零负担）：
+ *   `<len>|<首 lemma>|<末 lemma>|<FNV-1a 校验和>`
+ * 刻意不做 `JSON.stringify` 整包 hash（1.1MB 每次白算，没必要且慢）。
+ * 校验和按 lemma 逐条 FNV-1a（32 位，`Math.imul` 保精度），词间混入分隔符避免拼接歧义
+ * （否则 ["ab","c"] 与 ["a","bc"] 会撞成同一个值）。
+ */
+export function seedFingerprint(seed: SeedWord[]): string {
+  const len = seed.length;
+  const first = seed[0]?.lemma ?? '';
+  const last = seed[len - 1]?.lemma ?? '';
+  let hash = 0x811c9dc5; // FNV-1a 32-bit offset basis
+  for (const w of seed) {
+    const s = w.lemma;
+    for (let i = 0; i < s.length; i += 1) {
+      hash ^= s.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0; // FNV prime；>>>0 保持无符号 32 位
+    }
+    hash ^= 0x1f; // 词间分隔
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${len}|${first}|${last}|${hash.toString(16)}`;
 }
 
 /**
@@ -64,11 +96,18 @@ function readCursor(userId: string | null | undefined): SeedCursor | null {
       typeof p.words !== 'number' ||
       typeof p.bookWords !== 'number' ||
       typeof p.totalWords !== 'number' ||
-      typeof p.totalBookWords !== 'number'
+      typeof p.totalBookWords !== 'number' ||
+      typeof p.fingerprint !== 'string'
     ) {
       return null;
     }
-    return { words: p.words, bookWords: p.bookWords, totalWords: p.totalWords, totalBookWords: p.totalBookWords };
+    return {
+      words: p.words,
+      bookWords: p.bookWords,
+      totalWords: p.totalWords,
+      totalBookWords: p.totalBookWords,
+      fingerprint: p.fingerprint,
+    };
   } catch {
     return null;
   }
@@ -189,11 +228,35 @@ async function upsertChunked(
   return rows.length;
 }
 
+/** 对账 count 请求失败 → 返回 null（= 对账失败）。调用方必须据此走全量，**绝不**沿用游标跳过 */
+async function countOrNull(count: () => Promise<number>): Promise<number | null> {
+  try {
+    return await count();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 续传起点（修缺陷①的核心）：`floor(min(游标值, 云端实测行数, 总行数) / CHUNK) * CHUNK`。
+ * 语义：**绝不允许跳过云端实际不存在的行** —— 云端少了就自动回退，多出的部分由幂等 upsert 补齐。
+ * `cloudCount === null`（对账失败）→ 返回 0（全量幂等），绝不沿用游标。
+ */
+export function planStart(cursorValue: number, cloudCount: number | null, total: number): number {
+  if (cloudCount === null) return 0;
+  const effective = Math.max(0, Math.min(cursorValue, cloudCount, total));
+  return Math.floor(effective / CHUNK) * CHUNK;
+}
+
 /**
  * 初始化六级全量词库。userId 为当前登录用户（写进 books 行，便于词书列表归属展示）。
  *
- * 断点续传：读本机游标（并自校验：种子文件行数变了则丢弃）→ 两张表各自从断点所在的分片边界继续；
- * 某张表已全部完成则整步跳过（零请求）；每个分片确认落库后推进游标；整体成功后清游标。
+ * 续传安全性（两处硬保证）：
+ *  ② 游标自校验**以种子内容指纹为准**（`seedFingerprint`）—— 同词数不同内容时旧游标必被丢弃；
+ *  ① 续传前**与云端对账**（`Repository.count`，head 请求）—— 续传起点只到「云端确实已存在」的
+ *     分片边界，避免某片「假成功」（响应成功却未落库）导致游标超前于现实、永久跳过缺口；
+ *     对账失败一律降级为全量幂等。
+ * 其余：某张表云端已齐则整步跳过（零请求）；每个分片确认落库后推进游标；整体成功后清游标。
  */
 export async function seedLibraryToCloud(
   userId: string,
@@ -214,15 +277,31 @@ export async function seedLibraryToCloud(
   if (!Array.isArray(seed) || seed.length === 0) throw new Error('seed dataset is empty or malformed');
 
   const { words, bookWords } = seedToDocs(seed, CET6_BOOK_ID, LIST_SIZE);
+  const fingerprint = seedFingerprint(seed);
 
-  // 断点续传：读游标 + 自校验（行数对不上 = 种子文件变过 → 丢弃，避免按旧游标错位续传）
+  // 自校验（修缺陷②）：**以指纹为准** —— 同词数但内容变过时旧游标必须丢弃。
+  // totals 只保留给 UI 展示，不作为「是否接受游标」的判据。
   const stored = readCursor(userId);
   const cursor: SeedCursor =
-    stored && stored.totalWords === words.length && stored.totalBookWords === bookWords.length
+    stored && stored.fingerprint === fingerprint
       ? stored
-      : { words: 0, bookWords: 0, totalWords: words.length, totalBookWords: bookWords.length };
-  const wordsStart = Math.min(cursor.words, words.length);
-  const bookWordsStart = Math.min(cursor.bookWords, bookWords.length);
+      : { words: 0, bookWords: 0, totalWords: words.length, totalBookWords: bookWords.length, fingerprint };
+
+  // 云端对账（修缺陷①）：游标不可无条件信任。只允许续传到「云端确实已存在」的分片边界，
+  // 否则某片「假成功」（响应成功却未落库）会让游标超前于现实、下次重试永久跳过缺口。
+  //   words：**必须显式**按 owner_id 过滤 —— 其 RLS 是 USING(true)，不过滤会数到别人的词。
+  //   book_words：按 bookId（RLS 已限 owner，owner_id 作双保险）。
+  const wordsCloud = await countOrNull(() => repo.words.count([{ column: 'owner_id', op: 'eq', value: userId }]));
+  const bookWordsCloud = await countOrNull(() =>
+    repo.bookWords.count([
+      { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
+      { column: 'owner_id', op: 'eq', value: userId },
+    ]),
+  );
+
+  // 陈旧游标清理：云端一行都没有、游标却声称有进度 → 该游标已不可信，顺手清掉（避免长期驻留）
+  if (wordsCloud === 0 && cursor.words > 0) clearCursor(userId);
+  if (bookWordsCloud === 0 && cursor.bookWords > 0) clearCursor(userId);
 
   // 写游标时**只**改当前表，另一张表的已确认值保持原样（否则会把对方的进度覆盖成 0）
   const advance = (patch: Partial<SeedCursor>): void => {
@@ -231,19 +310,25 @@ export async function seedLibraryToCloud(
   };
 
   /**
-   * 单表续传：start 取自**未取整**的游标——必须先在这里判「整表已完成」再跳过，
-   * 不能依赖 upsertChunked 内部取整（游标恰为总行数时 floor(total/CHUNK)*CHUNK < total，
-   * 会把最后一片重传一遍）。
+   * 单表续传决策 + 执行：
+   * - 云端已齐（count >= 总行数）→ 整步跳过（零请求），仅上报该步完成；
+   * - 否则起点 = planStart(游标, 云端实测, 总行数)（对账失败时为 0，即全量）；
+   * - 起点已越过总行数 → 同样整步跳过。
    */
   const runTable = async (
     step: 'words' | 'book_words',
     rows: (Word | BookWord)[],
-    start: number,
+    cursorValue: number,
+    cloudCount: number | null,
     upsert: (batch: (Word | BookWord)[]) => Promise<void>,
     onChunkDone: (done: number) => void,
   ): Promise<void> => {
+    if (cloudCount !== null && cloudCount >= rows.length) {
+      onProgress?.({ step, done: rows.length, total: rows.length });
+      return;
+    }
+    const start = planStart(cursorValue, cloudCount, rows.length);
     if (start >= rows.length) {
-      // 该表已全部落库 → 整步跳过（零请求），仅上报该步完成
       onProgress?.({ step, done: rows.length, total: rows.length });
       return;
     }
@@ -258,7 +343,8 @@ export async function seedLibraryToCloud(
   await runTable(
     'words',
     words,
-    wordsStart,
+    cursor.words,
+    wordsCloud,
     (b) => repo.upsertWords(b as (Word & Record<string, unknown>)[]),
     (done) => advance({ words: done }),
   );
@@ -266,7 +352,8 @@ export async function seedLibraryToCloud(
   await runTable(
     'book_words',
     bookWords,
-    bookWordsStart,
+    cursor.bookWords,
+    bookWordsCloud,
     (b) => repo.upsertBookWords(b as (BookWord & Record<string, unknown>)[]),
     (done) => advance({ bookWords: done }),
   );

@@ -2,17 +2,23 @@
  * seedResume.test.ts —— 词书初始化「断点续传」回归锚点（2026-10-13）。
  *
  * 背景：初始化六级词库要写 5407 词 × 2 表（words / book_words）≈ 110 个分片请求；
- * 断网 / 超时中断后原实现只能从头再传（幂等但白跑）。现改为本机 localStorage 游标续传：
- *  - 游标只在「某分片已确认落库」之后前进 → 永不谎报进度；
- *  - 失败重试从断点所在分片边界继续，已成功的分片零请求；
- *  - 两张表各自独立进度（推进一张不得把另一张覆盖成 0）；
- *  - 整次成功后才清游标；种子文件行数变了（totals 对不上）则丢弃旧游标；
- *  - 存储不可用（无 localStorage / 读写抛错）→ 降级为「无游标」，绝不打断导入；
- *  - key 按 **userId** 隔离：同浏览器换账号不得继承他人进度（H）；userId 为假值时不使用游标（I）。
+ * 断网 / 超时中断后原实现只能从头再传（幂等但白跑）。现改为本机 localStorage 游标续传。
  *
- * 测试口径（沿用 backfillArpabet / resilience 的既有风格）：
- *  mock repo（记录每个分片收到的行数；可指定第 N 次 upsertWords 抛错）
- *  + stubGlobal('fetch') 返回内存种子 + localStorage shim（另测抛错版 / undefined 版降级）。
+ * 设计不变量（用例逐条钉住）：
+ *  - 游标只在「某分片已确认落库」之后前进 → 永不谎报进度（A）；
+ *  - 失败重试从断点分片边界继续，已成功的分片零请求（B / G）；某表云端已齐则整步跳过（D）；
+ *  - 两张表各自独立进度（推进一张不得把另一张覆盖成 0）；
+ *  - 整次成功后才清游标（C）；`getBook` 命中早退不清游标（createBook 失败路径可续传，M）；
+ *  - 存储不可用（无 localStorage / 读写抛错）→ 降级为「无游标」，绝不打断导入（E）；
+ *  - key 按 **userId** 隔离：同浏览器换账号不得继承他人进度（H）；userId 为假值不使用游标（I）。
+ *
+ * 两处「不无条件信任游标」的硬校验（本轮由独立复核裁决补齐）：
+ *  - **② 内容指纹**：同词数、不同内容 → 旧游标必须丢弃（F / J）；
+ *  - **① 云端对账**：续传起点只到「云端确实已存在」的分片边界，绝不允许跳过云端不存在的行；
+ *    对账 count 抛错 → 降级为全量，绝不沿用游标（K / L / N）；起点公式见 planStart 单测。
+ *
+ * 测试口径：mock repo（记录分片行数 / 对账 filters；可指定第 N 次 upsertWords 抛错、count 抛错、
+ * createBook 抛错）+ stubGlobal('fetch') 返回内存种子 + localStorage shim。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -26,14 +32,28 @@ const SEED = Array.from({ length: TOTAL }, (_, i) => ({
   frq: TOTAL - i,
   tags: ['cet6'],
 }));
+/** 同词数、不同内容（只改中间一个 lemma，首尾不变）—— 专打「只比行数不比内容」的缺陷② */
+const SEED_CHANGED = SEED.map((w, i) => (i === 500 ? { ...w, lemma: 'w500-changed' } : w));
+/** 全量导入时的分片序列 */
+const FULL_CHUNKS = [CHUNK, CHUNK, CHUNK, TOTAL - 3 * CHUNK];
 
 const h = vi.hoisted(() => ({
   wordsCalls: [] as number[],
   bookWordCalls: [] as number[],
+  /** 对账请求收到的 filters（用于断言 words 必须按 owner_id 过滤） */
+  wordsCountFilters: [] as unknown[][],
+  bookWordsCountFilters: [] as unknown[][],
   /** 1-based：第 N 次 upsertWords 调用抛错；-1 = 从不失败 */
   failWordsCall: -1,
+  /** 对账 count 抛错 */
+  failWordsCount: false,
+  /** createBook 抛错（撞 PK 23505 等） */
+  failCreateBook: false,
   bookExists: false,
   createBookCalls: 0,
+  /** 云端实测行数（count 返回值）—— 对账依据 */
+  cloudWords: 0,
+  cloudBookWords: 0,
 }));
 
 vi.mock('../../src/data/repos/wordRepo', () => ({
@@ -48,14 +68,33 @@ vi.mock('../../src/data/repos/wordRepo', () => ({
     },
     createBook: async (b: unknown) => {
       h.createBookCalls += 1;
+      if (h.failCreateBook) throw new Error('boom-createBook');
       return b;
+    },
+    words: {
+      count: async (filters: unknown[]) => {
+        h.wordsCountFilters.push(filters);
+        if (h.failWordsCount) throw new Error('boom-count');
+        return h.cloudWords;
+      },
+    },
+    bookWords: {
+      count: async (filters: unknown[]) => {
+        h.bookWordsCountFilters.push(filters);
+        return h.cloudBookWords;
+      },
     },
   }),
 }));
 
-const { CET6_BOOK_ID, getSeedCursor, seedCursorKey, seedLibraryToCloud } = await import(
-  '../../src/data/seedBootstrap'
-);
+const { CET6_BOOK_ID, getSeedCursor, planStart, seedCursorKey, seedFingerprint, seedLibraryToCloud } =
+  await import('../../src/data/seedBootstrap');
+
+/** 当前 SEED / 变更后 SEED 的内容指纹（游标本体里的唯一接受判据） */
+const FP = seedFingerprint(SEED);
+const FP_CHANGED = seedFingerprint(SEED_CHANGED);
+
+type CursorLike = { words: number; bookWords: number; totalWords: number; totalBookWords: number; fingerprint: string };
 
 // ===== localStorage shim =====
 
@@ -76,25 +115,58 @@ function installLocalStorage(): void {
 }
 
 /** 直接读回指定用户持久化的游标（解析 JSON；无则 null） */
-function storedCursor(
-  userId: string,
-): { words: number; bookWords: number; totalWords: number; totalBookWords: number } | null {
+function storedCursor(userId: string): CursorLike | null {
   const raw = storage.get(seedCursorKey(CET6_BOOK_ID, userId));
-  return raw ? JSON.parse(raw) : null;
+  return raw ? (JSON.parse(raw) as CursorLike) : null;
+}
+
+/** 预置一个游标（默认用与当前 SEED 相符的指纹） */
+function setCursor(userId: string, c: { words: number; bookWords?: number; fingerprint?: string }): void {
+  storage.set(
+    seedCursorKey(CET6_BOOK_ID, userId),
+    JSON.stringify({
+      words: c.words,
+      bookWords: c.bookWords ?? 0,
+      totalWords: TOTAL,
+      totalBookWords: TOTAL,
+      fingerprint: c.fingerprint ?? FP,
+    }),
+  );
+}
+
+/** 让 /seed-cet6.json 返回给定种子 */
+function stubSeed(seed: unknown[]): void {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(seed), { status: 200 })));
 }
 
 beforeEach(() => {
   h.wordsCalls.length = 0;
   h.bookWordCalls.length = 0;
+  h.wordsCountFilters.length = 0;
+  h.bookWordsCountFilters.length = 0;
   h.failWordsCall = -1;
+  h.failWordsCount = false;
+  h.failCreateBook = false;
   h.bookExists = false;
   h.createBookCalls = 0;
+  h.cloudWords = 0;
+  h.cloudBookWords = 0;
   installLocalStorage();
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(SEED), { status: 200 })));
+  stubSeed(SEED);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('planStart（云端对账起点）', () => {
+  it('对账失败(null) → 0（全量）；云端不足 → 回退到该行数所在分片边界；云端充足 → 取游标', () => {
+    expect(planStart(600, null, TOTAL)).toBe(0); // 对账失败绝不沿用游标
+    expect(planStart(600, 0, TOTAL)).toBe(0); // 云端 0 行 → 从 0 全量
+    expect(planStart(600, 300, TOTAL)).toBe(300); // 云端只有 300 → 退到 300
+    expect(planStart(600, 600, TOTAL)).toBe(600);
+    expect(planStart(601, 900, TOTAL)).toBe(600); // 向下对齐分片边界
+  });
 });
 
 describe('seedLibraryToCloud 断点续传', () => {
@@ -103,7 +175,13 @@ describe('seedLibraryToCloud 断点续传', () => {
     await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
 
     expect(h.wordsCalls).toEqual([CHUNK, CHUNK, CHUNK]); // 前两片成功，第 3 片尝试后失败
-    expect(storedCursor('u-1')).toEqual({ words: 600, bookWords: 0, totalWords: TOTAL, totalBookWords: TOTAL });
+    expect(storedCursor('u-1')).toEqual({
+      words: 600,
+      bookWords: 0,
+      totalWords: TOTAL,
+      totalBookWords: TOTAL,
+      fingerprint: FP,
+    });
     expect(h.bookWordCalls).toEqual([]); // words 未完成，绝不进入 book_words
     expect(h.createBookCalls).toBe(0);
   });
@@ -112,14 +190,15 @@ describe('seedLibraryToCloud 断点续传', () => {
     h.failWordsCall = 3;
     await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
 
-    // 重试：清掉调用记录，不再注入失败
+    // 重试：清掉调用记录，不再注入失败；云端确实已有那 600 行（对账通过才允许续传）
     h.wordsCalls.length = 0;
     h.failWordsCall = -1;
+    h.cloudWords = 600;
     const progress: { step: string; done: number; total: number }[] = [];
     const result = await seedLibraryToCloud('u-1', (p) => progress.push({ ...p }));
 
     expect(h.wordsCalls).toEqual([CHUNK, TOTAL - 3 * CHUNK]); // 只剩第 3、4 片（600..999）
-    expect(h.bookWordCalls).toEqual([CHUNK, CHUNK, CHUNK, TOTAL - 3 * CHUNK]); // book_words 从未开始 → 全量
+    expect(h.bookWordCalls).toEqual(FULL_CHUNKS); // book_words 从未开始 → 全量
     expect(result.skipped).toBe(false);
     expect(h.createBookCalls).toBe(1);
     // UI 进度从断点起算（600/1000），不从 0 重跳
@@ -132,16 +211,14 @@ describe('seedLibraryToCloud 断点续传', () => {
     expect(storage.has(seedCursorKey(CET6_BOOK_ID, 'u-1'))).toBe(false);
   });
 
-  it('D. 某表游标已到总行数：该表整步跳过（零请求）但仍上报该步完成', async () => {
-    storage.set(
-      seedCursorKey(CET6_BOOK_ID, 'u-1'),
-      JSON.stringify({ words: TOTAL, bookWords: 0, totalWords: TOTAL, totalBookWords: TOTAL }),
-    );
+  it('D. 某表云端已齐：该表整步跳过（零请求）但仍上报该步完成', async () => {
+    setCursor('u-1', { words: TOTAL });
+    h.cloudWords = TOTAL; // 云端实测已满
     const progress: { step: string; done: number; total: number }[] = [];
     await seedLibraryToCloud('u-1', (p) => progress.push({ ...p }));
 
     expect(h.wordsCalls).toEqual([]); // words 已满 → 零请求
-    expect(h.bookWordCalls).toEqual([CHUNK, CHUNK, CHUNK, TOTAL - 3 * CHUNK]);
+    expect(h.bookWordCalls).toEqual(FULL_CHUNKS);
     expect(progress.some((p) => p.step === 'words' && p.done === TOTAL && p.total === TOTAL)).toBe(true);
   });
 
@@ -156,47 +233,45 @@ describe('seedLibraryToCloud 断点续传', () => {
     h.wordsCalls.length = 0;
     vi.stubGlobal('localStorage', undefined);
     await expect(seedLibraryToCloud('u-1')).resolves.toMatchObject({ skipped: false });
-    expect(h.wordsCalls).toEqual([CHUNK, CHUNK, CHUNK, TOTAL - 3 * CHUNK]); // 无游标 → 从头全量
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 无游标 → 从头全量
   });
 
-  it('F. 种子文件行数变过（游标 totals 对不上）→ 丢弃旧游标，从头全量', async () => {
-    storage.set(
-      seedCursorKey(CET6_BOOK_ID, 'u-1'),
-      JSON.stringify({ words: 600, bookWords: 0, totalWords: 999, totalBookWords: TOTAL }),
-    );
+  it('F. 游标指纹与当前种子不符（种子变过）→ 丢弃旧游标，从头全量', async () => {
+    setCursor('u-1', { words: 600, fingerprint: 'stale-fingerprint' });
+    h.cloudWords = 600; // 若旧游标被误接受，这里会看到 [300, 100]
     await seedLibraryToCloud('u-1');
-    expect(h.wordsCalls).toEqual([CHUNK, CHUNK, CHUNK, TOTAL - 3 * CHUNK]); // 未按 600 续传
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 未按 600 续传
   });
 
-  it('G. 游标恰落在分片边界（< 总行数）→ 从该边界继续，不重传之前的整片', async () => {
-    storage.set(
-      seedCursorKey(CET6_BOOK_ID, 'u-1'),
-      JSON.stringify({ words: 3 * CHUNK, bookWords: 0, totalWords: TOTAL, totalBookWords: TOTAL }),
-    );
+  it('G. 游标恰落在分片边界（< 总行数，且云端已覆盖）→ 从该边界继续，不重传之前的整片', async () => {
+    setCursor('u-1', { words: 3 * CHUNK });
+    h.cloudWords = 3 * CHUNK; // 云端已有前 900 行
     await seedLibraryToCloud('u-1');
     expect(h.wordsCalls).toEqual([TOTAL - 3 * CHUNK]); // 只剩最后一片（900..999）
   });
 
   /**
-   * H 是「游标必须按 userId 隔离」的护栏（2026-10-13 自查发现的真缺陷）：
-   * 只按 bookId 存时，同浏览器换账号会继承上一账号的游标，且自校验只比种子行数、不比用户 →
-   * 通过 → 新账号静默跳过前 N 行且不报错。
-   * 变异验证：把 seedCursorKey 改回「不带 userId」后，本用例必须变红。
+   * H 是「游标必须按 userId 隔离」的护栏（2026-10-13 自查发现的真缺陷）。
+   * 注意 cloudWords 刻意给到 600 —— 让「串号游标」在**对账之后仍能得逞**，
+   * 否则对账会替 key 隔离兜底，本用例就失去判别力。
    */
   it('H. 同浏览器换账号：B 不继承 A 的游标（全量导入），且 B 的导入不动 A 的进度', async () => {
     // 账号 A 跑到中断：words 第 3 片失败 → A 的游标停在 600
     h.failWordsCall = 3;
+    h.cloudWords = 0;
     await expect(seedLibraryToCloud('A')).rejects.toThrow('boom-words');
     const aBefore = storage.get(seedCursorKey(CET6_BOOK_ID, 'A'));
     expect(aBefore).toBeTruthy();
+    expect((JSON.parse(aBefore!) as CursorLike).words).toBe(600);
 
-    // 切到账号 B（同一 localStorage，不清存储）：B 的 key 不同 → 必须从 0 全量
+    // 切到账号 B（同一 localStorage，不清存储）：B 无自己的游标 → 必须从 0 全量
     h.wordsCalls.length = 0;
     h.bookWordCalls.length = 0;
     h.failWordsCall = -1;
+    h.cloudWords = 600; // 云端已有 600 行：串号游标在此会得逞 → 用来验证隔离有效
     await seedLibraryToCloud('B');
-    expect(h.wordsCalls).toEqual([CHUNK, CHUNK, CHUNK, TOTAL - 3 * CHUNK]);
-    expect(h.bookWordCalls).toEqual([CHUNK, CHUNK, CHUNK, TOTAL - 3 * CHUNK]);
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS);
+    expect(h.bookWordCalls).toEqual(FULL_CHUNKS);
 
     // A 的进度原封不动（逐字节相同）；B 成功后只清自己的
     expect(storage.get(seedCursorKey(CET6_BOOK_ID, 'A'))).toBe(aBefore);
@@ -205,8 +280,92 @@ describe('seedLibraryToCloud 断点续传', () => {
 
   it('I. userId 为假值：不使用游标（不读不写、不落 undefined 键），仅全量幂等', async () => {
     await seedLibraryToCloud('');
-    expect(h.wordsCalls).toEqual([CHUNK, CHUNK, CHUNK, TOTAL - 3 * CHUNK]); // 全量
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 全量
     expect(getSeedCursor('')).toBeNull();
     expect(storage.size).toBe(0); // 一个键都没写（尤其没有 seed-progress:undefined:...）
+  });
+
+  /** J：缺陷② —— 种子「改了内容但行数不变」时，旧游标必须被指纹判据丢弃 */
+  it('J. 同词数、不同内容：指纹判据丢弃旧游标（否则前半旧内容、后半新内容会静默错位）', async () => {
+    h.failWordsCall = 3;
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
+    expect(storedCursor('u-1')?.fingerprint).toBe(FP);
+    expect(FP_CHANGED).not.toBe(FP); // 指纹判据本身对内容敏感
+
+    stubSeed(SEED_CHANGED); // 种子内容变了、词数不变
+    h.wordsCalls.length = 0;
+    h.bookWordCalls.length = 0;
+    h.failWordsCall = -1;
+    h.cloudWords = 600; // 若旧游标被误接受 → [300, 100]
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 指纹不符 → 丢弃游标 → 全量
+  });
+
+  /** K：缺陷① —— 游标超前于云端（分片「假成功」）时，绝不允许跳过云端不存在的行 */
+  it('K. 游标超前于云端实测行数：起点回退，前 N 行绝不被跳过', async () => {
+    // K1：游标 600 但云端一行都没有 → 起点 0，全量（修改前会是 [300, 100]，前 600 永久缺失）
+    h.failWordsCall = 3;
+    h.cloudWords = 0;
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
+
+    h.wordsCalls.length = 0;
+    h.bookWordCalls.length = 0;
+    h.failWordsCall = -1;
+    h.cloudWords = 0;
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS);
+
+    // K2：游标 600、云端只有 300 → 起点 = floor(300/300)*300 = 300（300..999 全部重写）
+    h.cloudWords = 0;
+    h.failWordsCall = 3;
+    h.wordsCalls.length = 0;
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words'); // 重新造出 600 游标
+    expect(storedCursor('u-1')?.words).toBe(600);
+
+    h.wordsCalls.length = 0;
+    h.bookWordCalls.length = 0;
+    h.failWordsCall = -1;
+    h.cloudWords = 300;
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCalls).toEqual([CHUNK, CHUNK, TOTAL - 3 * CHUNK]); // 300..999
+  });
+
+  it('L. 对账 count 抛错 → 降级为全量，绝不沿用游标跳过', async () => {
+    h.failWordsCall = 3;
+    h.cloudWords = 0;
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words'); // 造出 600 游标
+
+    h.wordsCalls.length = 0;
+    h.bookWordCalls.length = 0;
+    h.failWordsCall = -1;
+    h.cloudWords = 600; // 若沿用游标 → [300, 100]
+    h.failWordsCount = true; // 但对账请求本身失败
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS);
+  });
+
+  it('M. createBook 抛错：游标保留（可续传），且不会静默产出「声称 N 词却更少」的书', async () => {
+    h.failCreateBook = true;
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-createBook');
+    expect(h.createBookCalls).toBe(1);
+    expect(getSeedCursor('u-1')).not.toBeNull(); // 游标保留，未在失败路径被清
+    expect(h.bookExists).toBe(false); // 书行未落地 → 不存在「书声称 1000 词」的静默状态（用户看到的是报错）
+
+    // 重试：云端仍 0 行 → 陈留游标不得造成跳过
+    h.failCreateBook = false;
+    h.wordsCalls.length = 0;
+    h.bookWordCalls.length = 0;
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS);
+    expect(getSeedCursor('u-1')).toBeNull(); // 成功后才清
+  });
+
+  it('N. 对账请求的过滤条件：words 必须按 owner_id（其 RLS 是 USING(true)），book_words 按 bookId+owner_id', async () => {
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCountFilters[0]).toEqual([{ column: 'owner_id', op: 'eq', value: 'u-1' }]);
+    expect(h.bookWordsCountFilters[0]).toEqual([
+      { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
+      { column: 'owner_id', op: 'eq', value: 'u-1' },
+    ]);
   });
 });
