@@ -37,7 +37,7 @@ import {
   DASHSCOPE_FREE_QUOTA_CHARS,
   DASHSCOPE_MODEL_OPTIONS,
   DASHSCOPE_PRICE_PER_10K_CHARS,
-  DASHSCOPE_VOICE_OPTIONS,
+  DASHSCOPE_VOICE_OPTIONS_BY_MODEL,
 } from '../config/constants';
 import { cacheHitRate, readUsageStats, resetUsageStats, type UsageStats } from '../tts/usageStats';
 import { backfillArpabetFromSeed, type BackfillProgress } from '../data/backfillArpabet';
@@ -111,6 +111,20 @@ export default function SettingsPage() {
   /** 切换 provider：把 provider / voice / model 同步进影子副本（model 为空时补默认） */
   const handleProviderChange = (next: TTSProviderName) => {
     settings.setTTS(next, voice, ttsModel || DASHSCOPE_DEFAULT_MODEL);
+  };
+
+  // 音色按模型联动（官方音色不能跨模型混用）：当前模型的可用音色列表
+  const dashscopeVoiceOptions = DASHSCOPE_VOICE_OPTIONS_BY_MODEL[ttsModel] ?? [];
+  // 当前选择必须属于当前模型列表，否则回落到列表第一项（再退 DASHSCOPE_DEFAULT_VOICE）
+  const effectiveVoice = dashscopeVoiceOptions.some((o) => o.voice === voice)
+    ? voice
+    : dashscopeVoiceOptions[0]?.voice ?? DASHSCOPE_DEFAULT_VOICE;
+
+  /** 切换模型：音色不在新模型列表时联动到新列表第一项 */
+  const handleModelChange = (nextModel: string) => {
+    setTtsModel(nextModel);
+    const opts = DASHSCOPE_VOICE_OPTIONS_BY_MODEL[nextModel] ?? [];
+    if (!opts.some((o) => o.voice === voice)) setVoice(opts[0]?.voice ?? DASHSCOPE_DEFAULT_VOICE);
   };
 
   /** endpoint 占位/帮助文案随 provider 切换 */
@@ -418,9 +432,9 @@ export default function SettingsPage() {
                 select
                 label="模型 model"
                 value={ttsModel}
-                onChange={(e) => setTtsModel(e.target.value)}
+                onChange={(e) => handleModelChange(e.target.value)}
                 size="small"
-                helperText="CosyVoice 系列；cmu 音素注入需支持 SSML 的模型与音色。"
+                helperText="模型与音色需配套；音色会随模型联动。cmu 音素注入需支持 SSML 的模型与音色。"
               >
                 {DASHSCOPE_MODEL_OPTIONS.map((m) => (
                   <MenuItem key={m} value={m}>
@@ -431,12 +445,12 @@ export default function SettingsPage() {
               <TextField
                 select
                 label="发音人 voice"
-                value={voice || DASHSCOPE_DEFAULT_VOICE}
+                value={effectiveVoice}
                 onChange={(e) => setVoice(e.target.value)}
                 size="small"
-                helperText="专用英文音色（loong*）不支持 SSML，故默认用中英混合的中文系音色，英文音素由 CMU 精确驱动。"
+                helperText="音色随模型联动（不能跨模型混用）；英文音素由 CMU 精确驱动。"
               >
-                {DASHSCOPE_VOICE_OPTIONS.map((o) => (
+                {dashscopeVoiceOptions.map((o) => (
                   <MenuItem key={o.voice} value={o.voice}>
                     {o.label}
                   </MenuItem>

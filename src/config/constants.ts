@@ -104,10 +104,14 @@ export const AUDIO_CACHE_BUDGET_BYTES = 50 * 1024 * 1024;
 
 /** 默认端点：专用 TTS 端点 SpeechSynthesizer（参数全在 input 下；非 multimodal-generation 遗留路径） */
 export const DASHSCOPE_DEFAULT_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
-/** 默认模型（官方音色列表核实：支持 SSML 且有英文能力的交集只有中文系音色） */
-export const DASHSCOPE_DEFAULT_MODEL = 'cosyvoice-v2';
-/** 默认发音人（龙小淳，v2 列表双处来源确认支持 SSML + 中英混合） */
-export const DASHSCOPE_DEFAULT_VOICE = 'longxiaochun_v2';
+/**
+ * 默认模型：cosyvoice-v3-flash。
+ * 注：v2（cosyvoice-v2）对 SSML <phoneme alphabet="cmu"> 有缺陷——部分单词会产出跑飞的超长音频
+ * （computer 22s / better 24s / acquire 18s，真机可复现）；v3-flash 实测正常且更便宜（1.0 元/万字符）。
+ */
+export const DASHSCOPE_DEFAULT_MODEL = 'cosyvoice-v3-flash';
+/** 默认发音人：龙安洋（v3 音色，实测支持 SSML 且英文正常；音色不能跨模型混用） */
+export const DASHSCOPE_DEFAULT_VOICE = 'longanyang';
 /** WebSocket 直连端点（CORS 不通时的降级通道；key 通过 URL query 传递，官方 demo 同款） */
 export const DASHSCOPE_WS_ENDPOINT = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference/';
 /** 输出音频格式 */
@@ -121,19 +125,34 @@ export const DASHSCOPE_LANGUAGE_HINTS: readonly string[] = ['en'];
  * 默认 false = 保留数字（CMUdict 原值 "S AY1 N"）。实测不兼容则翻转本常量重新构建。
  */
 export const DASHSCOPE_PHONEME_STRIP_STRESS = false;
-/** P1-1 成本卡资费口径：0.8 元/万字符（qwen3-tts / cosyvoice-v3.5-flash 等档位；v2 单价未核实，见架构 §十） */
-export const DASHSCOPE_PRICE_PER_10K_CHARS = 0.8;
+/** P1-1 成本卡资费口径：cosyvoice-v3-flash 官方价 1.0 元/万字符（已核实） */
+export const DASHSCOPE_PRICE_PER_10K_CHARS = 1.0;
 /** 新用户开通百炼 90 天内 TTS 免费额度（字符） */
 export const DASHSCOPE_FREE_QUOTA_CHARS = 10000;
-/** 音色下拉（均标注"支持 SSML"；专用英文音色 loong* SSML 均不支持，故不列出） */
-export const DASHSCOPE_VOICE_OPTIONS = [
-  { voice: 'longxiaochun_v2', label: '龙小淳（知性女声 · 默认）' },
-  { voice: 'longwan_v2', label: '龙婉（普通话女声）' },
-  { voice: 'longanwen', label: '龙安温（优雅知性女）' },
-  { voice: 'longyumi_v2', label: 'YUMI（正经青年女）' },
-] as const;
-/** 模型下拉（保守只放 cosyvoice 系；qwen-audio-3.x-tts 的 SSML 支持口径未核实，不放） */
-export const DASHSCOPE_MODEL_OPTIONS = ['cosyvoice-v2', 'cosyvoice-v3-flash', 'cosyvoice-v3-plus'] as const;
+/** 音色下拉：按模型分组（官方明确音色不能跨模型混用；以下 ID 均已实测可用） */
+export const DASHSCOPE_VOICE_OPTIONS_BY_MODEL: Record<string, readonly { voice: string; label: string }[]> = {
+  'cosyvoice-v3-flash': [
+    { voice: 'longanyang', label: '龙安洋（v3 · 默认）' },
+    { voice: 'longanhuan_v3', label: '龙安欢（v3）' },
+    { voice: 'longhuhu_v3', label: '龙呼呼（v3）' },
+    { voice: 'longshu_v3', label: '龙书（v3）' },
+    { voice: 'longxiaochun_v3', label: '龙小淳（v3）' },
+    { voice: 'longfei_v3', label: '龙飞（v3）' },
+    { voice: 'longjielidou_v3', label: '龙杰力豆（v3）' },
+    { voice: 'longwan_v3', label: '龙婉（v3）' },
+  ],
+  'cosyvoice-v2': [
+    { voice: 'longxiaochun_v2', label: '龙小淳（知性女声）' },
+    { voice: 'longwan_v2', label: '龙婉（普通话女声）' },
+    { voice: 'longanwen', label: '龙安温（优雅知性女）' },
+    { voice: 'longyumi_v2', label: 'YUMI（正经青年女）' },
+  ],
+  'cosyvoice-v3-plus': [
+    { voice: 'longanyang', label: '龙安洋（v3-plus · 默认）' },
+  ],
+};
+/** 模型下拉（v3-flash 排第一＝默认；v2 保留可切换但音素注入有跑飞缺陷） */
+export const DASHSCOPE_MODEL_OPTIONS = ['cosyvoice-v3-flash', 'cosyvoice-v2', 'cosyvoice-v3-plus'] as const;
 
 // ===== 同步 =====
 
