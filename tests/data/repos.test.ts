@@ -6,6 +6,8 @@
  * 云 SDK 适配器（真实 cloud.database）以接口 mock 覆盖——云环境激活后由 T05 集成回验。
  */
 import 'fake-indexeddb/auto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { Repository, type CloudDatabaseLike, type PostgrestQuery } from '../../src/data/repository';
 import { createHitRepo } from '../../src/data/repos/hitRepo';
@@ -282,39 +284,57 @@ class RecordingDb implements CloudDatabaseLike {
   }
 }
 
+/**
+ * 种子派生的真值 —— **不得硬编码**，否则守门用例会退化成"一张写着数字的纸条"：
+ * 将来种子出现更长 lemma 时它不会红，也就没人被迫重新推导 `ID_BATCH`。
+ *
+ * 两个种子文件都要看：线上 `book_words` 由 `src/data/seed/seed-cet6.json` 生成
+ * （`deploy/gen-seed-sql.mjs`），而应用重新导入时 fetch 的是 `public/seed-cet6.json`；
+ * 两者内容并不相同（md5 不同），故取**两者最大值** —— 谁变长都会重新报警。
+ */
+const SEED_FILES = ['public/seed-cet6.json', 'src/data/seed/seed-cet6.json'] as const;
+const SEED_LEMMAS: string[] = SEED_FILES.flatMap((file) =>
+  (JSON.parse(readFileSync(resolve(process.cwd(), file), 'utf8')) as { lemma: string }[]).map((w) => w.lemma),
+);
+/** 真实 id（`seedToDocs` 的 id 约定：`word_<lemma>`），去重后即摸底页会传入的全集 */
+const SEED_IDS = [...new Set(SEED_LEMMAS.map((lemma) => `word_${lemma}`))];
+const LONGEST_ID = SEED_IDS.reduce((a, b) => (b.length > a.length ? b : a), '');
+/** 本仓已核对过的最长 lemma 长度；一旦超出 ⇒ 必须重新推导 ID_BATCH（由下一条断言强制） */
+const KNOWN_MAX_LEMMA_LEN = 21;
+
 describe('wordRepo.listWordsByIds 分片（URL 长度保护）', () => {
-  const N = 5407; // 线上真实规模（public/seed-cet6.json）
-  const ids = Array.from({ length: N }, (_, i) => `word_w${i}`);
+  const N = SEED_IDS.length; // 真实规模（由种子派生）
 
   function seeded(): RecordingDb {
     const db = new MockDb();
     db.tables.set(
       'words',
-      ids.map((id, i) => ({ id, lemma: `w${i}`, ipa: '', senses: [], examples: [], frequency: i, tags: [] })),
+      SEED_IDS.map((id, i) => ({ id, lemma: id, ipa: '', senses: [], examples: [], frequency: i, tags: [] })),
     );
     return new RecordingDb(db);
   }
 
-  it('5407 个 id → 切成多批（每批 ≤ ID_BATCH）、合并正确、无重复无遗漏', async () => {
+  it(`${N} 个真实 id → 切成多批（每批 ≤ ID_BATCH）、合并正确、无重复无遗漏`, async () => {
     const rec = seeded();
     const repo = createWordRepo(rec);
-    const out = await repo.listWordsByIds(ids);
+    const out = await repo.listWordsByIds(SEED_IDS);
 
-    expect(rec.inSizes.length).toBe(Math.ceil(N / ID_BATCH)); // 5407 → 55 批
+    expect(rec.inSizes.length).toBe(Math.ceil(N / ID_BATCH));
     expect(Math.max(...rec.inSizes)).toBeLessThanOrEqual(ID_BATCH); // 每批不超过上界
     expect(rec.inSizes.reduce((a, b) => a + b, 0)).toBe(N); // 每个 id 恰好被覆盖一次
     expect(out.length).toBe(N); // 无遗漏
-    expect(new Set(out.map((w) => w.id))).toEqual(new Set(ids));
+    expect(new Set(out.map((w) => w.id))).toEqual(new Set(SEED_IDS));
     expect(out.length).toBe(new Set(out.map((w) => w.id)).size); // 无重复
   });
 
   it('入参重复 id 先去重：按去重后数量分片，输出无重复', async () => {
     const rec = seeded();
     const repo = createWordRepo(rec);
-    const out = await repo.listWordsByIds(['word_w0', 'word_w0', 'word_w1', 'word_w1', 'word_w2']);
+    const dup = [SEED_IDS[0], SEED_IDS[0], SEED_IDS[1], SEED_IDS[1], SEED_IDS[2]];
+    const out = await repo.listWordsByIds(dup);
 
     expect(rec.inSizes).toEqual([3]); // 去重后 3 个 → 单批
-    expect(out.map((w) => w.id).sort()).toEqual(['word_w0', 'word_w1', 'word_w2']);
+    expect(out.map((w) => w.id).sort()).toEqual([SEED_IDS[0], SEED_IDS[1], SEED_IDS[2]].sort());
   });
 
   it('空入参不发任何请求', async () => {
@@ -324,11 +344,16 @@ describe('wordRepo.listWordsByIds 分片（URL 长度保护）', () => {
     expect(rec.inSizes).toEqual([]);
   });
 
-  it('单批最坏 URL 远低于 urlLengthLimit(8000)：改大 ID_BATCH 会让本条失败，强制重新推导', () => {
+  it('前提自检：两个种子文件内最长 lemma 长度 ≤ 已知值 —— 超出必须重新推导 ID_BATCH', () => {
+    expect(LONGEST_ID.length - 'word_'.length).toBeLessThanOrEqual(KNOWN_MAX_LEMMA_LEN);
+  });
+
+  it('单批最坏 URL 远低于 urlLengthLimit(8000)：改大 ID_BATCH、或种子出现更长 lemma，都会让本条失败', () => {
     const BASE = 'https://english-progress.app.workbuddy.host/.cloud/database/rest/words?select=*&id=in.(';
-    const LONGEST_ID = 'word_indiscriminately'; // 实测最长 id（21 字符）
-    const worst = BASE.length + ID_BATCH * (LONGEST_ID.length + 3) + 1; // +3：逗号被编码为 %2C
-    expect(worst).toBeLessThan(8_000); // 请求行上限
-    expect(worst).toBeLessThanOrEqual(3_000); // 保留 ~3 倍余量（目标 ≤3KB）
+    const worstUrl = (longestIdLen: number): number => BASE.length + ID_BATCH * (longestIdLen + 3) + 1;
+    expect(worstUrl(LONGEST_ID.length)).toBeLessThan(8_000); // 请求行上限
+    expect(worstUrl(LONGEST_ID.length)).toBeLessThanOrEqual(3_000); // 保留 ~3 倍余量（目标 ≤3KB）
+    // 自更新的敏感性证明：同一公式对「更长的 id」会变红（当前 lemma ≤26 字符才守得住 3KB 余量）
+    expect(worstUrl(30)).toBeGreaterThan(3_000);
   });
 });
