@@ -10,25 +10,29 @@
  *  - 两张表各自独立进度（推进一张不得把另一张覆盖成 0）；
  *  - 整次成功后才清游标（C）；createBook 失败路径保留游标（M）；
  *  - 存储不可用（无 localStorage / 读写抛错）→ 降级为「无游标」，绝不打断导入（E）；
- *  - key 按 **userId** 隔离：同浏览器换账号不得继承他人进度（H）；userId 为假值不使用游标（I）。
+ *  - key 按 **userId** 隔离（H）；userId 为假值不使用游标（I）。
  *
  * 三道「不无条件信任游标 / 不留静默缺口」的硬保证：
  *  - **② 内容指纹**：同词数、不同内容 → 旧游标必须丢弃（F / J）；指纹须与 seedToDocs 同序（P / Q）；
- *  - **① 云端对账**：续传起点只到「云端确实已存在」的分片边界；对账 count 抛错 → 全量，绝不沿用游标
- *    （L / N）；起点公式见 planStart 单测；
- *  - **③ 终局校验 + 一次性全量回退**：min() 只保证「起点 ≤ 云端计数」，**证明不了起点之前的行存在**
- *    （缺失集是「前缀」时它无能为力 —— K 就是这么构造的）。故写入结束后直接**数**两表：
- *    不足 → 清游标 + 无条件全量重写一次 → 再数；仍不足 → 响亮失败、绝不 createBook（R / S / T / U）。
+ *  - **① 云端对账**：续传起点只到「云端确实已存在」的分片边界；对账 count 抛错 → 全量（L / N）；
+ *    起点公式见 planStart 单测（它只是**优化**，错了会被 ③ 逮住）；
+ *  - **③ 终局校验（身份集合判据）+ 一次性全量回退**：判据是
+ *    「期望种子 id 集合 ⊆ 云端实存 id 集合」（两表各一遍，只取 id、按 owner 作用域、分页读全）。
+ *    它一次消掉整类「计数不含身份」的假设 —— 前缀洞（K）、另有别的词源（U）、别的账号的行（U2）
+ *    全被逮住并回退修复；读失败 / 分页截断 → fail closed、不建书且不做无意义重写（V）。
  *
- * 测试口径：mock repo 的 `count` **由真实落库集合（landed）推导**（而非 stub 常量），因为终局校验要求
- * 「成功」必须建立在真实写入之上；`upsertWords` 与 repository.upsertMany 同构（内部再切 100 子片），
- * 支持「静默 no-op」（假成功）与「抛错」两种故障注入。fetch 用 stubGlobal，localStorage 用内存 shim。
+ * 测试口径：mock repo 的 `count` / `listIds` **由按 owner 分域的真实落库集合推导**，
+ * 并且**尊重 filters**（`words` 无 owner 过滤时返回**并集**，模拟其 RLS `USING(true)` ——
+ * 这正是「漏过滤 ⇒ 子集判据被别人的行满足 ⇒ 假通过」的机制）；`upsertWords` 与
+ * `repository.upsertMany` 同构（内部再切 100 子片），支持「静默 no-op（假成功）」与「抛错」两种注入。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const CHUNK = 300;
 /** repository.upsertMany 内部的子片大小（与 src/data/repository.ts 的 CHUNK_SIZE 一致） */
 const SUB_CHUNK = 100;
+/** 终局校验分页读 id 的页大小（与 src/data/seedBootstrap.ts 的 ID_PAGE 一致） */
+const ID_PAGE = 1000;
 /** 1000 词 → words 分片 4 个（300/300/300/100） */
 const TOTAL = 1000;
 const SEED = Array.from({ length: TOTAL }, (_, i) => ({
@@ -43,13 +47,26 @@ const SEED_CHANGED = SEED.map((w, i) => (i === 500 ? { ...w, lemma: 'w500-change
 /** 全量导入时的分片序列 */
 const FULL_CHUNKS = [CHUNK, CHUNK, CHUNK, TOTAL - 3 * CHUNK];
 
+type Row = { column: string; op: string; value: unknown };
+
 const h = vi.hoisted(() => ({
+  /** 当前「会话用户」：upsert 落库时归属之（模拟服务端 DEFAULT auth.uid()） */
+  owner: 'u-1',
+  wordsByOwner: new Map<string, Set<string>>(),
+  bookWordsByOwner: new Map<string, Set<string>>(),
+  /** 写入侧收到过的 id（用于断言「期望集合与写入同批」） */
+  writtenWordIds: [] as string[],
+  writtenBookWordIds: [] as string[],
   wordsCalls: [] as number[],
   bookWordCalls: [] as number[],
   /** 对账 / 终局校验请求收到的 filters */
   wordsCountFilters: [] as unknown[][],
   bookWordsCountFilters: [] as unknown[][],
+  wordsListIdsFilters: [] as unknown[][],
+  bookWordsListIdsFilters: [] as unknown[][],
   wordsCountCalls: 0,
+  wordsListIdsCalls: 0,
+  bookWordsListIdsCalls: 0,
   /** 1-based：第 N 次 upsertWords 调用抛错；-1 = 从不 */
   failWordsCall: -1,
   /** 1-based：第 N 次 words count 调用抛错（一次性）；-1 = 从不 */
@@ -58,63 +75,122 @@ const h = vi.hoisted(() => ({
   failWordsCountFrom: -1,
   /** 1-based：第 N 次子片写入抛错（模拟单请求失败）；-1 = 从不 */
   failSubChunkAt: -1,
+  /** 1-based：第 N 次 listIds 调用抛错（模拟读失败）；-1 = 从不 */
+  failListIdsAt: -1,
+  /** ≥0：分页读最多只吐出这么多条（模拟**静默截断**）；-1 = 不截断 */
+  idsTruncateTo: -1,
   subChunkAttempts: 0,
   /** 「假成功」注入 1：这些全局子片序号静默不落库（返回成功） */
   dropOnce: new Set<number>(),
   /** 「假成功」注入 2：每个整片内第 N 个子片永远静默不落库；-1 = 从不 */
   dropAlwaysInBatch: -1,
-  /** 真实落库集合 —— count 由它推导 */
-  landed: new Set<string>(),
-  landedBookWords: new Set<string>(),
   /** createBook 抛错（撞 PK 23505 等） */
   failCreateBook: false,
   bookExists: false,
   createBookCalls: 0,
 }));
 
-vi.mock('../../src/data/repos/wordRepo', () => ({
-  createWordRepo: () => ({
-    getBook: async () => (h.bookExists ? { id: 'book_cet6_full', wordCount: 0 } : null),
-    upsertWords: async (rows: unknown[]) => {
-      h.wordsCalls.push(rows.length);
-      if (h.failWordsCall === h.wordsCalls.length) throw new Error('boom-words');
-      // 与 repository.upsertMany 同构：内部再切 100 子片；支持「抛错」与「静默 no-op（假成功）」两种注入
-      for (let i = 0; i < rows.length; i += SUB_CHUNK) {
-        h.subChunkAttempts += 1;
-        if (h.failSubChunkAt === h.subChunkAttempts) throw new Error('boom-subchunk');
-        const silent = h.dropOnce.has(h.subChunkAttempts) || h.dropAlwaysInBatch === i / SUB_CHUNK + 1;
-        if (silent) continue;
-        for (const r of rows.slice(i, i + SUB_CHUNK)) h.landed.add((r as { id: string }).id);
-      }
-    },
-    upsertBookWords: async (rows: unknown[]) => {
-      h.bookWordCalls.push(rows.length);
-      for (const r of rows) h.landedBookWords.add((r as { id: string }).id);
-    },
-    createBook: async (b: unknown) => {
-      h.createBookCalls += 1;
-      if (h.failCreateBook) throw new Error('boom-createBook');
-      return b;
-    },
-    words: {
-      count: async (filters: unknown[]) => {
-        h.wordsCountFilters.push(filters);
-        h.wordsCountCalls += 1;
-        if (h.failWordsCountAt === h.wordsCountCalls) throw new Error('boom-count');
-        if (h.failWordsCountFrom > 0 && h.wordsCountCalls >= h.failWordsCountFrom) throw new Error('boom-count');
-        return h.landed.size; // 动态：真实落库量
-      },
-    },
-    bookWords: {
-      count: async (filters: unknown[]) => {
-        h.bookWordsCountFilters.push(filters);
-        return h.landedBookWords.size;
-      },
-    },
-  }),
-}));
+vi.mock('../../src/data/repos/wordRepo', () => {
+  /** 从 filters 里取某列的等值（模拟 PostgREST `col=eq.value`） */
+  const val = (filters: Row[], col: string): string | null => {
+    const f = filters.find((x) => x.column === col);
+    return f ? String(f.value) : null;
+  };
+  /** 稳定序分页；idsTruncateTo ≥ 0 时模拟服务端**静默截断** */
+  const page = (all: Iterable<string>, offset: number, limit: number): string[] => {
+    const sorted = [...all].sort();
+    const capped = h.idsTruncateTo >= 0 ? sorted.slice(0, h.idsTruncateTo) : sorted;
+    return capped.slice(offset, offset + limit);
+  };
+  const union = (byOwner: Map<string, Set<string>>): Set<string> => {
+    const all = new Set<string>();
+    for (const s of byOwner.values()) for (const id of s) all.add(id);
+    return all;
+  };
+  /**
+   * words 的读：无 owner 过滤时返回**并集** —— 忠实模拟其 RLS `USING(true)`（全世界可读）。
+   * 这正是「漏 owner 过滤 ⇒ 读到别人的 id ⇒ 子集判据假通过」的机制。
+   */
+  const wordsIds = (filters: Row[]): Set<string> => {
+    const owner = val(filters, 'owner_id');
+    return owner === null ? union(h.wordsByOwner) : (h.wordsByOwner.get(owner) ?? new Set<string>());
+  };
+  /** book_words 的读：其 RLS 是 owner-only ⇒ 无 owner 过滤时只会拿到**自己**的行 */
+  const bookWordsIds = (filters: Row[]): Set<string> => {
+    const owner = val(filters, 'owner_id');
+    return h.bookWordsByOwner.get(owner ?? h.owner) ?? new Set<string>();
+  };
+  const setOf = (byOwner: Map<string, Set<string>>, owner: string): Set<string> => {
+    let s = byOwner.get(owner);
+    if (!s) {
+      s = new Set<string>();
+      byOwner.set(owner, s);
+    }
+    return s;
+  };
 
-const { CET6_BOOK_ID, getSeedCursor, planStart, seedCursorKey, seedFingerprint, seedLibraryToCloud } =
+  return {
+    createWordRepo: () => ({
+      getBook: async () => (h.bookExists ? { id: 'book_cet6_full', wordCount: 0 } : null),
+      upsertWords: async (rows: unknown[]) => {
+        h.wordsCalls.push(rows.length);
+        for (const r of rows) h.writtenWordIds.push((r as { id: string }).id);
+        if (h.failWordsCall === h.wordsCalls.length) throw new Error('boom-words');
+        const landed = setOf(h.wordsByOwner, h.owner);
+        // 与 repository.upsertMany 同构：内部再切 100 子片；支持「抛错」与「静默 no-op（假成功）」
+        for (let i = 0; i < rows.length; i += SUB_CHUNK) {
+          h.subChunkAttempts += 1;
+          if (h.failSubChunkAt === h.subChunkAttempts) throw new Error('boom-subchunk');
+          const silent = h.dropOnce.has(h.subChunkAttempts) || h.dropAlwaysInBatch === i / SUB_CHUNK + 1;
+          if (silent) continue;
+          for (const r of rows.slice(i, i + SUB_CHUNK)) landed.add((r as { id: string }).id);
+        }
+      },
+      upsertBookWords: async (rows: unknown[]) => {
+        h.bookWordCalls.push(rows.length);
+        const landed = setOf(h.bookWordsByOwner, h.owner);
+        for (const r of rows) {
+          landed.add((r as { id: string }).id);
+          h.writtenBookWordIds.push((r as { id: string }).id);
+        }
+      },
+      createBook: async (b: unknown) => {
+        h.createBookCalls += 1;
+        if (h.failCreateBook) throw new Error('boom-createBook');
+        return b;
+      },
+      words: {
+        count: async (filters: unknown[]) => {
+          h.wordsCountFilters.push(filters);
+          h.wordsCountCalls += 1;
+          if (h.failWordsCountAt === h.wordsCountCalls) throw new Error('boom-count');
+          if (h.failWordsCountFrom > 0 && h.wordsCountCalls >= h.failWordsCountFrom) throw new Error('boom-count');
+          return wordsIds(filters as Row[]).size;
+        },
+        listIds: async (filters: unknown[], opts: { offset?: number; limit?: number }) => {
+          h.wordsListIdsFilters.push(filters);
+          h.wordsListIdsCalls += 1;
+          if (h.failListIdsAt === h.wordsListIdsCalls) throw new Error('boom-listIds');
+          return page(wordsIds(filters as Row[]), opts.offset ?? 0, opts.limit ?? ID_PAGE);
+        },
+      },
+      bookWords: {
+        count: async (filters: unknown[]) => {
+          h.bookWordsCountFilters.push(filters);
+          return bookWordsIds(filters as Row[]).size;
+        },
+        listIds: async (filters: unknown[], opts: { offset?: number; limit?: number }) => {
+          h.bookWordsListIdsFilters.push(filters);
+          h.bookWordsListIdsCalls += 1;
+          if (h.failListIdsAt === h.bookWordsListIdsCalls) throw new Error('boom-listIds');
+          return page(bookWordsIds(filters as Row[]), opts.offset ?? 0, opts.limit ?? ID_PAGE);
+        },
+      },
+    }),
+  };
+});
+
+const { CET6_BOOK_ID, getSeedCursor, planStart, seedCursorKey, seedFingerprint, seedLibraryToCloud, seedToDocs } =
   await import('../../src/data/seedBootstrap');
 
 /** 当前 SEED / 变更后 SEED 的内容指纹（游标本体里的唯一接受判据） */
@@ -123,7 +199,7 @@ const FP_CHANGED = seedFingerprint(SEED_CHANGED);
 
 type CursorLike = { words: number; bookWords: number; totalWords: number; totalBookWords: number; fingerprint: string };
 
-// ===== localStorage shim =====
+// ===== 工具 =====
 
 let storage: Map<string, string>;
 
@@ -141,13 +217,11 @@ function installLocalStorage(): void {
   });
 }
 
-/** 直接读回指定用户持久化的游标（解析 JSON；无则 null） */
 function storedCursor(userId: string): CursorLike | null {
   const raw = storage.get(seedCursorKey(CET6_BOOK_ID, userId));
   return raw ? (JSON.parse(raw) as CursorLike) : null;
 }
 
-/** 预置一个游标（默认用与当前 SEED 相符的指纹） */
 function setCursor(userId: string, c: { words: number; bookWords?: number; fingerprint?: string }): void {
   storage.set(
     seedCursorKey(CET6_BOOK_ID, userId),
@@ -161,37 +235,63 @@ function setCursor(userId: string, c: { words: number; bookWords?: number; finge
   );
 }
 
-/** 让 /seed-cet6.json 返回给定种子 */
 function stubSeed(seed: unknown[]): void {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(seed), { status: 200 })));
 }
 
-/** 预置云端已落库前 n 个词（模拟「云端已有部分行」） */
-function seedCloudWords(n: number): void {
-  for (let i = 0; i < n; i += 1) h.landed.add(`word_w${i}`);
+/**
+ * 某 owner 云端实存的词 id（word 侧）。
+ * ⚠ 缺键时必须**建并挂回 map**（不能返回游离 Set），否则预置会静默丢失。
+ */
+function landedOf(owner = h.owner): Set<string> {
+  let s = h.wordsByOwner.get(owner);
+  if (!s) {
+    s = new Set<string>();
+    h.wordsByOwner.set(owner, s);
+  }
+  return s;
 }
 
-/** 清空云端（把两次运行当成两套独立云端场景用） */
+/** 预置：某 owner 云端已有前 n 个种子词 */
+function seedCloudWords(n: number, owner = h.owner): void {
+  const s = landedOf(owner);
+  for (let i = 0; i < n; i += 1) s.add(`word_w${i}`);
+}
+
+/** 预置：某 owner 云端有任意一批 id */
+function seedCloudIds(ids: Iterable<string>, owner = h.owner): void {
+  const s = landedOf(owner);
+  for (const id of ids) s.add(id);
+}
+
 function resetCloud(): void {
-  h.landed.clear();
-  h.landedBookWords.clear();
+  h.wordsByOwner.clear();
+  h.bookWordsByOwner.clear();
 }
 
 beforeEach(() => {
+  h.owner = 'u-1';
+  resetCloud();
+  h.writtenWordIds.length = 0;
+  h.writtenBookWordIds.length = 0;
   h.wordsCalls.length = 0;
   h.bookWordCalls.length = 0;
   h.wordsCountFilters.length = 0;
   h.bookWordsCountFilters.length = 0;
+  h.wordsListIdsFilters.length = 0;
+  h.bookWordsListIdsFilters.length = 0;
   h.wordsCountCalls = 0;
+  h.wordsListIdsCalls = 0;
+  h.bookWordsListIdsCalls = 0;
   h.failWordsCall = -1;
   h.failWordsCountAt = -1;
   h.failWordsCountFrom = -1;
   h.failSubChunkAt = -1;
+  h.failListIdsAt = -1;
+  h.idsTruncateTo = -1;
   h.subChunkAttempts = 0;
   h.dropOnce = new Set<number>();
   h.dropAlwaysInBatch = -1;
-  h.landed.clear();
-  h.landedBookWords.clear();
   h.failCreateBook = false;
   h.bookExists = false;
   h.createBookCalls = 0;
@@ -203,7 +303,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('planStart（云端对账起点）', () => {
+describe('planStart（云端对账起点，只是优化）', () => {
   it('对账失败(null) → 0（全量）；云端不足 → 回退到该行数所在分片边界；云端充足 → 取游标', () => {
     expect(planStart(600, null, TOTAL)).toBe(0); // 对账失败绝不沿用游标
     expect(planStart(600, 0, TOTAL)).toBe(0); // 云端 0 行 → 从 0 全量
@@ -218,8 +318,8 @@ describe('seedLibraryToCloud 断点续传', () => {
     h.failWordsCall = 3; // 第 3 个 words 分片抛错
     await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
 
-    expect(h.wordsCalls).toEqual([CHUNK, CHUNK, CHUNK]); // 前两片成功，第 3 片尝试后失败
-    expect(h.landed.size).toBe(2 * CHUNK); // 只有前两片真落库
+    expect(h.wordsCalls).toEqual([CHUNK, CHUNK, CHUNK]);
+    expect(landedOf().size).toBe(2 * CHUNK); // 只有前两片真落库
     expect(storedCursor('u-1')).toEqual({
       words: 600,
       bookWords: 0,
@@ -227,7 +327,7 @@ describe('seedLibraryToCloud 断点续传', () => {
       totalBookWords: TOTAL,
       fingerprint: FP,
     });
-    expect(h.bookWordCalls).toEqual([]); // words 未完成，绝不进入 book_words
+    expect(h.bookWordCalls).toEqual([]);
     expect(h.createBookCalls).toBe(0);
   });
 
@@ -235,7 +335,6 @@ describe('seedLibraryToCloud 断点续传', () => {
     h.failWordsCall = 3;
     await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
 
-    // 重试：云端确实已有那 600 行（对账通过才允许续传）
     h.wordsCalls.length = 0;
     h.bookWordCalls.length = 0;
     h.failWordsCall = -1;
@@ -243,12 +342,11 @@ describe('seedLibraryToCloud 断点续传', () => {
     const result = await seedLibraryToCloud('u-1', (p) => progress.push({ ...p }));
 
     expect(h.wordsCalls).toEqual([CHUNK, TOTAL - 3 * CHUNK]); // 只剩第 3、4 片（600..999）
-    expect(h.bookWordCalls).toEqual(FULL_CHUNKS); // book_words 从未开始 → 全量
+    expect(h.bookWordCalls).toEqual(FULL_CHUNKS);
     expect(result.skipped).toBe(false);
-    expect(result.reverted).toBe(false); // 续传路径不该触发全量回退
+    expect(result.reverted).toBe(false);
     expect(h.createBookCalls).toBe(1);
-    // UI 进度从断点起算（600/1000），不从 0 重跳
-    expect(progress.find((p) => p.step === 'words')?.done).toBe(600);
+    expect(progress.find((p) => p.step === 'words')?.done).toBe(600); // 进度从断点起算
   });
 
   it('C. 整次成功后才清除游标', async () => {
@@ -259,7 +357,7 @@ describe('seedLibraryToCloud 断点续传', () => {
   });
 
   it('D. 某表云端已齐：该表整步跳过（零请求）但仍上报该步完成', async () => {
-    seedCloudWords(TOTAL); // 云端实测已满
+    seedCloudWords(TOTAL);
     setCursor('u-1', { words: TOTAL });
     const progress: { step: string; done: number; total: number }[] = [];
     await seedLibraryToCloud('u-1', (p) => progress.push({ ...p }));
@@ -276,67 +374,74 @@ describe('seedLibraryToCloud 断点续传', () => {
     vi.stubGlobal('localStorage', { getItem: boom, setItem: boom, removeItem: boom });
     await expect(seedLibraryToCloud('u-1')).resolves.toMatchObject({ skipped: false, reverted: false });
 
-    // 完全没有 localStorage（node / worker / SSR 场景）；把云端重置，视作另一套独立场景
+    // 完全没有 localStorage（node / worker / SSR 场景）；视作另一套独立场景
     h.wordsCalls.length = 0;
     resetCloud();
     vi.stubGlobal('localStorage', undefined);
     await expect(seedLibraryToCloud('u-1')).resolves.toMatchObject({ skipped: false });
-    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 无游标 → 从头全量
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS);
   });
 
   it('F. 游标指纹与当前种子不符（种子变过）→ 丢弃旧游标，从头全量', async () => {
     setCursor('u-1', { words: 600, fingerprint: 'stale-fingerprint' });
     await seedLibraryToCloud('u-1');
-    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 未按 600 续传
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS);
   });
 
   it('G. 游标恰落在分片边界（< 总行数，且云端已覆盖）→ 从该边界继续，不重传之前的整片', async () => {
-    seedCloudWords(3 * CHUNK); // 云端已有前 900 行
+    seedCloudWords(3 * CHUNK);
     setCursor('u-1', { words: 3 * CHUNK });
     await seedLibraryToCloud('u-1');
-    expect(h.wordsCalls).toEqual([TOTAL - 3 * CHUNK]); // 只剩最后一片（900..999）
+    expect(h.wordsCalls).toEqual([TOTAL - 3 * CHUNK]);
   });
 
   /**
-   * H 是「游标必须按 userId 隔离」的护栏（2026-10-13 自查发现的真缺陷）。
-   * 注意：`landed` 里刻意留有 A 那轮的 600 行 —— 让「串号游标」在**对账之后仍能得逞**
-   * （min(600, 600) = 600），否则对账会替 key 隔离兜底、本用例失去判别力。
+   * H：key 必须按 userId 隔离。云端刻意预置 B 自己的 600 行 —— 让「串号游标」在
+   * 对账后**仍会改变续传起点**（`min(600,600)=600`），否则本用例失去判别力。
+   * 注：终局身份校验已经把「串号游标造成静默少词」这条封死，所以 H 现在的角色是
+   * 「隔离性金丝雀」：泄漏会让 B 少写一轮（起点 600 而非 0）。
    */
   it('H. 同浏览器换账号：B 不继承 A 的游标（全量导入），且 B 的导入不动 A 的进度', async () => {
-    // 账号 A 跑到中断：words 第 3 片失败 → A 的游标停在 600，云端有 600 行
+    h.owner = 'A';
     h.failWordsCall = 3;
     await expect(seedLibraryToCloud('A')).rejects.toThrow('boom-words');
     const aBefore = storage.get(seedCursorKey(CET6_BOOK_ID, 'A'));
     expect(aBefore).toBeTruthy();
     expect((JSON.parse(aBefore!) as CursorLike).words).toBe(600);
-    expect(h.landed.size).toBe(600);
+    expect(landedOf('A').size).toBe(600);
 
-    // 切到账号 B（同一 localStorage，不清存储）：B 无自己的游标 → 必须从 0 全量
+    // 切到账号 B：B 有自己的 600 行，但没有自己的游标 → 必须从 0 全量
+    h.owner = 'B';
+    seedCloudWords(600, 'B');
     h.wordsCalls.length = 0;
     h.bookWordCalls.length = 0;
     h.failWordsCall = -1;
     await seedLibraryToCloud('B');
-    expect(h.wordsCalls).toEqual(FULL_CHUNKS);
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 串号游标会让这里变成 [300,100]
     expect(h.bookWordCalls).toEqual(FULL_CHUNKS);
 
-    // A 的进度原封不动（逐字节相同）；B 成功后只清自己的
-    expect(storage.get(seedCursorKey(CET6_BOOK_ID, 'A'))).toBe(aBefore);
-    expect(storage.has(seedCursorKey(CET6_BOOK_ID, 'B'))).toBe(false);
+    expect(storage.get(seedCursorKey(CET6_BOOK_ID, 'A'))).toBe(aBefore); // A 原封不动
+    expect(storage.has(seedCursorKey(CET6_BOOK_ID, 'B'))).toBe(false); // B 成功后只清自己的
   });
 
-  it('I. userId 为假值：不使用游标（不读不写、不落 undefined 键），仅全量幂等', async () => {
-    await seedLibraryToCloud('');
-    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 全量
+  /**
+   * I：userId 为假值时不使用游标（不读不写、不落 `undefined` 键），且全量写。
+   * 由于「按身份读回」读的是 owner='' 这一域（空）⇒ 期望的 1000 个种子 id 一个都不在里面
+   * ⇒ 校验必然不通过 ⇒ 响亮失败且绝不建书（fail closed：无法归属的写入不允许被声称成功）。
+   */
+  it('I. userId 为假值：不使用游标（不读不写、不落 undefined 键）；且无法按身份校验 → 响亮失败、绝不建书', async () => {
+    await expect(seedLibraryToCloud('')).rejects.toThrow(/校验未通过/);
+    expect(h.wordsCalls[0]).toBe(CHUNK); // 从 0 全量写（未沿用游标）
     expect(getSeedCursor('')).toBeNull();
     expect(storage.size).toBe(0); // 一个键都没写（尤其没有 seed-progress:undefined:...）
+    expect(h.createBookCalls).toBe(0);
   });
 
-  /** J：缺陷② —— 种子「改了内容但行数不变」时，旧游标必须被指纹判据丢弃 */
   it('J. 同词数、不同内容：指纹判据丢弃旧游标（否则前半旧内容、后半新内容会静默错位）', async () => {
     h.failWordsCall = 3;
     await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
     expect(storedCursor('u-1')?.fingerprint).toBe(FP);
-    expect(FP_CHANGED).not.toBe(FP); // 指纹判据本身对内容敏感
+    expect(FP_CHANGED).not.toBe(FP);
 
     stubSeed(SEED_CHANGED); // 种子内容变了、词数不变
     h.wordsCalls.length = 0;
@@ -344,30 +449,28 @@ describe('seedLibraryToCloud 断点续传', () => {
     h.failWordsCall = -1;
     const result = await seedLibraryToCloud('u-1');
     expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 指纹不符 → 丢弃游标 → 全量
-    // 旧内容的行成了「孤儿行」（id 由 lemma 派生）⇒ 实测**大于**期望，终局校验不得因此判失败
-    // （这正是终局校验用「守下界 >=」而非严格 === 的原因；用 === 会让换种子后永久无法建书）
-    expect(h.landed.size).toBe(TOTAL + 1);
+    // 旧内容的行成了「孤儿行」（id 由 lemma 派生）⇒ 多出来的 id 必须被**子集判据天然放行**，
+    // 不得判失败（这正是判据用「集合 ⊆」而非任何「计数比较」的原因：计数比较会让换种子后永久无法建书）
+    expect(landedOf().size).toBe(TOTAL + 1);
     expect(result.reverted).toBe(false);
   });
 
   /**
-   * K：**前缀缺失** —— 我报备的那个规格 B 残留洞的活体构造。
-   * 云端只有「后缀」（rows 600..999，共 400 行），游标却声称已满 1000。
-   * min(1000, 400, 1000) = 400 → 起点 300 ⇒ **前 300 行会被永久跳过**（单靠 min() 公式无法发现）。
-   * 终局校验直接数表（700 ≠ 1000）→ 清游标 + 全量重写 → 补齐到 1000 → 才建书。
+   * K：**前缀缺失** —— `planStart` 的 min() 公式的活体反例。
+   * 云端只有「后缀」（rows 600..999），游标却声称已满 1000 ⇒ min(1000,400,1000)=400 ⇒ 起点 300
+   * ⇒ 0..299 会被跳过。min() 抓不到，**终局身份校验抓得到**（缺 0..299 共 300 个种子 id）。
    */
-  it('K. 前缀缺失 + 游标称满：min() 会留下前缀洞，终局校验兜底补齐（绝不静默少词）', async () => {
-    for (let i = 600; i < TOTAL; i += 1) h.landed.add(`word_w${i}`); // 云端只有后缀 400 行
+  it('K. 前缀缺失 + 游标称满：min() 会留下前缀洞，终局身份校验兜底补齐（绝不静默少词）', async () => {
+    for (let i = 600; i < TOTAL; i += 1) landedOf().add(`word_w${i}`); // 云端只有后缀 400 行
     setCursor('u-1', { words: TOTAL }); // 游标谎称已满
     const result = await seedLibraryToCloud('u-1');
 
-    // 首轮：起点 = floor(min(1000,400,1000)/300)*300 = 300 ⇒ 0..299 没被写（这就是洞）
-    expect(h.wordsCalls[0]).toBe(CHUNK);
-    expect(result.reverted).toBe(true); // 终局校验发现短缺（700 ≠ 1000）→ 触发一次全量回退
+    expect(h.wordsCalls[0]).toBe(CHUNK); // 首轮起点 300 ⇒ 0..299 没写（这就是洞）
+    expect(result.reverted).toBe(true); // 身份校验发现缺 300 个 id → 触发一次全量回退
     expect(h.wordsCalls.slice(-4)).toEqual(FULL_CHUNKS); // 回退从 0 整片重写
-    expect(h.landed.size).toBe(TOTAL); // 前缀洞被补齐：1000 行全在
-    expect(h.createBookCalls).toBe(1); // 补齐后才建书
-    expect(getSeedCursor('u-1')).toBeNull(); // 成功后才清游标
+    expect(landedOf().size).toBe(TOTAL); // 补齐：1000 行全在
+    expect(h.createBookCalls).toBe(1);
+    expect(getSeedCursor('u-1')).toBeNull();
   });
 
   it('L. 续传前对账 count 抛错 → 不使用游标（起点 0 全量），终局校验仍能通过并正常建书', async () => {
@@ -377,7 +480,7 @@ describe('seedLibraryToCloud 断点续传', () => {
     h.wordsCalls.length = 0;
     h.bookWordCalls.length = 0;
     h.failWordsCall = -1;
-    h.wordsCountCalls = 0; // 计数器按「本轮运行」重新起算
+    h.wordsCountCalls = 0;
     h.failWordsCountAt = 1; // 本次「续传前对账」请求失败（一次性）
     const result = await seedLibraryToCloud('u-1');
     expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 起点 0（未沿用游标）
@@ -390,72 +493,64 @@ describe('seedLibraryToCloud 断点续传', () => {
     await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-createBook');
     expect(h.createBookCalls).toBe(1);
     expect(getSeedCursor('u-1')).not.toBeNull(); // 失败路径保留游标，未清
-    expect(h.bookExists).toBe(false); // 书行未落地 → 不存在「书声称 1000 词」的静默状态
-    expect(h.landed.size).toBe(TOTAL); // 两表其实已写满（终局校验已通过），只是建书那步失败
+    expect(h.bookExists).toBe(false);
+    expect(landedOf().size).toBe(TOTAL); // 两表其实已写满（身份校验已通过），只是建书那步失败
 
-    // 重试：云端确实已齐（这不是「因陈留游标而错跳」，而是终局校验认证过的完整）
+    // 重试：云端确实已齐（这是身份校验认证过的完整，不是「因陈留游标而错跳」）
     h.failCreateBook = false;
     h.wordsCalls.length = 0;
     h.bookWordCalls.length = 0;
     const result = await seedLibraryToCloud('u-1');
-    expect(h.wordsCalls).toEqual([]); // 云端已齐 → 零请求
+    expect(h.wordsCalls).toEqual([]);
+    expect(h.bookWordCalls).toEqual([]);
     expect(result.reverted).toBe(false);
     expect(h.createBookCalls).toBe(2);
-    expect(getSeedCursor('u-1')).toBeNull(); // 成功后才清
+    expect(getSeedCursor('u-1')).toBeNull();
   });
 
-  it('N. 对账/终局校验的过滤条件：words 必须按 owner_id（其 RLS 是 USING(true)），book_words 按 bookId+owner_id', async () => {
+  it('N. 所有读请求都必须按 owner 作用域：words 用 owner_id（RLS 是 USING(true)），book_words 用 bookId+owner_id', async () => {
     await seedLibraryToCloud('u-1');
-    expect(h.wordsCountFilters).toHaveLength(2); // 续传前对账 + 终局校验
-    for (const f of h.wordsCountFilters) {
-      expect(f).toEqual([{ column: 'owner_id', op: 'eq', value: 'u-1' }]);
-    }
-    expect(h.bookWordsCountFilters).toHaveLength(2);
-    for (const f of h.bookWordsCountFilters) {
-      expect(f).toEqual([
-        { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
-        { column: 'owner_id', op: 'eq', value: 'u-1' },
-      ]);
-    }
+    const wordScope: Row[] = [{ column: 'owner_id', op: 'eq', value: 'u-1' }];
+    const bwScope: Row[] = [
+      { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
+      { column: 'owner_id', op: 'eq', value: 'u-1' },
+    ];
+    expect(h.wordsCountFilters.length).toBeGreaterThan(0);
+    for (const f of h.wordsCountFilters) expect(f).toEqual(wordScope);
+    expect(h.wordsListIdsFilters.length).toBeGreaterThan(0); // 终局身份校验的 id 读也必须带 owner
+    for (const f of h.wordsListIdsFilters) expect(f).toEqual(wordScope);
+    expect(h.bookWordsCountFilters.length).toBeGreaterThan(0);
+    for (const f of h.bookWordsCountFilters) expect(f).toEqual(bwScope);
+    expect(h.bookWordsListIdsFilters.length).toBeGreaterThan(0);
+    for (const f of h.bookWordsListIdsFilters) expect(f).toEqual(bwScope);
   });
 
-  /**
-   * O：覆盖缺口①（裁决方点名）—— 300 片**内部**的 100 子片失败。
-   * 真实形态：子片非原子（先落的子片留在库里），但整个 300 调用 reject。
-   * 要钉住的是「不谎报 / 不缺口」：游标一次都不写（该片整体视为未确认），重试整片重写。
-   */
   it('O. 300 片内的 100 粒度失败：游标不前移（不谎报 300），重试整片重写 → 无缺口', async () => {
     h.failSubChunkAt = 2; // 第 1 个整片内的第 2 个 100 子片失败（前 100 行已落库）
     await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-subchunk');
 
-    expect(h.wordsCalls).toEqual([CHUNK]); // 只尝试了第 1 个整片
+    expect(h.wordsCalls).toEqual([CHUNK]);
     expect(h.subChunkAttempts).toBe(2);
-    expect(h.landed.size).toBe(SUB_CHUNK); // 只有第 1 个子片落了库
+    expect(landedOf().size).toBe(SUB_CHUNK);
     expect(storedCursor('u-1')).toBeNull(); // 游标一次都没写 → 绝不声称「已确认 300」
 
-    // 重试：从 0 整片重写（而非从 100 或 300 续），最终 1000 个 word id 全部落库 → 无缺口
     h.failSubChunkAt = -1;
     h.wordsCalls.length = 0;
     h.bookWordCalls.length = 0;
     await seedLibraryToCloud('u-1');
     expect(h.wordsCalls[0]).toBe(CHUNK); // 起点 0（整片重写）
-    expect(h.landed.size).toBe(TOTAL); // 每个 word id 都在库里 → 无缺口
-    expect(getSeedCursor('u-1')).toBeNull(); // 成功后清游标
+    expect(landedOf().size).toBe(TOTAL); // 每个 word id 都在库里 → 无缺口
+    expect(getSeedCursor('u-1')).toBeNull();
   });
 
-  /**
-   * P：落实裁决方提醒 2 —— 指纹必须「生成过程与 seedToDocs 同序」，否则同一文件两次跑会算出不同值。
-   * 端到端验证：同一文件连跑两次 → 写入的指纹 == 当次算出的指纹 → 旧游标被接受（续传生效）。
-   */
   it('P. 指纹确定性：同一文件连跑两次同值 → 旧游标被接受（续传生效，不会误判为「种子变过」）', async () => {
     const fp = seedFingerprint(SEED);
     expect(seedFingerprint(SEED)).toBe(fp); // 纯函数幂等
 
     h.failWordsCall = 3;
     await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
-    expect(storedCursor('u-1')?.fingerprint).toBe(fp); // 游标里的指纹 = 当次算出的指纹
+    expect(storedCursor('u-1')?.fingerprint).toBe(fp);
 
-    // 同一文件再跑（同序）→ 指纹相等 → 游标被接受 → 走续传而非全量
     h.wordsCalls.length = 0;
     h.bookWordCalls.length = 0;
     h.failWordsCall = -1;
@@ -463,52 +558,119 @@ describe('seedLibraryToCloud 断点续传', () => {
     expect(h.wordsCalls).toEqual([CHUNK, TOTAL - 3 * CHUNK]); // 只补 600 之后
   });
 
-  /** Q：指纹对顺序敏感（首尾不变，仅内部两词对调）→ 故必须与 seedToDocs 同序遍历 */
   it('Q. 指纹对顺序敏感：内部两词对调（首尾与词数均不变）→ 指纹不同', () => {
     const swapped = [...SEED];
     [swapped[100], swapped[101]] = [swapped[101], swapped[100]];
     expect(swapped.length).toBe(SEED.length);
-    expect(swapped[0]).toBe(SEED[0]); // 首未变
-    expect(swapped[SEED.length - 1]).toBe(SEED[SEED.length - 1]); // 末未变
-    expect(seedFingerprint(swapped)).not.toBe(seedFingerprint(SEED)); // 差异只可能来自校验和
+    expect(swapped[0]).toBe(SEED[0]);
+    expect(swapped[SEED.length - 1]).toBe(SEED[SEED.length - 1]);
+    expect(seedFingerprint(swapped)).not.toBe(seedFingerprint(SEED));
   });
 
-  /** R：③ 的核心正例 —— 同一次运行内的**中段**假成功（upsert 返回成功但没落库） */
-  it('R. 中段分片静默 no-op（假成功）→ 终局校验发现短缺 → 清游标 + 全量重写一次 → 达标后正常建书', async () => {
+  it('R. 中段分片静默 no-op（假成功）→ 终局身份校验发现缺失 → 清游标 + 全量重写一次 → 达标后正常建书', async () => {
     h.dropOnce = new Set([5]); // 第 2 个整片的第 2 个子片（rows 400..499）静默不落库
     const result = await seedLibraryToCloud('u-1');
 
-    expect(h.landed.size).toBe(TOTAL); // 最终无缺口
-    expect(result.reverted).toBe(true); // 触发过一次全量回退
+    expect(landedOf().size).toBe(TOTAL); // 最终无缺口
+    expect(result.reverted).toBe(true);
     expect(h.createBookCalls).toBe(1);
-    expect(h.wordsCalls).toEqual([...FULL_CHUNKS, ...FULL_CHUNKS]); // 首轮 4 片 + 回退从 0 再 4 片
-    expect(getSeedCursor('u-1')).toBeNull(); // 成功后才清游标
+    expect(h.wordsCalls).toEqual([...FULL_CHUNKS, ...FULL_CHUNKS]); // 首轮 + 回退
+    expect(getSeedCursor('u-1')).toBeNull();
   });
 
-  /** S：③ 的负例 —— 回退也修不好，必须响亮失败，绝不 createBook */
-  it('S. 永久吞掉某分片（回退也修不好）→ 响亮失败、绝不 createBook，错误含实测/期望数', async () => {
+  it('S. 永久吞掉某分片（回退也修不好）→ 恰好一次回退后响亮失败、绝不 createBook，错误含缺失条数与样例 id', async () => {
     h.dropAlwaysInBatch = 2; // 每个整片的第 2 个子片永远不落库 → 恒定缺 300 行
-    await expect(seedLibraryToCloud('u-1')).rejects.toThrow(/words 实测 700 \/ 期望 1000/);
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow(/words 缺 300 条/);
     expect(h.createBookCalls).toBe(0); // 绝不建书
-    expect(h.landed.size).toBe(TOTAL - 3 * SUB_CHUNK); // 就是缺那 300 行
+    expect(h.wordsCalls).toEqual([...FULL_CHUNKS, ...FULL_CHUNKS]); // **恰好一次**回退（两轮，不是三轮）
+    expect(landedOf().size).toBe(TOTAL - 3 * SUB_CHUNK);
   });
 
-  /** T：③ 不得把回退变成常态 —— happy path 每表恰好 2 次 count、零重复写 */
-  it('T. happy path：每表恰好 2 次 count（续传前对账 + 终局校验）、零回退、零重复写', async () => {
+  it('T. happy path：每表 1 组分页 id 读（合计 2 组）、零回退、零重复写', async () => {
     const result = await seedLibraryToCloud('u-1');
-    expect(h.wordsCountFilters).toHaveLength(2);
-    expect(h.bookWordsCountFilters).toHaveLength(2);
+    expect(h.wordsListIdsCalls).toBe(1); // 1000 条 < ID_PAGE ⇒ 1 页
+    expect(h.bookWordsListIdsCalls).toBe(1);
     expect(result.reverted).toBe(false);
-    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 只写一遍
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS);
     expect(h.bookWordCalls).toEqual(FULL_CHUNKS);
     expect(h.createBookCalls).toBe(1);
   });
 
-  /** U：终局校验本身拿不到计数 → 无法证明 → 不得静默成功 */
-  it('U. 终局校验的 count 自身失败 → 不得静默成功：抛响亮错误、绝不 createBook', async () => {
-    h.failWordsCountFrom = 2; // 第 2 次 words count（= 终局校验）起永久失败
-    await expect(seedLibraryToCloud('u-1')).rejects.toThrow(/words 实测 -1/);
-    expect(h.createBookCalls).toBe(0); // 无法证明就不建书
-    expect(h.landed.size).toBe(TOTAL); // 行其实都写了（只是证明不了）
+  /**
+   * U：本判据升级的**直接动机**。该 owner 另有 300 个**别的 id**，同时缺 300 个**种子 id**，
+   * 总数恰好等于期望 ⇒ 任何「计数比较」（`===` 或 `>=`）都会放行 → 静默少词。
+   * 身份集合判据必须检出并回退修好。
+   */
+  it('U. 另有别的词源 id + 缺同样多的种子 id（总数恰好相等）→ 计数判据会放行，身份判据必须检出并修好', async () => {
+    seedCloudIds(Array.from({ length: 300 }, (_, i) => `word_other_${i}`)); // 别的来源的 300 个 id
+    h.dropOnce = new Set([5, 6, 7]); // 首轮让种子 id 400..699 静默不落库（正好 300 条）
+    const result = await seedLibraryToCloud('u-1');
+
+    // 首轮结束时：300 别的 id + 700 种子 id = 1000 = 期望总数 ⇒ 计数比较看不出来
+    expect(result.reverted).toBe(true);
+    for (const i of [400, 500, 600, 699]) expect(landedOf().has(`word_w${i}`)).toBe(true); // 已补齐
+    expect(landedOf().size).toBe(TOTAL + 300); // 种子 1000 + 别的 300
+    expect(h.createBookCalls).toBe(1);
+  });
+
+  /**
+   * U2：那些「别的 id」归属**另一个账号**。若读请求漏了 owner 过滤，`words` 的 RLS（USING(true)）
+   * 会让我们读到别人的行 —— 而别人导过同一份种子，恰好含我们缺的那些 id ⇒ 子集判据**被别人的行满足**、
+   * 假通过、静默少词。本条专验 owner 作用域（配合 N 的 filters 断言）。
+   */
+  it('U2. 缺的种子 id 由「另一个账号」持有 → 漏 owner 过滤会被别人的行满足（假通过）；必须按 owner 检出并修好', async () => {
+    const other = new Set<string>();
+    for (let i = 400; i < 700; i += 1) other.add(`word_w${i}`); // 别的账号恰好持有我们缺的 300 个
+    h.wordsByOwner.set('other-user', other);
+    h.dropOnce = new Set([5, 6, 7]); // 我们这边缺 400..699
+    const result = await seedLibraryToCloud('u-1');
+
+    expect(result.reverted).toBe(true); // 漏过滤时这里会是 false（被别人的行满足 → 假通过）
+    expect(landedOf().size).toBe(TOTAL); // 我们自己的 1000 行补齐（不靠别人的行）
+    for (const i of [400, 500, 600, 699]) expect(landedOf().has(`word_w${i}`)).toBe(true);
+    expect(landedOf('other-user').size).toBe(300); // 别人的数据没被我们算进来、也没被改写
+    expect(h.createBookCalls).toBe(1);
+  });
+
+  it('V. 分页读被静默截断 / 读失败 → 不得判通过：fail closed（响亮失败、不建书、且不做无意义全量重写）', async () => {
+    // (a) 计数说 1000，但分页只吐出 600 条（模拟服务端静默截断）
+    h.idsTruncateTo = 600;
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow(/无法校验/);
+    expect(h.createBookCalls).toBe(0);
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 只写了一轮：没有触发无意义的回退重写
+
+    // (b) 读请求本身失败
+    resetCloud();
+    h.idsTruncateTo = -1;
+    h.wordsCalls.length = 0;
+    h.bookWordCalls.length = 0;
+    h.wordsListIdsCalls = 0;
+    h.failListIdsAt = 1;
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow(/无法校验/);
+    expect(h.createBookCalls).toBe(0);
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS);
+  });
+
+  it('W. 期望 id 集合由 seedToDocs 结果直接取（与写入同一批，防日后两边漂移）', async () => {
+    const expected = seedToDocs(SEED, CET6_BOOK_ID, 50);
+    await seedLibraryToCloud('u-1');
+    expect([...h.writtenWordIds].sort()).toEqual(expected.words.map((w) => w.id).sort());
+    expect([...h.writtenBookWordIds].sort()).toEqual(expected.bookWords.map((b) => b.id).sort());
+  });
+
+  it('X. 分页读全：2500 词（> ID_PAGE）→ 每表 3 次分页读、校验通过、正常建书', async () => {
+    const big = Array.from({ length: 2500 }, (_, i) => ({
+      lemma: `b${i}`,
+      ipa: `/b${i}/`,
+      translation: `t${i}`,
+      frq: 2500 - i,
+      tags: ['cet6'],
+    }));
+    stubSeed(big);
+    const result = await seedLibraryToCloud('u-1');
+    expect(h.wordsListIdsCalls).toBe(3); // offset 0/1000/2000（第 3 页 500 条 → 短页结束）
+    expect(h.bookWordsListIdsCalls).toBe(3);
+    expect(result.reverted).toBe(false);
+    expect(h.createBookCalls).toBe(1);
   });
 });

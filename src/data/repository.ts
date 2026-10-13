@@ -136,6 +136,26 @@ export class Repository<T extends { id: string }> {
     return env.count ?? 0;
   }
 
+  /**
+   * 只取 `id` 的分页列表 —— 供**身份级**终局校验读回云端实存 id 集合用。
+   *
+   * 为什么不用 `list()`：它 `select('*')`，会把 5407 行的 `senses`/`examples` 等 jsonb 大字段
+   * 全部拉下来（一次性导入虽可接受，但纯属白烧带宽）。
+   * 为什么固定 `order('id')`：`id` 是主键 ⇒ 稳定序；无稳定排序的 `offset/limit` 分页会**重复或漏行**。
+   *
+   * @returns 该页的 id 数组（调用方负责翻页与「读全」断言）
+   */
+  async listIds(filters: Filter[] = [], opts: ListOptions = {}): Promise<string[]> {
+    let q = this.db.from(this.table).select('id');
+    q = this.applyFilters(q, filters);
+    q = q.order('id', { ascending: true }); // 分页必须稳定序
+    const from = opts.offset ?? 0;
+    const to = opts.limit != null ? from + opts.limit - 1 : from + 1_000_000;
+    q = q.range(from, to);
+    const env = (await q) as unknown as Envelope<{ id: string }[]>;
+    return this.unwrap(env).map((r) => r.id);
+  }
+
   // ===== 写 =====
 
   async insert(doc: Omit<T, 'id'> & { id?: string }): Promise<T> {

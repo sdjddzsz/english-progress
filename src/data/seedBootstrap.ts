@@ -18,6 +18,8 @@ import { createWordRepo } from './repos/wordRepo';
 export const CET6_BOOK_ID = 'book_cet6_full';
 const LIST_SIZE = 50;
 const CHUNK = 300; // 每批 upsert 行数，控制单请求体积
+/** 终局身份校验读 id 的每页条数（只取 id；5407 条 ⇒ 6 次/表） */
+const ID_PAGE = 1000;
 
 // ===== 断点续传游标（本机 localStorage）=====
 //
@@ -270,11 +272,12 @@ export function planStart(cursorValue: number, cloudCount: number | null, total:
  *  ① 续传前**与云端对账**（`Repository.count`，head 请求）—— 续传起点只到「云端确实已存在」的
  *     分片边界，避免某片「假成功」（响应成功却未落库）导致游标超前于现实、永久跳过缺口；
  *     对账失败一律降级为全量幂等。
- *  ③ **终局校验 + 一次性全量回退**（createBook 之前）—— `min()` 公式只能保证「起点不超过云端计数」，
- *     并不能证明起点**之前**的行真的存在（缺失集是「前缀」时它无能为力，中段缺失同理）。
- *     因此写入结束后直接**数**两表：不达标就清游标 + 无条件全量重写一次再数；
- *     仍不达标则**响亮失败、绝不 createBook**。全量重写按定义填满任何形态的缺口，
- *     这是「事实判据」而非「关于缺口形态的假设」——这也是它优于 min() 公式的地方。
+ *  ③ **终局校验（身份集合）+ 一次性全量回退**（createBook 之前）—— 判据是
+ *     「期望的种子 id 集合 ⊆ 云端实存 id 集合」（两表各一遍，只取 id、按 owner 作用域、分页读全），
+ *     而不是任何「计数比较」：计数不含身份信息，会被「等量但位置/身份不同」的洞骗过
+ *     （前缀洞、另有别的词源、孤儿行）。不达标则清游标 + 无条件全量重写一次再判；
+ *     仍缺则**响亮失败、绝不 createBook**；读失败/分页截断 → fail closed（不重写、不建书）。
+ *     有了它，`planStart` 的 min() 与「云端已齐则跳过」都**降级为纯优化**（错了会被这里逮住并回退修复）。
  *
  * 其余：某张表云端已齐则整步跳过（零请求）；每个分片确认落库后推进游标；整体成功后清游标。
  * 代价：正常路径固定 4 次 count（2 次续传前对账 + 2 次终局校验），仅在回退时额外一轮全量写。
@@ -383,43 +386,104 @@ export async function seedLibraryToCloud(
     advance({ bookWords: done }),
   );
 
-  // ===== 终局校验（事实判据）+ 一次性全量回退 =====
+  // ===== 终局校验（**身份集合**判据）+ 一次性全量回退 =====
   //
-  // 为什么需要它：`planStart` 的 min() 公式只保证「起点 ≤ 云端计数」，**不能证明起点之前的行存在**
-  // —— 缺失集是「前缀」时该公式完全无能为力（游标 600、云端 4807 时 min 仍取 600），「中段缺失」同理。
-  // 这里改成直接**数**两表：数量对不上就清游标 + 无条件全量重写一次（按定义填满任何形态的缺口），
-  // 写完再数；仍对不上则**响亮失败、绝不 createBook**（静默少词是本项目明确不可容忍的失效）。
-  // 计数请求失败（→ -1）同样视为「未达标」：无法证明就不允许声称成功。
-  const measure = async (): Promise<{ words: number; bookWords: number }> => ({
-    words: (await countOrNull(countWords)) ?? -1,
-    bookWords: (await countOrNull(countBookWords)) ?? -1,
-  });
-  const fulfilled = (m: { words: number; bookWords: number }): boolean =>
-    // ⚠ 这里刻意用 `>=` 而非严格 `===`：
-    //   word/book_word 的 id 是**由内容派生**的（`word_<lemma>` / `bw_<bookId>_<lemma>`），
-    //   一旦种子内容变过（lemma 改动），旧行会以「孤儿行」留在云端 → count **大于**期望。
-    //   若用严格相等，用户每次换种子都会「校验未通过 → 不建书」被**永久卡死**，比静默少词更糟
-    //   （而且「种子变过」正是缺陷②自己的场景）。本校验的目的是「不得有静默**短缺**」，故只守下界。
-    m.words >= words.length && m.bookWords >= bookWords.length;
-  const describeCounts = (m: { words: number; bookWords: number }): string =>
-    `words 实测 ${m.words} / 期望 ${words.length}；book_words 实测 ${m.bookWords} / 期望 ${bookWords.length}` +
-    (m.words < 0 || m.bookWords < 0 ? '（-1 表示计数请求失败，无法证明确已写入）' : '');
+  // 判据为何从「计数」升级为「身份集合」：计数不含**身份**信息，任何计数比较都可能被
+  // 「等量但位置/身份不同」的洞骗过：
+  //   · `planStart` 的 min(游标, 计数) —— 缺失集是「前缀」时给出错误起点（游标 600 + 云端 4807 ⇒ 仍取 600）；
+  //   · 终局计数比对 —— 该账号另有别的词源时，「丢了 300 个种子 id、另有 300 个别家 id」总数仍相等 ⇒ 放行；
+  //     且「孤儿行」（种子换内容后旧 id 残留）会让 `===` 误判、只能靠放宽符号躲开，顾此失彼。
+  // 身份集合判据一次消掉这一整类假设：
+  //   **期望的种子 id 集合 ⊆ 云端实存 id 集合**（两表各一遍）。
+  //   → 孤儿行（多出来的 id）天然放行（用户换种子后照常建书，不锁死）；
+  //   → 缺任何该有的种子 id 必失败（不会被孤儿数掩盖）。
+  // 写入结束仍不达标 → 清游标 + 无条件全量重写一次（按定义填满任何形态的缺口）→ 再判；
+  // 仍缺 → **响亮失败且绝不 createBook**（静默少词是本项目明确不可容忍的失效）。
+  //
+  // ⚠ 读必须**按 owner 作用域**：`words` 的 RLS 是 USING(true)，不按 owner 过滤会读到**别人的 id**
+  //   —— 任何其他账号导过同一份种子，其行恰好含我们缺的那些 id ⇒ 子集判据**被别人的行满足 → 假通过**。
+  const expectedWordIds = new Set(words.map((w) => w.id));
+  const expectedBookWordIds = new Set(bookWords.map((b) => b.id));
 
-  let counts = await measure();
+  /**
+   * 分页读回某表「该 owner」的实存 id 集合（只取 id；固定 id 序分页）。
+   * @returns 读失败，或条数与云端计数不一致（分页被静默截断 / 读取期间数据变动）→ `null`（= 不可验证）
+   */
+  const readIdSet = async (
+    listPage: (offset: number, limit: number) => Promise<string[]>,
+    cloudCount: number,
+  ): Promise<Set<string> | null> => {
+    const ids = new Set<string>();
+    try {
+      for (let offset = 0; offset < cloudCount; offset += ID_PAGE) {
+        const page = await listPage(offset, ID_PAGE);
+        for (const id of page) ids.add(id);
+        if (page.length < ID_PAGE) break; // 短页 = 读完
+      }
+    } catch {
+      return null; // 读失败 → 不可验证
+    }
+    // 「读全」断言：条数与云端计数不符 ⇒ 分页被悄悄截断（或期间数据变动）⇒ 不可验证
+    return ids.size === cloudCount ? ids : null;
+  };
+
+  const missingOf = (expected: Set<string>, actual: Set<string>): string[] =>
+    [...expected].filter((id) => !actual.has(id));
+
+  /** 身份级校验；`null` = 不可验证（读失败 / 分页截断 / 计数拿不到，无法断言「已读全」） */
+  const verify = async (): Promise<{ missingWords: string[]; missingBookWords: string[] } | null> => {
+    const wCount = await countOrNull(countWords);
+    const bCount = await countOrNull(countBookWords);
+    if (wCount === null || bCount === null) return null; // 计数拿不到 ⇒ 无法断言读全 ⇒ 不可验证
+    const actualWords = await readIdSet(
+      (offset, limit) =>
+        repo.words.listIds([{ column: 'owner_id', op: 'eq', value: userId }], { offset, limit }),
+      wCount,
+    );
+    const actualBookWords = await readIdSet(
+      (offset, limit) =>
+        repo.bookWords.listIds(
+          [
+            { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
+            { column: 'owner_id', op: 'eq', value: userId },
+          ],
+          { offset, limit },
+        ),
+      bCount,
+    );
+    if (actualWords === null || actualBookWords === null) return null;
+    return {
+      missingWords: missingOf(expectedWordIds, actualWords),
+      missingBookWords: missingOf(expectedBookWordIds, actualBookWords),
+    };
+  };
+
+  const sample = (ids: string[]): string => `${ids.slice(0, 5).join(', ')}${ids.length > 5 ? ' …' : ''}`;
+  const unverifiableError = (): Error =>
+    new Error(
+      '词书初始化无法校验：读取云端 id 集合失败或不完整（网络抖动 / 分页被截断）。' +
+        '无法证明数据已写全时不允许声称成功，本次不创建词书；已导入部分会保留，请重试。',
+    );
+  const shortfallError = (m: { missingWords: string[]; missingBookWords: string[] }): Error =>
+    new Error(
+      `词书初始化校验未通过（已做过一次全量重写仍缺）：words 缺 ${m.missingWords.length} 条（如 ${sample(m.missingWords)}）；` +
+        `book_words 缺 ${m.missingBookWords.length} 条（如 ${sample(m.missingBookWords)}）。` +
+        '为避免出现「词书声称 N 词、实际更少」的静默错误，本次不创建词书；已导入部分会保留，请重试。',
+    );
+
+  let verdict = await verify();
+  // ⚠ 「回退只做一次」的标志键在**本次运行的局部变量**，绝不能键在游标 ——
+  //   否则「清游标 → 重写 → 又缺 → 再清 → 被下一步重读游标当成新一次」就能绕开限制。
   let reverted = false;
-  if (!fulfilled(counts)) {
-    // 一次性全量回退：清游标 + 从 0 无条件重写两张表（只做一次，防死循环）
+  if (verdict === null) throw unverifiableError(); // 读失败/截断：fail closed，且**不做**无意义的全量重写
+  if (verdict.missingWords.length > 0 || verdict.missingBookWords.length > 0) {
     clearCursor(userId);
     reverted = true;
     await runTable('words', words, 0, null, upsertWords, (done) => advance({ words: done }));
     await runTable('book_words', bookWords, 0, null, upsertBookWords, (done) => advance({ bookWords: done }));
-    counts = await measure();
-    if (!fulfilled(counts)) {
-      throw new Error(
-        `词书初始化校验未通过（已做过一次全量重写仍不足）：${describeCounts(counts)}。` +
-          '为避免出现「词书声称 N 词、实际更少」的静默错误，本次不创建词书；已导入部分会保留，请重试。',
-      );
-    }
+    verdict = await verify();
+    if (verdict === null) throw unverifiableError();
+    if (verdict.missingWords.length > 0 || verdict.missingBookWords.length > 0) throw shortfallError(verdict);
   }
 
   onProgress?.({ step: 'book', done: 0, total: 1 });
