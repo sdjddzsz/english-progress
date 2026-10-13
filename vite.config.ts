@@ -1,6 +1,31 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, type Plugin } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { copyFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+/**
+ * 深链回退（站点无 SPA rewrite）。
+ * 静态托管对 /book、/dashboard 这类深链会直接 404——目前只靠 Service Worker 的
+ * navigateFallback 兜住，一旦清缓存 / 无痕 / 换设备首次打开就白给。
+ * 构建后补两个通用兜底产物，不动部署方式（仍是 static）：
+ *   - 404.html   ：多数静态服务器的未命中页（GitHub Pages 约定），URL 不变、SPA 照常接管路由
+ *   - _redirects ：Netlify / Cloudflare Pages 风格的显式 rewrite
+ */
+function spaHistoryFallback(): Plugin {
+  let outDir = 'dist';
+  return {
+    name: 'spa-history-fallback',
+    configResolved(cfg) {
+      outDir = cfg.build.outDir;
+    },
+    closeBundle() {
+      const dir = resolve(process.cwd(), outDir);
+      copyFileSync(resolve(dir, 'index.html'), resolve(dir, '404.html'));
+      writeFileSync(resolve(dir, '_redirects'), '/*    /index.html   200\n');
+    },
+  };
+}
 
 /**
  * Vite 配置：React + MUI + Tailwind + vite-plugin-pwa。
@@ -10,6 +35,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig({
   plugins: [
     react(),
+    spaHistoryFallback(),
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: 'auto',
