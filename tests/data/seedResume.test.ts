@@ -578,6 +578,24 @@ describe('seedLibraryToCloud 断点续传', () => {
     expect(getSeedCursor('u-1')).toBeNull();
   });
 
+  /**
+   * R2：把 R 里那条**隐性**前提变成可观测断言 —— 「静默 no-op 会让游标**假推进**」。
+   * 这是终局校验存在的最直接理由：游标与云端可以互相背离，而 `upsert` 全程无错。
+   * 构造：让首轮在**第 4 个整片**抛错（使运行在终局校验之前中断），于是能直接看到
+   * 「游标声称 900、云端实际只有 800」这一背离。（独立复核方按其口径重造 R 时提示了这个视角。）
+   * ⚠ 与 O 的区别：O 是「子片**抛错**」（整批 reject ⇒ 游标不前移，不背离）；
+   *    R2 是「子片**静默返回成功但没落库**」（整批成功 ⇒ 游标照常前进 ⇒ **背离**）。
+   */
+  it('R2. 游标「假推进」可观测：子片静默 no-op 时游标会越过未落库的行（与云端背离）', async () => {
+    h.dropOnce = new Set([2]); // 第 1 个整片的第 2 个子片（rows 100..199）静默不落库
+    h.failWordsCall = 4; // 第 4 个整片抛错 → 运行在终局校验之前中断，游标得以留存观测
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
+
+    expect(storedCursor('u-1')?.words).toBe(3 * CHUNK); // 游标声称已确认 900 行
+    expect(landedOf().size).toBe(3 * CHUNK - SUB_CHUNK); // 云端实际只有 800 行
+    expect(storedCursor('u-1')!.words).toBeGreaterThan(landedOf().size); // **游标超前于事实**
+  });
+
   it('S. 永久吞掉某分片（回退也修不好）→ 恰好一次回退后响亮失败、绝不 createBook，错误含缺失条数与样例 id', async () => {
     h.dropAlwaysInBatch = 2; // 每个整片的第 2 个子片永远不落库 → 恒定缺 300 行
     const err = (await seedLibraryToCloud('u-1').catch((e: unknown) => e)) as Error;
