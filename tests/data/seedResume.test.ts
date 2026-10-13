@@ -580,7 +580,11 @@ describe('seedLibraryToCloud 断点续传', () => {
 
   it('S. 永久吞掉某分片（回退也修不好）→ 恰好一次回退后响亮失败、绝不 createBook，错误含缺失条数与样例 id', async () => {
     h.dropAlwaysInBatch = 2; // 每个整片的第 2 个子片永远不落库 → 恒定缺 300 行
-    await expect(seedLibraryToCloud('u-1')).rejects.toThrow(/words 缺 300 条/);
+    const err = (await seedLibraryToCloud('u-1').catch((e: unknown) => e)) as Error;
+    expect(err.message).toMatch(/校验未通过/); // 归「校验不足」类（读到了、但不够）
+    expect(err.message).toMatch(/words 缺 300 条/); // 缺失条数
+    expect(err.message).toMatch(/word_w/); // 样例 id
+    expect(err.message).not.toMatch(/无法校验/); // 与「读不到」类必须一眼分清
     expect(h.createBookCalls).toBe(0); // 绝不建书
     expect(h.wordsCalls).toEqual([...FULL_CHUNKS, ...FULL_CHUNKS]); // **恰好一次**回退（两轮，不是三轮）
     expect(landedOf().size).toBe(TOTAL - 3 * SUB_CHUNK);
@@ -632,10 +636,30 @@ describe('seedLibraryToCloud 断点续传', () => {
     expect(h.createBookCalls).toBe(1);
   });
 
+  /**
+   * U3（**由原「U」改名**，避免与 team-lead 定义的 U「额外来源凑总数」撞名）：
+   * 终局校验**自身拿不到计数** → 无法断言「已读全」 → 不可验证 → fail closed。
+   * 与 V 的区别：V 是 id 读失败/截断，U3 是**计数**失败；两者文案都必须是「无法校验」，
+   * 且**不得**声称「已做过一次全量重写」（数据其实是好的，只是证明不了）。
+   */
+  it('U3. 终局校验的 count 自身失败 → 不得静默成功：文案归「无法校验」、绝不建书、且不做无意义重写', async () => {
+    h.failWordsCountFrom = 2; // 第 2 次 words count（= 终局校验）起永久失败
+    const err = (await seedLibraryToCloud('u-1').catch((e: unknown) => e)) as Error;
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/无法校验/); // 归「无法校验」类
+    expect(err.message).not.toMatch(/已做过一次全量重写/); // 不得谎称做过回退（数据其实是好的）
+    expect(h.createBookCalls).toBe(0); // 不验证绝不建书
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 只写一轮：无法验证时不做无意义的全量重写
+    expect(landedOf().size).toBe(TOTAL); // 行其实都写了，只是证明不了
+  });
+
   it('V. 分页读被静默截断 / 读失败 → 不得判通过：fail closed（响亮失败、不建书、且不做无意义全量重写）', async () => {
     // (a) 计数说 1000，但分页只吐出 600 条（模拟服务端静默截断）
     h.idsTruncateTo = 600;
-    await expect(seedLibraryToCloud('u-1')).rejects.toThrow(/无法校验/);
+    const errA = (await seedLibraryToCloud('u-1').catch((e: unknown) => e)) as Error;
+    expect(errA.message).toMatch(/无法校验/);
+    expect(errA.message).not.toMatch(/已做过一次全量重写/); // 「读不到」≠「读到了但不够」
     expect(h.createBookCalls).toBe(0);
     expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 只写了一轮：没有触发无意义的回退重写
 
@@ -646,7 +670,8 @@ describe('seedLibraryToCloud 断点续传', () => {
     h.bookWordCalls.length = 0;
     h.wordsListIdsCalls = 0;
     h.failListIdsAt = 1;
-    await expect(seedLibraryToCloud('u-1')).rejects.toThrow(/无法校验/);
+    const errB = (await seedLibraryToCloud('u-1').catch((e: unknown) => e)) as Error;
+    expect(errB.message).toMatch(/无法校验/);
     expect(h.createBookCalls).toBe(0);
     expect(h.wordsCalls).toEqual(FULL_CHUNKS);
   });
