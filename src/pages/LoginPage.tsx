@@ -3,7 +3,7 @@
  *
  * 为什么必须有它：所有 owner-only 表都开了 RLS，未登录时 SDK 以 anon role
  * 发请求，任何 INSERT/UPDATE 都会被挡下（42501）。此前 bootstrap 在未登录时
- * 用 'local-user' 假身份继续跑，页面照常渲染、直到点「初始化词库」才炸——
+ * 用一个伪造的本地假身份继续跑，页面照常渲染、直到点「初始化词库」才炸——
  * 已改为未登录直接停在这里。
  */
 import { useState } from 'react';

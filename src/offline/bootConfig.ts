@@ -30,37 +30,48 @@ export async function bootRuntime(): Promise<BootResult> {
   }
   try {
     const session = await getSessionInfo();
-    const userId = session.userId ?? 'local-user';
+    // 未登录：绝不伪造身份（这正是 RLS 42501 的复发口）。跳过一切云端读写（TTS 配置读取 / 每日校准），
+    // 但不中断启动——ttsKeyLoaded 保持 false（espeak 兜底可用），前端由 AuthGate 引导登录。
+    const userId = session.userId ?? null;
     let ttsKeyLoaded = false;
-    try {
-      const cfg = await getRepos().config.getTTSConfig(userId);
-      if (cfg) {
-        // apiKeyRef 指向云配置文档中的密钥字段名（如 'runtimeApiKey'）；从同一文档读出后注入内存
-        const refField = cfg.apiKeyRef;
-        const doc = cfg as unknown as Record<string, unknown>;
-        const key = refField && typeof doc[refField] === 'string' ? (doc[refField] as string) : undefined;
-        if (key && key.trim()) {
-          setRuntimeTTSApiKey(key);
-          ttsKeyLoaded = true;
+    if (userId) {
+      try {
+        const cfg = await getRepos().config.getTTSConfig(userId);
+        if (cfg) {
+          // apiKeyRef 指向云配置文档中的密钥字段名（如 'runtimeApiKey'）；从同一文档读出后注入内存
+          const refField = cfg.apiKeyRef;
+          const doc = cfg as unknown as Record<string, unknown>;
+          const key = refField && typeof doc[refField] === 'string' ? (doc[refField] as string) : undefined;
+          if (key && key.trim()) {
+            setRuntimeTTSApiKey(key);
+            ttsKeyLoaded = true;
+          }
         }
+      } catch {
+        // 密钥加载失败不阻塞（兜底轨可用）
       }
-    } catch {
-      // 密钥加载失败不阻塞（兜底轨可用）
     }
 
-    // 前两周每日校准（批量变动 >10% → 动态风险路由为 Confirm 提案；≤10% 自动落地）
+    // 前两周每日校准（批量变动 >10% → 动态风险路由为 Confirm 提案；≤10% 自动落地）——未登录时同样跳过
     let calibrationProposal: boolean | undefined;
-    try {
-      const { activePlan } = (await import('../store/useAppStore')).useAppStore.getState();
-      if (activePlan) {
-        const r = await runDailyCalibration({ userId, plan: activePlan, today: todayISO() });
-        calibrationProposal = r.proposalCreated;
+    if (userId) {
+      try {
+        const { activePlan } = (await import('../store/useAppStore')).useAppStore.getState();
+        if (activePlan) {
+          const r = await runDailyCalibration({ userId, plan: activePlan, today: todayISO() });
+          calibrationProposal = r.proposalCreated;
+        }
+      } catch {
+        // 校准失败不阻塞启动
       }
-    } catch {
-      // 校准失败不阻塞启动
     }
 
-    return { cloudReady: true, userId, ttsKeyLoaded, ...(calibrationProposal !== undefined ? { calibrationProposal } : {}) };
+    return {
+      cloudReady: true,
+      ...(userId ? { userId } : {}),
+      ttsKeyLoaded,
+      ...(calibrationProposal !== undefined ? { calibrationProposal } : {}),
+    };
   } catch (e) {
     return { cloudReady: false, ttsKeyLoaded: false, message: e instanceof Error ? e.message : String(e) };
   }

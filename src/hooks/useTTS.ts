@@ -47,7 +47,10 @@ function getOrchestrator(): TTSOrchestrator {
   orchestratorSingleton = createOrchestrator({
     cache,
     getConfig: async () => {
-      const userId = useAppStore.getState().userId ?? 'local-user';
+      // 未登录（userId 为空）→ 绝不伪造身份、不发云端请求：直接返回 null，
+      // 编排器对 config === null 已有既有处理（回落 espeak 兜底轨），不新增分支。
+      const userId = useAppStore.getState().userId;
+      if (!userId) return null;
       const config = await getRepos().config.getTTSConfig(userId);
       if (!config) return null;
       // key 从会话内存取（用户在设置页粘贴）；云端配置文档里的 apiKeyRef 指向的字段由部署侧填充

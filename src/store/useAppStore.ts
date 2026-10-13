@@ -173,7 +173,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       await consumeWorkBuddyCallback();
       const session = await getSessionInfo();
       if (!session.signedIn || !session.userId) {
-        // ⚠ 未登录时绝不再用 'local-user' 之类的假身份往下走：
+        // ⚠ 未登录时绝不再用伪造的本地假身份往下走：
         //   SDK 以 anon role 发请求，所有 owner-only 写操作都会被 RLS 挡下
         //   （表现：词书初始化报 42501 new row violates row-level security policy）。
         set({ cloudReady: true, userId: null, needsLogin: true, loading: false, books: [] });

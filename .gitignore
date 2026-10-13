@@ -24,3 +24,6 @@ npm-debug.log*
 
 # local data dumps
 *.local.json
+
+# Playwright CLI 临时产物（会话截图/快照，不入库）
+.playwright-cli/
