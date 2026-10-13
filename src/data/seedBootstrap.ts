@@ -22,6 +22,7 @@ const CHUNK = 300; // 每批 upsert 行数，控制单请求体积
 // ===== 断点续传游标（本机 localStorage）=====
 //
 // 取舍：游标只存本机 —— 换设备 / 清缓存后读不到游标，会从头做一次幂等全量导入（安全，只是多跑请求）。
+// 隔离：key 必须按 **userId** 隔离（同浏览器换账号时不能继承他人进度），见 seedCursorKey。
 // 语义：游标只在「某个分片已确认落库」之后前进，因此它永远不会声称未确认的进度；
 //       配合 upsert(onConflict:'id')，即便游标落后（例如响应丢失但已写入），也只是重复写同一批，绝不丢数据。
 
@@ -33,19 +34,30 @@ export interface SeedCursor {
   totalBookWords: number;
 }
 
-/** localStorage key（按词书隔离，便于将来多词书复用同一套逻辑） */
-export function seedCursorKey(bookId: string): string {
-  return `seed-progress:${bookId}`;
+/**
+ * localStorage key。
+ *
+ * ⚠ 必须按 **userId** 隔离：游标是「某人导入到哪儿」的进度，不是「这台机器导入到哪儿」的进度。
+ * 若只按 bookId 存，同浏览器换账号（登出再登入 / 共用设备）时新账号会读到上一账号的游标，
+ * 而自校验只比种子文件行数、不比用户 → 会通过 → 新账号的导入**静默跳过前 N 行且不报错**。
+ * （不要改成「检测到 userId 变化就清游标」——多账号交错时会误清他人进度，key 隔离才是正解。）
+ */
+export function seedCursorKey(bookId: string, userId: string): string {
+  return `seed-progress:${userId}:${bookId}`;
 }
 
 /**
- * 读游标。存储不可用（node/worker/SSR 无 localStorage、隐私模式）或内容损坏 → 返回 null，
- * 一律降级为「无游标」，**绝不**因存储异常打断导入。
+ * 读游标。以下情形一律返回 null（= 无游标）：
+ *  - userId 为假值：没有身份就无从归属进度，**不读**（也绝不拼出 `seed-progress:undefined:...` 这类键）；
+ *  - 存储不可用（node/worker/SSR 无 localStorage、隐私模式）；
+ *  - 内容损坏。
+ * **绝不**因存储异常打断导入。
  */
-function readCursor(): SeedCursor | null {
+function readCursor(userId: string | null | undefined): SeedCursor | null {
   try {
+    if (!userId) return null;
     if (typeof localStorage === 'undefined') return null;
-    const raw = localStorage.getItem(seedCursorKey(CET6_BOOK_ID));
+    const raw = localStorage.getItem(seedCursorKey(CET6_BOOK_ID, userId));
     if (!raw) return null;
     const p = JSON.parse(raw) as Partial<SeedCursor>;
     if (
@@ -62,29 +74,35 @@ function readCursor(): SeedCursor | null {
   }
 }
 
-/** 写游标。存储异常（配额满 / 被禁用）时静默降级，绝不影响导入 */
-function saveCursor(c: SeedCursor): void {
+/** 写游标。userId 为假值时不写；存储异常（配额满 / 被禁用）时静默降级，绝不影响导入 */
+function saveCursor(userId: string | null | undefined, c: SeedCursor): void {
   try {
+    if (!userId) return;
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(seedCursorKey(CET6_BOOK_ID), JSON.stringify(c));
+    localStorage.setItem(seedCursorKey(CET6_BOOK_ID, userId), JSON.stringify(c));
   } catch {
     /* 存储不可用：降级为「无游标」 */
   }
 }
 
 /** 清游标。**只**在整次导入成功（books 行已落地）后调用，否则下次全新导入会被错误跳过 */
-function clearCursor(): void {
+function clearCursor(userId: string | null | undefined): void {
   try {
+    if (!userId) return;
     if (typeof localStorage === 'undefined') return;
-    localStorage.removeItem(seedCursorKey(CET6_BOOK_ID));
+    localStorage.removeItem(seedCursorKey(CET6_BOOK_ID, userId));
   } catch {
     /* 存储不可用：无游标可清，忽略 */
   }
 }
 
-/** 供词书页展示「上次导入中断于 N/M」；无游标 / 存储不可用时返回 null */
-export function getSeedCursor(): SeedCursor | null {
-  return readCursor();
+/**
+ * 供词书页展示「上次导入中断于 N/M」。
+ * ⚠ 必须传**与 seedLibraryToCloud 同一个 userId**，否则页面读到的 key 与实际写入的 key 不一致，
+ *    续传提示会与真实续传点对不上（表现为提示 0/5407 但实际从 600 续、或反之）。
+ */
+export function getSeedCursor(userId: string | null | undefined): SeedCursor | null {
+  return readCursor(userId);
 }
 
 interface SeedWord {
@@ -198,7 +216,7 @@ export async function seedLibraryToCloud(
   const { words, bookWords } = seedToDocs(seed, CET6_BOOK_ID, LIST_SIZE);
 
   // 断点续传：读游标 + 自校验（行数对不上 = 种子文件变过 → 丢弃，避免按旧游标错位续传）
-  const stored = readCursor();
+  const stored = readCursor(userId);
   const cursor: SeedCursor =
     stored && stored.totalWords === words.length && stored.totalBookWords === bookWords.length
       ? stored
@@ -209,7 +227,7 @@ export async function seedLibraryToCloud(
   // 写游标时**只**改当前表，另一张表的已确认值保持原样（否则会把对方的进度覆盖成 0）
   const advance = (patch: Partial<SeedCursor>): void => {
     Object.assign(cursor, patch);
-    saveCursor(cursor);
+    saveCursor(userId, cursor);
   };
 
   /**
@@ -266,7 +284,7 @@ export async function seedLibraryToCloud(
     createdAt: new Date().toISOString(),
   });
   // 成功路径才清游标：若在失败路径清掉，下次会从头重灌。
-  clearCursor();
+  clearCursor(userId);
   onProgress?.({ step: 'done', done: 1, total: 1 });
 
   return { bookId: CET6_BOOK_ID, words: words.length, bookWords: bookWords.length, skipped: false };

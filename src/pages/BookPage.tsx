@@ -36,7 +36,7 @@ const STEP_LABEL: Record<SeedProgress['step'], string> = {
 export default function BookPage() {
   const navigate = useNavigate();
   // storeError：云请求失败（如 403 / 超时）时由 store 写入，页面顶部可见，不再白屏或转圈
-  const { books, activeBookId, setActiveBook, bootstrap, loading, error: storeError } = useAppStore();
+  const { books, activeBookId, setActiveBook, bootstrap, loading, error: storeError, userId } = useAppStore();
 
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
   const [tier, setTier] = useState<Tier>(3);
@@ -46,8 +46,9 @@ export default function BookPage() {
   const [error, setError] = useState('');
   const [seedProgress, setSeedProgress] = useState<SeedProgress | null>(null);
   const [seedError, setSeedError] = useState('');
-  // 断点续传游标（本机 localStorage）：仅在导入结束/失败后重新读一次，用于展示「上次中断于 N/M」
-  const [seedCursor, setSeedCursor] = useState<SeedCursor | null>(() => getSeedCursor());
+  // 断点续传游标（本机 localStorage，**按当前登录用户隔离**）：
+  // 必须与 seedLibraryToCloud 用同一个 userId 拼 key，否则 UI 提示会与实际续传点不一致。
+  const [seedCursor, setSeedCursor] = useState<SeedCursor | null>(() => getSeedCursor(userId));
 
   const runSeed = useCallback(async () => {
     const { userId: uid } = useAppStore.getState();
@@ -68,9 +69,15 @@ export default function BookPage() {
       setSeedError(e instanceof Error ? e.message : String(e));
     } finally {
       setSeedProgress(null);
-      setSeedCursor(getSeedCursor());
+      // 用与导入同一个 uid 读回，保证读写同一 key
+      setSeedCursor(getSeedCursor(uid));
     }
   }, [bootstrap]);
+
+  // userId 变化（登录完成 / 切换账号）后重读游标：游标按用户隔离，换账号必须换提示
+  useEffect(() => {
+    setSeedCursor(getSeedCursor(userId));
+  }, [userId]);
 
   useEffect(() => {
     void bootstrap();
