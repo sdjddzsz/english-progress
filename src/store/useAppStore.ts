@@ -19,7 +19,7 @@ import {
   type WordSteadiness,
 } from '../scheduler';
 import { hitDeterministicId } from '../data/collections';
-import { getSessionInfo, isCloudConfigured } from '../data/cloud';
+import { consumeWorkBuddyCallback, getSessionInfo, isCloudConfigured } from '../data/cloud';
 import { createWordRepo, type WordRepo } from '../data/repos/wordRepo';
 import { createPlanRepo, type PlanRepo } from '../data/repos/planRepo';
 import { createHitRepo, type HitRepo } from '../data/repos/hitRepo';
@@ -108,6 +108,8 @@ export interface AppState {
   cloudReady: boolean;
   loading: boolean;
   error: string | null;
+  /** 云已配置但未登录 → 渲染登录页（数据读写前必须有真实登录态） */
+  needsLogin: boolean;
 
   books: Book[];
   activeBookId: string | null;
@@ -137,6 +139,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   userId: null,
   cloudReady: false,
   loading: false,
+  needsLogin: false,
   error: null,
 
   books: [],
@@ -166,10 +169,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
         });
         return;
       }
+      // OAuth 落地兑换必须跑在登录守卫之前：先换会话，再判断登录态
+      await consumeWorkBuddyCallback();
       const session = await getSessionInfo();
-      const userId = session.userId ?? 'local-user';
+      if (!session.signedIn || !session.userId) {
+        // ⚠ 未登录时绝不再用 'local-user' 之类的假身份往下走：
+        //   SDK 以 anon role 发请求，所有 owner-only 写操作都会被 RLS 挡下
+        //   （表现：词书初始化报 42501 new row violates row-level security policy）。
+        set({ cloudReady: true, userId: null, needsLogin: true, loading: false, books: [] });
+        return;
+      }
+      const userId = session.userId;
       const books = await getRepos().word.listBooks(userId);
-      set({ cloudReady: true, userId, books, loading: false });
+      set({ cloudReady: true, userId, needsLogin: false, books, loading: false });
       const preferred = books.find((b) => b.status === 'active') ?? books[0];
       if (preferred) await get().setActiveBook(preferred.id);
       // T05 boot 链路：TTS 密钥云端文档 → 会话内存注入；前两周每日校准（>10% → Confirm 提案）

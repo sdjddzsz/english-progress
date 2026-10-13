@@ -67,3 +67,44 @@ export async function getSessionInfo(): Promise<CloudSessionInfo> {
   if (error || !data) return { signedIn: false };
   return { signedIn: true, userId: data.user?.id };
 }
+
+/**
+ * 发起 WorkBuddy 统一登录（PKCE）。返回授权页 URL，由调用方整体跳转。
+ * redirectTo 缺省为当前页 origin + pathname（站点根即可，前端路由自己恢复状态）。
+ */
+export async function startWorkBuddySignIn(): Promise<string> {
+  const cloud = getCloud();
+  const { data, error } = await cloud.auth.signInWithOAuth({ provider: 'workbuddy' });
+  if (error || !data?.url) {
+    throw new Error(error?.message ?? 'WorkBuddy sign-in did not return an authorization URL');
+  }
+  return data.url;
+}
+
+/**
+ * OAuth 落地兑换：用回调 URL 上的 code/state + 本地 PKCE verifier 换会话。
+ *
+ * ⚠ 必须在「登录守卫之前」无条件调用一次——否则守卫先把用户弹回登录页、
+ * 顺手把 URL 上的 code/state 丢掉，表现就是「点了登录转一圈又回到登录页」。
+ * 非 WorkBuddy 回调（普通访问/收藏页）时返回 null 数据，不算失败。
+ */
+export async function consumeWorkBuddyCallback(): Promise<void> {
+  const cloud = getCloud();
+  try {
+    const { error } = await cloud.auth.handleWorkBuddyCallback();
+    if (error) {
+      console.warn('[auth] workbuddy callback exchange failed:', error.message);
+      return;
+    }
+    // 兑换成功后清掉 URL 上的 code/state/provider，保留其余业务参数
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('code') || url.searchParams.has('state') || url.searchParams.has('provider')) {
+      url.searchParams.delete('code');
+      url.searchParams.delete('state');
+      url.searchParams.delete('provider');
+      window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+    }
+  } catch (e) {
+    console.warn('[auth] consumeWorkBuddyCallback threw:', e instanceof Error ? e.message : String(e));
+  }
+}
