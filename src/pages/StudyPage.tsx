@@ -66,7 +66,7 @@ export default function StudyPage() {
     setReveal(false);
     if (current && current.modality === 'audio') {
       const w = wordMap[current.wordId];
-      if (w) void speak({ text: w.lemma, ipa: w.ipa, mode: 'word' }, w.id);
+      if (w) void speak({ text: w.lemma, ipa: w.ipa, arpabet: w.arpabet, mode: 'word' }, w.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.id]);
@@ -155,7 +155,7 @@ export default function StudyPage() {
               <Typography variant="body2" color="text.secondary">
                 先在心里回想词义，再揭晓作答。
               </Typography>
-              <Button size="small" startIcon={<ReplayIcon />} onClick={() => void speak({ text: word?.lemma ?? '', ipa: word?.ipa, mode: 'word' }, current.wordId)}>
+              <Button size="small" startIcon={<ReplayIcon />} onClick={() => void speak({ text: word?.lemma ?? '', ipa: word?.ipa, arpabet: word?.arpabet, mode: 'word' }, current.wordId)}>
                 再听一次
               </Button>
             </Stack>

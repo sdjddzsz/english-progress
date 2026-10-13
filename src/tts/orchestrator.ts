@@ -6,7 +6,7 @@
 import type { TTSEngine, TTSProviderConfig } from '../types/domain';
 import { espeakProvider } from './espeakProvider';
 import { neuralProvider } from './neuralProvider';
-import type { TTSProvider, TTSRequest, TTSResult } from './types';
+import type { PhonemeSource, TTSProvider, TTSRequest, TTSResult } from './types';
 
 export interface AudioCache {
   get(key: string): Promise<{ audio: ArrayBuffer; engine: TTSEngine } | null>;
@@ -53,9 +53,9 @@ export function inMemoryAudioCache(): AudioCache {
 }
 
 /**
- * 缓存键（P2-2 修复）：
- * - 加入 ipa：同一 text 换音标必须产生新 key，杜绝改音标后返回陈旧音频；
- * - 长度前缀编码：text/mode/voice/ipa 任意字段含 '|' 时不再产生歧义碰撞
+ * 缓存键（P2-2 修复；架构增量 v0.1 纳入 arpabet）：
+ * - 加入 ipa / arpabet：同一 text 换音标或换发音真源必须产生新 key，杜绝改音标后返回陈旧音频；
+ * - 长度前缀编码：text/mode/voice/ipa/arpabet 任意字段含 '|' 时不再产生歧义碰撞
  *   （如 voice="a|word" 与 text="a" + mode="word" 的旧实现会同 key 串音）。
  * 旧格式 key 自然失效（不迁移），按 LRU 预算逐步淘汰。
  */
@@ -64,7 +64,7 @@ function lenPrefixed(part: string): string {
 }
 
 export function cacheKey(req: TTSRequest): string {
-  return [req.text, req.mode, req.ipa ?? '', req.voice ?? ''].map(lenPrefixed).join('|');
+  return [req.text, req.mode, req.ipa ?? '', req.arpabet ?? '', req.voice ?? ''].map(lenPrefixed).join('|');
 }
 
 // ===== 前台轻提示（本会话仅一次）=====
@@ -88,6 +88,10 @@ export interface PronunciationLogEntry {
   fallbackUsed: boolean;
   error?: string;
   wordId?: string;
+  /** P1-5：合成字符数（DashScope usage.characters 口径；从 TTSResult 透传） */
+  chars?: number;
+  /** P0-9：音素来源（从 TTSResult 透传；'text' = 纯文本降级） */
+  phonemeSource?: PhonemeSource;
 }
 
 export interface OrchestratorDeps {
@@ -117,7 +121,14 @@ export function createOrchestrator(deps: OrchestratorDeps) {
         try {
           const r = await neural.synthesize(req, { config: cfg.config, apiKey: cfg.apiKey });
           await deps.cache.put(key, r.audio, r.engine);
-          await deps.log({ engine: 'neural_tts', success: true, fallbackUsed: false, wordId });
+          await deps.log({
+            engine: 'neural_tts',
+            success: true,
+            fallbackUsed: false,
+            wordId,
+            ...(r.usageChars != null ? { chars: r.usageChars } : {}),
+            ...(r.phonemeSource ? { phonemeSource: r.phonemeSource } : {}),
+          });
           return r;
         } catch (err) {
           // 3) 主轨失败/超时 → 兜底轨 + 记录回退

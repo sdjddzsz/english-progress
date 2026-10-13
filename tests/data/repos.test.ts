@@ -128,7 +128,9 @@ describe('hitRepo（mock 云 + fake-indexeddb）', () => {
 
   it('completeHit：云端更新 + 本地镜像同步', async () => {
     const repo = createHitRepo(db);
-    const h = mkHit();
+    // 当日镜像只写 scheduledDate >= 今天 的行（历史不镜像）——用动态「今天」避免硬编码日期随系统时钟过期。
+    const today = new Date().toISOString().slice(0, 10);
+    const h = mkHit({ scheduledDate: today });
     await repo.upsertHits([h]);
     const res = await repo.completeHit(h.id, '2026-10-12T08:00:00Z');
     expect(res).toBe('ran');

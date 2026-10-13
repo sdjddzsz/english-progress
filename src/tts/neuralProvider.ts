@@ -1,32 +1,18 @@
 /**
- * neuralProvider.ts —— 主轨：Azure REST TTS（SSML phoneme/IPA）或 OpenAI 兼容端点。
+ * neuralProvider.ts —— 主轨分发：Azure REST TTS（SSML phoneme/IPA）/ DashScope（cmu phoneme）/ OpenAI 兼容端点。
  * key 从云端配置文档运行时取入内存（ctx.apiKey），不落 localStorage / 代码。
  * 请求超时 TTS_REQUEST_TIMEOUT_MS（3s）→ 由编排器切 espeak 兜底轨。
  */
 import { TTS_REQUEST_TIMEOUT_MS } from '../config/constants';
 import { buildSsml } from './ssml';
+import { fetchWithTimeout } from './httpFetch';
+import { synthesizeDashScope } from './dashscopeProvider';
 import type { TTSProvider, TTSRequest, TTSResult, TTSContext } from './types';
 
 export const AZURE_OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
 
-/** 带超时的 fetch（AbortController + 外部 signal 合并） */
-export async function fetchWithTimeout(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-  externalSignal?: AbortSignal,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const onAbort = () => controller.abort();
-  externalSignal?.addEventListener('abort', onAbort);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-    externalSignal?.removeEventListener('abort', onAbort);
-  }
-}
+/** 向后兼容再导出（历史 import 路径不变） */
+export { fetchWithTimeout } from './httpFetch';
 
 async function synthesizeAzure(req: TTSRequest, ctx: TTSContext): Promise<TTSResult> {
   // Azure endpoint 形如 https://<region>.tts.speech.microsoft.com/cognitiveservices/v1
@@ -80,6 +66,8 @@ export const neuralProvider: TTSProvider = {
     if (!ctx.apiKey) {
       throw new Error('TTS API key is not loaded (cloud config pending_user_setup or empty)');
     }
+    // 三分支分发（架构增量 v0.1）：azure / dashscope 原函数各自独立；openai_compatible 为默认兜底分支
+    if (ctx.config.provider === 'dashscope') return synthesizeDashScope(req, ctx);
     if (ctx.config.provider === 'azure') return synthesizeAzure(req, ctx);
     return synthesizeOpenAICompatible(req, ctx);
   },

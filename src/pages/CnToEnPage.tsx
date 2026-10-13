@@ -17,6 +17,8 @@ interface Item {
   wordId: string;
   lemma: string;
   ipa: string;
+  /** CMUdict ARPAbet（发音真源；透传给 TTS 请求） */
+  arpabet?: string;
   sense: string;
 }
 
@@ -40,6 +42,7 @@ export default function CnToEnPage() {
         wordId: h.wordId,
         lemma: w?.lemma ?? h.wordId,
         ipa: w?.ipa ?? '',
+        ...(w?.arpabet ? { arpabet: w.arpabet } : {}),
         sense: w?.senses[0] ?? '',
       });
       if (out.length >= dailyWords) break;
@@ -72,7 +75,7 @@ export default function CnToEnPage() {
         await submit(hit, sessionIdRef.current, { l1State: l1 }, performance.now() - startRef.current);
       }
       // 作答后读一遍英文（听觉巩固）
-      void speak({ text: current.lemma, ipa: current.ipa, mode: 'word' }, current.wordId);
+      void speak({ text: current.lemma, ipa: current.ipa, arpabet: current.arpabet, mode: 'word' }, current.wordId);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {

@@ -28,6 +28,8 @@ interface Item {
   wordId: string;
   lemma: string;
   ipa: string;
+  /** CMUdict ARPAbet（发音真源；透传给 TTS 请求） */
+  arpabet?: string;
   senses: string[];
 }
 
@@ -51,6 +53,7 @@ export default function AudioRecallPage() {
         wordId: h.wordId,
         lemma: w?.lemma ?? h.wordId,
         ipa: w?.ipa ?? '',
+        ...(w?.arpabet ? { arpabet: w.arpabet } : {}),
         senses: w?.senses ?? [],
       });
     }
@@ -105,7 +108,7 @@ export default function AudioRecallPage() {
     if (!current) return;
     startRef.current = performance.now();
     setAnswered(null);
-    void speak({ text: current.lemma, ipa: current.ipa, mode: 'word' }, current.wordId);
+    void speak({ text: current.lemma, ipa: current.ipa, arpabet: current.arpabet, mode: 'word' }, current.wordId);
     timerRef.current = setTimeout(() => {
       void answer('unknown');
     }, AUDIO_RECALL_TIMEOUT_MS);
@@ -166,7 +169,7 @@ export default function AudioRecallPage() {
       <Paper sx={{ mt: 2, p: 3, textAlign: 'center' }}>
         <Chip icon={<VolumeUpIcon />} label="听发音，回想词义" variant="outlined" />
         <Box sx={{ mt: 2 }}>
-          <Button size="small" onClick={() => void speak({ text: current.lemma, ipa: current.ipa, mode: 'word' }, current.wordId)}>
+          <Button size="small" onClick={() => void speak({ text: current.lemma, ipa: current.ipa, arpabet: current.arpabet, mode: 'word' }, current.wordId)}>
             再听一次
           </Button>
         </Box>

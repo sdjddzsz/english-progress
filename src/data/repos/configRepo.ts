@@ -17,6 +17,9 @@ import type {
   ToolCallLog,
 } from '../../types/domain';
 import {
+  DASHSCOPE_DEFAULT_ENDPOINT,
+  DASHSCOPE_DEFAULT_MODEL,
+  DASHSCOPE_DEFAULT_VOICE,
   DEFAULT_TTS_PROVIDER,
   DEFAULT_TTS_STATUS,
 } from '../../config/constants';
@@ -86,9 +89,13 @@ export function createConfigRepo(db: CloudDatabaseLike = getDb()): ConfigRepo {
     initDefaultTTSConfig: async (userId) => {
       const existing = await ttsConfigs.list([{ column: 'userId', op: 'eq', value: userId }], { limit: 1 });
       if (existing[0]) return existing[0];
+      // DashScope 主轨默认值只从 constants.ts 取（单一来源）；status 仍 pending_user_setup（硬约束 #7）
       return ttsConfigs.insert({
         userId,
         provider: DEFAULT_TTS_PROVIDER as TTSProviderName,
+        endpoint: DASHSCOPE_DEFAULT_ENDPOINT,
+        voice: DASHSCOPE_DEFAULT_VOICE,
+        model: DASHSCOPE_DEFAULT_MODEL,
         ssmlPhonemeEnabled: true,
         status: DEFAULT_TTS_STATUS as TTSConfigStatus, // pending_user_setup（硬约束 #7）
         fallbackEngine: 'ipa_espeak',

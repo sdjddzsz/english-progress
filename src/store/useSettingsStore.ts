@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Device } from '../types/domain';
 import type { LLMChannel } from '../ai/llmClient';
-import { CN_TO_EN_DAILY_WORDS, DEFAULT_TTS_PROVIDER } from '../config/constants';
+import { CN_TO_EN_DAILY_WORDS, DASHSCOPE_DEFAULT_MODEL, DEFAULT_TTS_PROVIDER } from '../config/constants';
 import type { TTSProviderName } from '../types/domain';
 
 export interface SettingsState {
@@ -21,11 +21,14 @@ export interface SettingsState {
   /** TTS 发音人（Azure voice name；兜底轨忽略） */
   ttsProvider: TTSProviderName;
   ttsVoice: string;
+  /** TTS 模型名（dashscope：cosyvoice-v2 等）。默认取 DashScope 常量 */
+  ttsModel: string;
 
   setDevice(device: Device): void;
   setCnToEn(enabled: boolean, dailyWords?: number): void;
   setAI(channel: LLMChannel, baseUrl: string, model: string): void;
-  setTTS(provider: TTSProviderName, voice: string): void;
+  /** 第三参 model 可选（旧调用兼容；缺省保留当前 ttsModel） */
+  setTTS(provider: TTSProviderName, voice: string, model?: string): void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -39,12 +42,14 @@ export const useSettingsStore = create<SettingsState>()(
       aiModel: '',
       ttsProvider: DEFAULT_TTS_PROVIDER,
       ttsVoice: '',
+      ttsModel: DASHSCOPE_DEFAULT_MODEL,
 
       setDevice: (device) => set({ device }),
       setCnToEn: (cnToEnEnabled, dailyWords) =>
         set(dailyWords != null ? { cnToEnEnabled, cnToEnDailyWords: dailyWords } : { cnToEnEnabled }),
       setAI: (aiChannel, aiBaseUrl, aiModel) => set({ aiChannel, aiBaseUrl, aiModel }),
-      setTTS: (ttsProvider, ttsVoice) => set({ ttsProvider, ttsVoice }),
+      setTTS: (ttsProvider, ttsVoice, ttsModel) =>
+        set({ ttsProvider, ttsVoice, ...(ttsModel != null ? { ttsModel } : {}) }),
     }),
     { name: 'ep-settings' },
   ),

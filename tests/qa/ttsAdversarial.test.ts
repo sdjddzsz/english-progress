@@ -189,13 +189,14 @@ describe('回归锚点：缓存键含 IPA 且长度前缀无歧义（P2-2 修复
     expect(second.audio).not.toBe(first.audio); // 不串音
   });
 
-  it('③ 新 key 为长度前缀格式，形如 7:abandon|4:word|10:/əˈbændən/|0:', () => {
+  it('③ 新 key 为长度前缀格式，形如 7:abandon|4:word|10:/əˈbændən/|0:|0:', () => {
+    // 架构增量 v0.1：第 4 段纳入 arpabet（换发音真源必须换缓存），voice 段后移为第 5 段
     const key = cacheKey({ text: 'abandon', mode: 'word', ipa: '/əˈbændən/' });
-    expect(key).toBe(`7:abandon|4:word|${'/əˈbændən/'.length}:/əˈbændən/|0:`);
+    expect(key).toBe(`7:abandon|4:word|${'/əˈbændən/'.length}:/əˈbændən/|0:|0:`);
     expect('/əˈbændən/'.length).toBe(10);
     // 字段含 '|' 时长度前缀保证唯一解码（任意切分都会校验长度失败）
     const tricky = cacheKey({ text: 'a|4:x', mode: 'word', voice: 'v' });
-    expect(tricky).toBe('5:a|4:x|4:word|0:|1:v');
+    expect(tricky).toBe('5:a|4:x|4:word|0:|0:|1:v');
   });
 });
 

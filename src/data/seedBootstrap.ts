@@ -12,13 +12,16 @@
 import type { BookWord, Word } from '../types/domain';
 import { createWordRepo } from './repos/wordRepo';
 
-const BOOK_ID = 'book_cet6_full';
+/** 六级全量词书 id（seedBootstrap 初始化 + backfillArpabet 回填共用同一常量） */
+export const CET6_BOOK_ID = 'book_cet6_full';
 const LIST_SIZE = 50;
 const CHUNK = 300; // 每批 upsert 行数，控制单请求体积
 
 interface SeedWord {
   lemma: string;
   ipa: string;
+  /** CMUdict ARPAbet 发音真源（T7 seed v2；未命中词无此字段 → P0-9 降级） */
+  arpabet?: string;
   translation: string;
   frq: number;
   tags: string[];
@@ -51,7 +54,9 @@ export function seedToDocs(
     words.push({
       id: wordId,
       lemma: w.lemma,
+      // ipa 用 seed 文件内派生值（arpabetToIpa 派生的唯一展示真源）；arpabet 命中才透传（P0-9）
       ipa: w.ipa,
+      ...(w.arpabet ? { arpabet: w.arpabet } : {}),
       senses: w.translation ? [w.translation] : [],
       examples: [],
       frequency: w.frq,
@@ -95,9 +100,9 @@ export async function seedLibraryToCloud(
   const repo = createWordRepo();
 
   // 幂等：书行已存在视为已初始化
-  const existing = await repo.getBook(BOOK_ID);
+  const existing = await repo.getBook(CET6_BOOK_ID);
   if (existing) {
-    return { bookId: BOOK_ID, words: existing.wordCount, bookWords: existing.wordCount, skipped: true };
+    return { bookId: CET6_BOOK_ID, words: existing.wordCount, bookWords: existing.wordCount, skipped: true };
   }
 
   onProgress?.({ step: 'fetching', done: 0, total: 0 });
@@ -106,7 +111,7 @@ export async function seedLibraryToCloud(
   const seed = (await res.json()) as SeedWord[];
   if (!Array.isArray(seed) || seed.length === 0) throw new Error('seed dataset is empty or malformed');
 
-  const { words, bookWords } = seedToDocs(seed, BOOK_ID, LIST_SIZE);
+  const { words, bookWords } = seedToDocs(seed, CET6_BOOK_ID, LIST_SIZE);
 
   onProgress?.({ step: 'words', done: 0, total: words.length });
   await upsertChunked(words, (b) => repo.upsertWords(b as (Word & Record<string, unknown>)[]), (done, total) =>
@@ -120,7 +125,7 @@ export async function seedLibraryToCloud(
 
   onProgress?.({ step: 'book', done: 0, total: 1 });
   await repo.createBook({
-    id: BOOK_ID,
+    id: CET6_BOOK_ID,
     userId,
     name: '六级全量',
     source: 'builtin',
@@ -132,5 +137,5 @@ export async function seedLibraryToCloud(
   });
   onProgress?.({ step: 'done', done: 1, total: 1 });
 
-  return { bookId: BOOK_ID, words: words.length, bookWords: bookWords.length, skipped: false };
+  return { bookId: CET6_BOOK_ID, words: words.length, bookWords: bookWords.length, skipped: false };
 }

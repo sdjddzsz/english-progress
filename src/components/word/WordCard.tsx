@@ -34,7 +34,8 @@ export default function WordCard({ word, hideText = false, lastSeen, roundNo, ti
     );
   }
 
-  const speakWord = () => void speak({ text: word.lemma, ipa: word.ipa, mode: 'word' }, word.id);
+  // arpabet 透传：DashScope 主轨 <phoneme alphabet="cmu"> 零转换直用（CMUdict 发音真源）
+  const speakWord = () => void speak({ text: word.lemma, ipa: word.ipa, arpabet: word.arpabet, mode: 'word' }, word.id);
   const firstExample = word.examples[0];
   const speakExample = () => {
     if (firstExample) void speak({ text: firstExample.en, mode: 'sentence' }, word.id);

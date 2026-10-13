@@ -8,6 +8,7 @@ import type { TTSEngine } from '../types/domain';
 import { cacheStorageCache, consumeFallbackNotice, createOrchestrator, inMemoryAudioCache, type AudioCache, type TTSOrchestrator } from '../tts/orchestrator';
 import { LruAudioCache } from '../offline/audioCacheManager';
 import type { TTSRequest } from '../tts/types';
+import { recordCacheHit, recordSynthesis } from '../tts/usageStats';
 import { getRepos, useAppStore } from '../store/useAppStore';
 
 // ===== 会话级运行时密钥（刷新即失；设置页可随时更新）=====
@@ -60,6 +61,8 @@ function getOrchestrator(): TTSOrchestrator {
           success: entry.success,
           fallbackUsed: entry.fallbackUsed,
           ...(entry.error ? { error: entry.error } : {}),
+          ...(entry.chars != null ? { chars: entry.chars } : {}),
+          ...(entry.phonemeSource ? { phonemeSource: entry.phonemeSource } : {}),
         });
       } catch {
         // 日志失败不阻断学习
@@ -90,7 +93,8 @@ async function playBuffer(audio: ArrayBuffer): Promise<void> {
 // ===== Hook =====
 
 export interface UseTTSApi {
-  speak(req: TTSRequest, wordId?: string): Promise<void>;
+  /** 返回实际命中的引擎（neural_tts 主轨 / ipa_espeak 兜底）；失败返回 null */
+  speak(req: TTSRequest, wordId?: string): Promise<TTSEngine | null>;
   loading: boolean;
   lastEngine: TTSEngine | null;
   /** espeak 兜轨首次触发的一次性轻提示（消费一次后复位） */
@@ -103,16 +107,24 @@ export function useTTS(): UseTTSApi {
   const [lastEngine, setLastEngine] = useState<TTSEngine | null>(null);
   const [fallbackNotice, setFallbackNotice] = useState(false);
 
-  const speak = useCallback(async (req: TTSRequest, wordId?: string) => {
+  const speak = useCallback(async (req: TTSRequest, wordId?: string): Promise<TTSEngine | null> => {
     setLoading(true);
     try {
       const res = await getOrchestrator().getAudio(req, wordId);
+      // P1-1 本地用量聚合：缓存命中不计字符；仅主轨（计费）合成计入
+      if (res.fromCache) {
+        recordCacheHit();
+      } else if (res.engine === 'neural_tts') {
+        recordSynthesis(res.usageChars ?? req.text.length);
+      }
       setLastEngine(res.engine);
       await playBuffer(res.audio);
       if (consumeFallbackNotice()) setFallbackNotice(true);
+      return res.engine;
     } catch (e) {
       // 发音失败不阻断学习；错误已在 PronunciationLog 留痕
       console.error('[tts] speak failed:', e);
+      return null;
     } finally {
       setLoading(false);
     }

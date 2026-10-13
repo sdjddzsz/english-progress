@@ -63,7 +63,7 @@ export type L3Action =
 // ===== TTS / AI / 训练 枚举 =====
 
 export type TTSEngine = 'neural_tts' | 'ipa_espeak';
-export type TTSProviderName = 'azure' | 'openai_compatible';
+export type TTSProviderName = 'azure' | 'openai_compatible' | 'dashscope';
 export type TTSConfigStatus = 'pending_user_setup' | 'active' | 'error'; // 硬约束 #7：默认 pending_user_setup
 export type AIProviderType = 'workbuddy' | 'openai_compatible';
 export type TrainingItemType = 'listen_recall' | 'cn_to_en' | 'listening' | 'reading' | 'speaking' | 'writing';
@@ -112,6 +112,11 @@ export interface Word {
   id: string;
   lemma: string;
   ipa: string;
+  /**
+   * CMUdict ARPAbet 发音真源（命中才有；无该字段 = CMUdict 未命中，P0-9 降级纯文本合成）。
+   * DashScope <phoneme alphabet="cmu"> 零转换直用；展示 IPA 由 arpabetToIpa 派生。
+   */
+  arpabet?: string;
   pos?: string;
   senses: string[];
   examples: { en: string; zh: string }[];
@@ -273,6 +278,10 @@ export interface PronunciationLog {
   success: boolean;
   fallbackUsed: boolean;
   error?: string;
+  /** P1-5：本次合成字符数（DashScope usage.characters 口径，成本卡精确聚合用） */
+  chars?: number;
+  /** P0-9：音素来源。cmu=dashscope phoneme 注入；ipa=azure phoneme；text=纯文本降级 */
+  phonemeSource?: 'cmu' | 'ipa' | 'text';
   createdAt: string;
 }
 
@@ -287,7 +296,15 @@ export interface TTSProviderConfig {
   provider: TTSProviderName;
   endpoint?: string;
   apiKeyRef?: string;
+  /**
+   * apiKeyRef 指向的密钥字段本体（默认 'runtimeApiKey'）。
+   * 用户在设置页勾选"跨刷新保留"时才落库（RLS owner-only）；未勾选时该字段保持为空，
+   * 密钥只在会话内存里（刷新即失）。架构 §8 #2 声明的唯一例外。
+   */
+  runtimeApiKey?: string;
   voice?: string;
+  /** 模型名（dashscope：cosyvoice-v2 等；openai_compatible：tts-1 等）。默认取 constants.ts DashScope 常量 */
+  model?: string;
   ssmlPhonemeEnabled: boolean;
   status: TTSConfigStatus;
   fallbackEngine: 'ipa_espeak';

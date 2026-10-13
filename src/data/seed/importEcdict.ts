@@ -21,6 +21,8 @@ import Papa from 'papaparse';
 export interface SeedWord {
   lemma: string;
   ipa: string;
+  /** CMUdict ARPAbet 发音真源（T7：由 joinCmuDict 脚本写入；命中才有，未命中无此字段） */
+  arpabet?: string;
   translation: string;
   frq: number;
   tags: string[]; // 'cet4' | 'cet6' ...
@@ -158,7 +160,9 @@ export function seedToDomainDocs(
     words.push({
       id: wordId,
       lemma: w.lemma,
+      // ipa 用 seed 文件内派生值；arpabet 命中才透传（与 seedBootstrap.seedToDocs 保持一致）
       ipa: w.ipa,
+      ...(w.arpabet ? { arpabet: w.arpabet } : {}),
       senses: w.translation ? [w.translation] : [],
       examples: [],
       frequency: w.frq,
