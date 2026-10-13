@@ -1,17 +1,33 @@
 import { defineConfig, type Plugin } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
-import { copyFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * 深链回退（站点无 SPA rewrite）。
- * 静态托管对 /book、/dashboard 这类深链会直接 404——目前只靠 Service Worker 的
- * navigateFallback 兜住，一旦清缓存 / 无痕 / 换设备首次打开就白给。
- * 构建后补两个通用兜底产物，不动部署方式（仍是 static）：
- *   - 404.html   ：多数静态服务器的未命中页（GitHub Pages 约定），URL 不变、SPA 照常接管路由
- *   - _redirects ：Netlify / Cloudflare Pages 风格的显式 rewrite
+ * 深链回退（站点由 Python http.server 托管，无 SPA rewrite）。
+ * 实测平台静态服务就是 `python3 -m http.server`：对目录会先 301 补斜杠、再取目录内
+ * index.html（已验证 /icons → 301 → /icons/ → 200），但**不认 404.html**（/book 直接 404）。
+ * 因此按路由预生成「同名目录 + index.html」，深链即可命中：
+ *   /book → 301 → /book/ → book/index.html（SPA 入口）
+ * React Router 默认 strict:false，末尾斜杠不影响匹配。
+ * 保留 404.html 作为换托管环境时的通用兜底。
  */
+const SPA_ROUTES = [
+  'study',
+  'training',
+  'training/audio',
+  'training/cn2en',
+  'book',
+  'plan-editor',
+  'placement',
+  'dashboard',
+  'dashboard/diag',
+  'mock',
+  'ai-plan',
+  'settings',
+];
+
 function spaHistoryFallback(): Plugin {
   let outDir = 'dist';
   return {
@@ -21,8 +37,14 @@ function spaHistoryFallback(): Plugin {
     },
     closeBundle() {
       const dir = resolve(process.cwd(), outDir);
-      copyFileSync(resolve(dir, 'index.html'), resolve(dir, '404.html'));
-      writeFileSync(resolve(dir, '_redirects'), '/*    /index.html   200\n');
+      const entry = resolve(dir, 'index.html');
+      const html = readFileSync(entry);
+      copyFileSync(entry, resolve(dir, '404.html'));
+      for (const route of SPA_ROUTES) {
+        const target = resolve(dir, route);
+        mkdirSync(target, { recursive: true });
+        writeFileSync(resolve(target, 'index.html'), html);
+      }
     },
   };
 }
