@@ -21,7 +21,7 @@ import {
 import type { Book, BookWord, Tier, Word } from '../types/domain';
 import { TIERS } from '../scheduler';
 import { getRepos, useAppStore } from '../store/useAppStore';
-import { seedLibraryToCloud, type SeedProgress } from '../data/seedBootstrap';
+import { getSeedCursor, seedLibraryToCloud, type SeedCursor, type SeedProgress } from '../data/seedBootstrap';
 
 const TIER_LABEL: Record<Tier, string> = { 1: 'T1 已掌握', 2: 'T2 熟词', 3: 'T3 半熟', 4: 'T4 生词' };
 
@@ -46,6 +46,8 @@ export default function BookPage() {
   const [error, setError] = useState('');
   const [seedProgress, setSeedProgress] = useState<SeedProgress | null>(null);
   const [seedError, setSeedError] = useState('');
+  // 断点续传游标（本机 localStorage）：仅在导入结束/失败后重新读一次，用于展示「上次中断于 N/M」
+  const [seedCursor, setSeedCursor] = useState<SeedCursor | null>(() => getSeedCursor());
 
   const runSeed = useCallback(async () => {
     const { userId: uid } = useAppStore.getState();
@@ -57,7 +59,8 @@ export default function BookPage() {
     setSeedProgress({ step: 'fetching', done: 0, total: 0 });
     try {
       const result = await seedLibraryToCloud(uid, (p) => setSeedProgress(p));
-      await bootstrap();
+      // ⚠ 必须 force：bootstrap 首次完成后会短路，普通调用不会重新拉词书列表（新词书就不会出现）
+      await bootstrap({ force: true });
       if (!result.skipped) {
         setSelectedBookId(result.bookId);
       }
@@ -65,6 +68,7 @@ export default function BookPage() {
       setSeedError(e instanceof Error ? e.message : String(e));
     } finally {
       setSeedProgress(null);
+      setSeedCursor(getSeedCursor());
     }
   }, [bootstrap]);
 
@@ -100,6 +104,15 @@ export default function BookPage() {
 
   const selectedBook: Book | null = books.find((b) => b.id === selectedBookId) ?? null;
 
+  // 断点续传提示（本机游标）：最后一处未完成进度；无中断则空串
+  const resumeHint = !seedCursor
+    ? ''
+    : seedCursor.words < seedCursor.totalWords
+      ? `上次导入中断于 ${seedCursor.words}/${seedCursor.totalWords}（词条），点击继续`
+      : seedCursor.bookWords < seedCursor.totalBookWords
+        ? `上次导入中断于 ${seedCursor.bookWords}/${seedCursor.totalBookWords}（词书关联），点击继续`
+        : '';
+
   if (loading && books.length === 0) {
     return (
       <Box p={6} textAlign="center">
@@ -124,6 +137,11 @@ export default function BookPage() {
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             首次使用：一键导入 ECDICT 六级全量词库（5407 词，含音标/释义/词频/四六级标记），需联网，约半分钟。
           </Typography>
+          {resumeHint && (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              {resumeHint}
+            </Typography>
+          )}
           <Button
             variant="contained"
             sx={{ mt: 2 }}
@@ -143,7 +161,7 @@ export default function BookPage() {
           )}
           {seedError && (
             <Typography variant="body2" color="error" sx={{ mt: 1 }}>
-              初始化失败：{seedError}（可重试，已导入部分自动跳过）
+              初始化失败：{seedError}（可重试：已导入的部分会保留，从断点继续）
             </Typography>
           )}
         </Paper>
