@@ -7,10 +7,10 @@
  */
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { Repository } from '../../src/data/repository';
+import { Repository, type CloudDatabaseLike, type PostgrestQuery } from '../../src/data/repository';
 import { createHitRepo } from '../../src/data/repos/hitRepo';
 import { createFeedbackRepo } from '../../src/data/repos/feedbackRepo';
-import { createWordRepo } from '../../src/data/repos/wordRepo';
+import { createWordRepo, ID_BATCH } from '../../src/data/repos/wordRepo';
 import { createPlanRepo } from '../../src/data/repos/planRepo';
 import { hitDeterministicId } from '../../src/data/collections';
 import { localDb } from '../../src/data/localDb';
@@ -249,5 +249,86 @@ describe('planRepo / wordRepo 基本读写（mock 云）', () => {
     const updated = await repo.updateWordTier('bw1', 2);
     expect(updated?.tier).toBe(2);
     expect((await repo.getWordByLemma('bias'))?.id).toBe('w2');
+  });
+});
+
+// ===== wordRepo.listWordsByIds 分片（URL 长度保护）=====
+//
+// 背景（用户实测阻断性 bug）：摸底页把全书 5407 个 wordId 一次性交给 `id=in.(…)`，
+// URL ≈ 82,121 字符（SDK `urlLengthLimit` 是 8000，且它**只给错误附 hint、不切 POST 也不拦截**）
+// ⇒ 浏览器报 `TypeError: Failed to fetch`。修法是把该查询在 repo 边界分片。
+
+/**
+ * 记录每次 `in(col, values)` 的 values 长度（其余调用透传给 MockDb）。
+ * 用 Proxy 逐层重包：MockQuery 的链式方法**返回自身**，不在每次调用后重包就会在 `.select()` 之后漏记。
+ */
+class RecordingDb implements CloudDatabaseLike {
+  readonly inSizes: number[] = [];
+  constructor(private readonly inner: MockDb) {}
+  from(table: string): PostgrestQuery {
+    const wrap = (target: object): PostgrestQuery =>
+      new Proxy(target, {
+        get: (t, prop: PropertyKey) => {
+          const v = (t as Record<PropertyKey, unknown>)[prop];
+          if (typeof v !== 'function') return v;
+          return (...args: unknown[]) => {
+            if (prop === 'in') this.inSizes.push((args[1] as unknown[]).length);
+            const r = (v as (...a: unknown[]) => unknown).apply(t, args);
+            return r === t ? wrap(t) : r;
+          };
+        },
+      }) as PostgrestQuery;
+    return wrap(this.inner.from(table));
+  }
+}
+
+describe('wordRepo.listWordsByIds 分片（URL 长度保护）', () => {
+  const N = 5407; // 线上真实规模（public/seed-cet6.json）
+  const ids = Array.from({ length: N }, (_, i) => `word_w${i}`);
+
+  function seeded(): RecordingDb {
+    const db = new MockDb();
+    db.tables.set(
+      'words',
+      ids.map((id, i) => ({ id, lemma: `w${i}`, ipa: '', senses: [], examples: [], frequency: i, tags: [] })),
+    );
+    return new RecordingDb(db);
+  }
+
+  it('5407 个 id → 切成多批（每批 ≤ ID_BATCH）、合并正确、无重复无遗漏', async () => {
+    const rec = seeded();
+    const repo = createWordRepo(rec);
+    const out = await repo.listWordsByIds(ids);
+
+    expect(rec.inSizes.length).toBe(Math.ceil(N / ID_BATCH)); // 5407 → 55 批
+    expect(Math.max(...rec.inSizes)).toBeLessThanOrEqual(ID_BATCH); // 每批不超过上界
+    expect(rec.inSizes.reduce((a, b) => a + b, 0)).toBe(N); // 每个 id 恰好被覆盖一次
+    expect(out.length).toBe(N); // 无遗漏
+    expect(new Set(out.map((w) => w.id))).toEqual(new Set(ids));
+    expect(out.length).toBe(new Set(out.map((w) => w.id)).size); // 无重复
+  });
+
+  it('入参重复 id 先去重：按去重后数量分片，输出无重复', async () => {
+    const rec = seeded();
+    const repo = createWordRepo(rec);
+    const out = await repo.listWordsByIds(['word_w0', 'word_w0', 'word_w1', 'word_w1', 'word_w2']);
+
+    expect(rec.inSizes).toEqual([3]); // 去重后 3 个 → 单批
+    expect(out.map((w) => w.id).sort()).toEqual(['word_w0', 'word_w1', 'word_w2']);
+  });
+
+  it('空入参不发任何请求', async () => {
+    const rec = seeded();
+    const repo = createWordRepo(rec);
+    expect(await repo.listWordsByIds([])).toEqual([]);
+    expect(rec.inSizes).toEqual([]);
+  });
+
+  it('单批最坏 URL 远低于 urlLengthLimit(8000)：改大 ID_BATCH 会让本条失败，强制重新推导', () => {
+    const BASE = 'https://english-progress.app.workbuddy.host/.cloud/database/rest/words?select=*&id=in.(';
+    const LONGEST_ID = 'word_indiscriminately'; // 实测最长 id（21 字符）
+    const worst = BASE.length + ID_BATCH * (LONGEST_ID.length + 3) + 1; // +3：逗号被编码为 %2C
+    expect(worst).toBeLessThan(8_000); // 请求行上限
+    expect(worst).toBeLessThanOrEqual(3_000); // 保留 ~3 倍余量（目标 ≤3KB）
   });
 });

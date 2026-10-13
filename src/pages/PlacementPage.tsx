@@ -47,6 +47,20 @@ const L1_BUTTONS: { value: L1State; label: string; color: 'success' | 'primary' 
   { value: 'unknown', label: '不认识', color: 'error' },
 ];
 
+/**
+ * 兜底：把网络层原始报错转成可读指引。
+ * 之前此处只把 `TypeError: Failed to fetch` 原样丢到界面上 —— 用户看不出是「网络/请求过大」而非数据问题。
+ * （真实案例：一次 `id=in.(5407 个 id)` 的 URL ≈ 82KB，超请求行上限 ⇒ 浏览器在该文案上报错。
+ *  根因已在 `wordRepo.listWordsByIds` 分片修掉；这里保证将来任何网络层失败都有可读提示。）
+ */
+function readableError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  if (/failed to fetch|network ?error|load failed/i.test(raw)) {
+    return `读取词书失败（网络层，非数据问题）：${raw}。多为请求过大或断网所致；请重试一次，若反复出现请把这段文案反馈。`;
+  }
+  return raw;
+}
+
 export default function PlacementPage() {
   const { userId, books, activeBookId, bootstrap } = useAppStore();
 
@@ -93,7 +107,7 @@ export default function PlacementPage() {
       setIdx(0);
       setPhase('quiz');
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(readableError(e));
     } finally {
       setBusy(false);
     }
@@ -151,7 +165,7 @@ export default function PlacementPage() {
       setMsg(`初始分层已写入（抽样 ${items.length} 词）。`);
       setPhase('idle');
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(readableError(e));
     } finally {
       setBusy(false);
     }
@@ -223,7 +237,7 @@ export default function PlacementPage() {
       await snapshotPlan(repos.plan, plan, 'user', '摸底后初始创建', 'create');
       setMsg(`推荐档计划已创建（${plan.startDate} → ${plan.deadlineDate}），可去「计划编辑」微调。`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(readableError(e));
     } finally {
       setBusy(false);
     }
