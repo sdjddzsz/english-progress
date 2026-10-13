@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -34,7 +35,8 @@ const STEP_LABEL: Record<SeedProgress['step'], string> = {
 
 export default function BookPage() {
   const navigate = useNavigate();
-  const { books, activeBookId, setActiveBook, bootstrap, loading } = useAppStore();
+  // storeError：云请求失败（如 403 / 超时）时由 store 写入，页面顶部可见，不再白屏或转圈
+  const { books, activeBookId, setActiveBook, bootstrap, loading, error: storeError } = useAppStore();
 
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
   const [tier, setTier] = useState<Tier>(3);
@@ -109,6 +111,12 @@ export default function BookPage() {
   return (
     <Box p={2} pb={4}>
       <Typography variant="h5">词书</Typography>
+
+      {storeError && (
+        <Alert severity="error" sx={{ mt: 2 }}>
+          {storeError}
+        </Alert>
+      )}
 
       {books.length === 0 ? (
         <Paper sx={{ mt: 2, p: 3 }}>

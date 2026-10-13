@@ -9,6 +9,7 @@
  *    不做任何静默降级、不硬编码 endpoint。
  */
 import { createWorkBuddyCloud } from '@tencent-ai/workbuddy-cloud-sdk';
+import { CLOUD_REQUEST_TIMEOUT_MS } from '../config/constants';
 import type { CloudDatabaseLike } from './repository';
 
 const endpoint = import.meta.env.VITE_CLOUD_ENDPOINT;
@@ -16,6 +17,25 @@ const publishableKey = import.meta.env.VITE_CLOUD_PUBLISHABLE_KEY;
 const oauthRelayBaseUrl = import.meta.env.VITE_CLOUD_OAUTH_RELAY_BASE_URL;
 
 export type WorkBuddyCloudClient = ReturnType<typeof createWorkBuddyCloud>;
+
+/**
+ * 给每个云请求套超时：避免任一请求挂起导致 boot 永久不落（loading 卡住 → 无限转圈）。
+ *
+ * 取舍：
+ * - 超时用 AbortSignal.timeout（现代浏览器 / Node 18+ 均可用）；
+ * - 若调用方自带 signal，尽量与超时合并（AbortSignal.any）；该 API 不可用时**退化为仅 timeout**——
+ *   牺牲外部取消能力，换取「绝不会永久挂起」这一硬保证（本例外部取消用得极少）。
+ *
+ * @param ms 超时毫秒；缺省取 CLOUD_REQUEST_TIMEOUT_MS（导出以便单测注入极短超时）。
+ */
+export function timeoutFetch(input: RequestInfo | URL, init?: RequestInit, ms: number = CLOUD_REQUEST_TIMEOUT_MS): Promise<Response> {
+  const timeout = AbortSignal.timeout(ms);
+  const signal =
+    init?.signal && 'any' in AbortSignal
+      ? AbortSignal.any([init.signal, timeout])
+      : timeout;
+  return fetch(input, { ...init, signal });
+}
 
 let cached: WorkBuddyCloudClient | null = null;
 
@@ -43,6 +63,7 @@ export function getCloud(): WorkBuddyCloudClient {
       endpoint,
       publishableKey,
       ...(oauthRelayBaseUrl ? { oauthRelayBaseUrl } : {}),
+      fetch: timeoutFetch,
     });
   }
   return cached;

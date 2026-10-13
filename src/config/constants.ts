@@ -159,6 +159,14 @@ export const DASHSCOPE_MODEL_OPTIONS = ['cosyvoice-v3-flash', 'cosyvoice-v2', 'c
 /** 跨端可见轮询间隔（S30：会话结束 5 秒内跨端可见） */
 export const CROSS_DEVICE_SYNC_POLL_MS = 5000;
 
+// ===== 云请求健壮性 =====
+
+/**
+ * 单个云请求的超时（毫秒）。任一云请求挂起若不封顶，boot 链路会永久不落
+ * （loading 卡在 true → 页面无限转圈/白屏）。注入到云 SDK 的 fetch 层统一封顶。
+ */
+export const CLOUD_REQUEST_TIMEOUT_MS = 15000;
+
 // ===== 反自测禁用词表（硬约束 #1；前台组件与三类类型中禁止出现）=====
 
 export const FORBIDDEN_SELF_TEST_TERMS = [
