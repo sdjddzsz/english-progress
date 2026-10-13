@@ -125,7 +125,18 @@ export interface AppState {
   overdue: ReturnType<typeof computeOverdue> | null;
   overduePreviews: OverduePreviewItem[];
 
-  bootstrap(): Promise<void>;
+  /**
+   * 是否已完成一次「首次」bootstrap（未配置云 / 未登录 / 成功 三个正常终止分支都置 true）。
+   * 用途：AuthGate 只在首次启动显示整屏 spinner；路由切换时页面内重复调用的 bootstrap
+   * 会被本标记短路，避免「loading → children 整棵卸载 → 重挂 → 再 bootstrap」的死循环。
+   */
+  bootstrapped: boolean;
+
+  /**
+   * 启动装配：OAuth 落地兑换 → 登录态判断 → 词书装载 → 运行时（TTS 密钥 / 每日校准）。
+   * @param opts.force 显式重试（如设置页「重新检测」）；缺省时首次完成后不再重复执行。
+   */
+  bootstrap(opts?: { force?: boolean }): Promise<void>;
   setActiveBook(bookId: string): Promise<void>;
   refreshToday(today?: string): Promise<void>;
   completeHit(hitId: string): Promise<void>;
@@ -141,6 +152,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   loading: false,
   needsLogin: false,
   error: null,
+  bootstrapped: false,
 
   books: [],
   activeBookId: null,
@@ -155,8 +167,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   overdue: null,
   overduePreviews: [],
 
-  bootstrap: async () => {
+  bootstrap: async (opts) => {
     if (get().loading) return;
+    // 首次已完成且未显式要求重试 → 直接短路。
+    // ⚠ 关键：页面组件 mount 时都会调 bootstrap()（App 顶层已跑过一次），
+    //   若这里继续 set({loading:true})，AuthGate 的整屏 spinner 会把刚挂载的
+    //   路由页连底部导航一起卸载，重挂后又触发本函数 → 无限卸载/重挂死循环。
+    if (get().bootstrapped && !opts?.force) return;
     set({ loading: true, error: null });
     try {
       if (!isCloudConfigured()) {
@@ -164,6 +181,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         set({
           cloudReady: false,
           loading: false,
+          bootstrapped: true,
           error:
             'WorkBuddy cloud is not configured. Fill in VITE_CLOUD_ENDPOINT / VITE_CLOUD_PUBLISHABLE_KEY in .env, then rebuild.',
         });
@@ -176,12 +194,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
         // ⚠ 未登录时绝不再用伪造的本地假身份往下走：
         //   SDK 以 anon role 发请求，所有 owner-only 写操作都会被 RLS 挡下
         //   （表现：词书初始化报 42501 new row violates row-level security policy）。
-        set({ cloudReady: true, userId: null, needsLogin: true, loading: false, books: [] });
+        set({ cloudReady: true, userId: null, needsLogin: true, loading: false, bootstrapped: true, books: [] });
         return;
       }
       const userId = session.userId;
-      const books = await getRepos().word.listBooks(userId);
-      set({ cloudReady: true, userId, needsLogin: false, books, loading: false });
+      // 防御：查询异常返回 null（而非 []）时不让 null 落进 store，否则下游 .length 直接崩
+      const books = (await getRepos().word.listBooks(userId)) ?? [];
+      set({ cloudReady: true, userId, needsLogin: false, books, loading: false, bootstrapped: true });
       const preferred = books.find((b) => b.status === 'active') ?? books[0];
       if (preferred) await get().setActiveBook(preferred.id);
       // T05 boot 链路：TTS 密钥云端文档 → 会话内存注入；前两周每日校准（>10% → Confirm 提案）

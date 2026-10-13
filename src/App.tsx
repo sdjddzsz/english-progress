@@ -66,7 +66,7 @@ function CloudGate({ children }: { children: React.ReactNode }) {
           中文说明：把云服务控制台返回的 publicConfig（endpoint / publishableKey / oauthRelayBaseUrl）
           填入 .env（参考 .env.example），重新构建后即可进入应用。摸底、计划、学习数据均依赖云数据库与 RLS。
         </Typography>
-        <Button variant="outlined" sx={{ mt: 2 }} onClick={() => void bootstrap()}>
+        <Button variant="outlined" sx={{ mt: 2 }} onClick={() => void bootstrap({ force: true })}>
           重新检测
         </Button>
       </Container>
@@ -75,12 +75,19 @@ function CloudGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-/** 未登录 → 登录页（RLS 之前必须先有真实登录态，否则一切写操作都会被 42501 挡下） */
+/**
+ * 未登录 → 登录页（RLS 之前必须先有真实登录态，否则一切写操作都会被 42501 挡下）。
+ *
+ * ⚠ 整屏 spinner 只在**首次** bootstrap（bootstrapped=false）期间出现：
+ *   路由页面 mount 时也会调 bootstrap()，若此处按 loading 无条件整屏替换 children，
+ *   会把刚挂载的路由页连底部导航一起卸载 → 重挂 → 再 bootstrap → 无限卸载/重挂
+ *   （表现：从首页切任意 Tab 永久转圈「打不开」，直开 URL 却正常）。
+ */
 function AuthGate({ children }: { children: React.ReactNode }) {
-  const { cloudReady, needsLogin, loading } = useAppStore();
+  const { cloudReady, needsLogin, loading, bootstrapped } = useAppStore();
   if (!cloudReady) return <>{children}</>;
   if (needsLogin) return <LoginPage />;
-  if (loading) {
+  if (loading && !bootstrapped) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
         <CircularProgress />
