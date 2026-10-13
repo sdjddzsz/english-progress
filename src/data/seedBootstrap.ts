@@ -322,14 +322,31 @@ export async function rebuildWordBook(
   });
 
   // ② 删除：只删本用户 + 本 bookId 的行
-  onProgress?.({ step: 'book_words', done: 0, total: 1 });
-  for (let i = 0; i < bws.length; i += CHUNK) {
-    const slice = bws.slice(i, i + CHUNK);
-    await repo.bookWords.removeMany(slice.map((b) => b.id));
-    onProgress?.({ step: 'book_words', done: Math.min(i + CHUNK, bws.length), total: bws.length });
+  //
+  // ⚠ 中途失败的处置：此时 book 行可能已删或未删、book_words 已删一部分，
+  //   词书处于「半残」状态。这里**不吞异常**（吞掉会让用户以为成功），
+  //   而是抛出带明确指引的错误：让用户知道要重跑（重跑是安全的：
+  //   幂等 upsert 会补齐任何缺口，且 seedLibraryToCloud 有终局身份集合校验兜底）。
+  const wordsBefore = (await repo.words.count([
+    { column: 'owner_id', op: 'eq', value: userId },
+  ]));
+  onProgress?.({ step: 'book_words', done: 0, total: bws.length });
+  try {
+    for (let i = 0; i < bws.length; i += CHUNK) {
+      const slice = bws.slice(i, i + CHUNK);
+      await repo.bookWords.removeMany(slice.map((b) => b.id));
+      onProgress?.({ step: 'book_words', done: Math.min(i + CHUNK, bws.length), total: bws.length });
+    }
+    const book = await repo.getBook(CET6_BOOK_ID);
+    if (book) await repo.books.remove(CET6_BOOK_ID);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `重建词书时删除旧数据失败：${detail}。词书可能处于不完整状态（原有 ${bws.length} 条关联，` +
+        `words 表 ${wordsBefore} 条）。**直接再点一次「确认重建词书」即可恢复** —— 导入走幂等 upsert，` +
+        `会补齐任何缺口，且导入前有身份集合校验兜底，不会静默少词。`,
+    );
   }
-  const book = await repo.getBook(CET6_BOOK_ID);
-  if (book) await repo.books.remove(CET6_BOOK_ID);
 
   // ③ 重新走标准导入（幂等 upsert：words 表里同 id 会被覆盖为新种子内容）
   const result = await seedLibraryToCloud(userId, onProgress);

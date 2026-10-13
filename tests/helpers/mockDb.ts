@@ -74,7 +74,24 @@ export class MockQuery implements PostgrestQuery {
     if (this.mode === 'insert') {
       const docs = (Array.isArray(this.payload) ? this.payload : [this.payload]).map((d) => ({ ...d }));
       for (const d of docs) {
-        if (!d.id) d.id = `gen_${this.db.seq++}`;
+        // ⚠ 这里**不能**替缺失的 id 兜一个假值。
+        //   云端所有集合的 `id` 列都是 `text NOT NULL` 且**无默认值**（实测 25 张表皆如此），
+        //   漏传 id 的 insert 在真实环境会报
+        //   `null value in column "id" ... violates not-null constraint (23502)`。
+        //   早期这行 `if (!d.id) d.id = gen_${seq++}` 会静默兜住 ⇒ 测试全绿而线上炸锅
+        //   （rebuildWordBook 与 PlacementPage 的 saveTierSnapshot 都踩过）。
+        //   现在忠实模拟 PG：缺失 id 直接报错，让这类缺陷在测试里就暴露。
+        if (!d.id) {
+          return {
+            data: null,
+            error: {
+              message: 'null value in column "id" of relation "' + this.table + '" violates not-null constraint',
+              code: '23502',
+              details: null,
+              hint: null,
+            },
+          };
+        }
         rows.push({ ...d });
       }
       return { data: this.wantRows ? docs : [], error: null };

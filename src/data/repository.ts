@@ -9,6 +9,38 @@
  */
 import type { CollectionName } from '../types/domain';
 
+// ===== 通用 id 生成 =====
+
+/**
+ * 生成文档 id。
+ *
+ * ⚠ 为什么必须在仓库层兜底生成，而不是要求每个调用方自己传：
+ *   云端所有集合的 `id` 列都是 `text NOT NULL` 且**没有默认值**
+ *   （实测 tier_snapshots / word_bookmarks 等皆如此），
+ *   而 `insert()` 的签名是 `id?: string`（可选）—— 于是「可选」在类型上通过、在运行期炸：
+ *   实测 `rebuildWordBook` 与 `PlacementPage` 的 `saveTierSnapshot` 都因此报
+ *   `null value in column "id" violates not-null constraint (23502)`。
+ *   把生成逻辑收在 insert 里，任何调用方漏传都不会再炸。
+ *
+ * 优先 `crypto.randomUUID`（浏览器 / Node ≥19 都有）；不可用时退化到手写 v4，
+ * 再不可用则用时间戳 + 随机数兜底（此时仍保证同毫秒内不同、非空、字符串）。
+ */
+export function newDocId(): string {
+  const c: Crypto | undefined = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === 'function') {
+    c.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  // v4：置位版本号与变体位
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 // ===== 查询构建器接口（与 supabase-js 表面一致的最小子集）=====
 
 export interface PostgrestErrorLike {
@@ -158,10 +190,16 @@ export class Repository<T extends { id: string }> {
 
   // ===== 写 =====
 
+  /**
+   * 插入单行。**id 缺省时自动生成**（见 newDocId 说明：云端 `id` 列 NOT NULL 且无默认值，
+   * 而本方法签名把 id 标成可选 ⇒ 漏传会在运行期报 23502）。
+   * 需要幂等写入的场景请用 upsertMany + 确定性 id，不要用 insert。
+   */
   async insert(doc: Omit<T, 'id'> & { id?: string }): Promise<T> {
+    const withId = doc.id ? doc : { ...doc, id: newDocId() };
     const env = await this.db
       .from(this.table)
-      .insert(doc as Record<string, unknown>)
+      .insert(withId as Record<string, unknown>)
       .select() as unknown as Envelope<T[]>;
     const rows = this.unwrap(env);
     if (!rows || rows.length === 0) {
@@ -170,9 +208,14 @@ export class Repository<T extends { id: string }> {
     return rows[0];
   }
 
+  /**
+   * 批量插入（分片）。⚠ 与 insert 一样**不生成 id 的幂等保证** —— 逐行独立插入，
+   *   重跑会产生重复行；需要幂等请用 upsertMany + 确定性 id。
+   *   仅用于小批量（每片 CHUNK_SIZE 行）；大批量走 upsertMany 分片。
+   */
   async insertMany(docs: (Omit<T, 'id'> & { id?: string })[]): Promise<void> {
     for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
-      const chunk = docs.slice(i, i + CHUNK_SIZE);
+      const chunk = docs.slice(i, i + CHUNK_SIZE).map((d) => (d.id ? d : { ...d, id: newDocId() }));
       const env = await this.db
         .from(this.table)
         .insert(chunk as Record<string, unknown>[]) as unknown as Envelope<unknown[]>;

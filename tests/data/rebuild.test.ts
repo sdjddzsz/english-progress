@@ -33,6 +33,27 @@ describe('词书重建路径（换种子版本后的唯一出路）', () => {
     expect(typeof rebuildWordBook).toBe('function');
   });
 
+  /**
+   * 线上实测（2026-10-13 21:00）：点「确认重建词书」报
+   * `[tier_snapshots] null value in column "id" ... violates not-null constraint (23502)`。
+   * 备份插在**删除之前**，所以这次失败没有造成任何数据损失（已查云端：5407 词 + 5407 关联完好）。
+   *
+   * 这条用例守的就是那个排序：**备份必须先于删除**，且备份本身不能因为缺 id 而炸
+   * （id 由 Repository.insert 自动生成，见 insertId.test.ts）。
+   */
+  it('备份步骤排在删除之前（源码层面：tierSnapshots.insert 先于 bookWords.removeMany）', async () => {
+    const src = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/data/seedBootstrap.ts'),
+      'utf-8',
+    );
+    const body = src.slice(src.indexOf('export async function rebuildWordBook'));
+    const backupAt = body.indexOf('tierSnapshots.insert');
+    const deleteAt = body.indexOf('bookWords.removeMany');
+    expect(backupAt).toBeGreaterThan(-1);
+    expect(deleteAt).toBeGreaterThan(-1);
+    expect(backupAt, '备份必须排在删除之前，否则失败时会留下半残词书').toBeLessThan(deleteAt);
+  });
+
   it('重建入口与初始化入口签名一致（userId + 可选进度回调）', () => {
     // 签名一致性是 UI 侧能共用一个按钮的前提；参数数量不一致会让 runSeed 的分支写法失效
     expect(rebuildWordBook.length).toBeLessThanOrEqual(seedLibraryToCloud.length);
