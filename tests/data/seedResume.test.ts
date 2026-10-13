@@ -23,6 +23,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const CHUNK = 300;
+/** repository.upsertMany 内部的子片大小（与 src/data/repository.ts 的 CHUNK_SIZE 一致） */
+const SUB_CHUNK = 100;
 /** 1000 词 → words 分片 4 个（300/300/300/100），便于构造「第 3 片失败」 */
 const TOTAL = 1000;
 const SEED = Array.from({ length: TOTAL }, (_, i) => ({
@@ -54,6 +56,14 @@ const h = vi.hoisted(() => ({
   /** 云端实测行数（count 返回值）—— 对账依据 */
   cloudWords: 0,
   cloudBookWords: 0,
+  /**
+   * 模拟 repository.upsertMany 的**内部 100 子片**：第 N 次子片尝试时抛错；-1 = 不失败。
+   * 用于「300 片内的 100 粒度失败」——真实形态是子片非原子：先落的子片会留下。
+   */
+  failSubChunkAt: -1,
+  subChunkAttempts: 0,
+  /** 已落库的 words 行 id（用于「无缺口」断言） */
+  landed: new Set<string>(),
 }));
 
 vi.mock('../../src/data/repos/wordRepo', () => ({
@@ -62,6 +72,12 @@ vi.mock('../../src/data/repos/wordRepo', () => ({
     upsertWords: async (rows: unknown[]) => {
       h.wordsCalls.push(rows.length);
       if (h.failWordsCall === h.wordsCalls.length) throw new Error('boom-words');
+      // 与 repository.upsertMany 同构：内部再切 100 子片，任一子片抛错 → 整个 300 调用 reject
+      for (let i = 0; i < rows.length; i += SUB_CHUNK) {
+        h.subChunkAttempts += 1;
+        if (h.failSubChunkAt === h.subChunkAttempts) throw new Error('boom-subchunk');
+        for (const r of rows.slice(i, i + SUB_CHUNK)) h.landed.add((r as { id: string }).id);
+      }
     },
     upsertBookWords: async (rows: unknown[]) => {
       h.bookWordCalls.push(rows.length);
@@ -151,6 +167,9 @@ beforeEach(() => {
   h.createBookCalls = 0;
   h.cloudWords = 0;
   h.cloudBookWords = 0;
+  h.failSubChunkAt = -1;
+  h.subChunkAttempts = 0;
+  h.landed.clear();
   installLocalStorage();
   stubSeed(SEED);
 });
@@ -367,5 +386,60 @@ describe('seedLibraryToCloud 断点续传', () => {
       { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
       { column: 'owner_id', op: 'eq', value: 'u-1' },
     ]);
+  });
+
+  /**
+   * O：覆盖缺口①（裁决方点名）—— 300 片**内部**的 100 子片失败。
+   * 真实形态：子片非原子（先落的子片留在库里），但整个 300 调用 reject。
+   * 要钉住的是「不谎报 / 不缺口」：游标一次都不写（该片整体视为未确认），重试整片重写。
+   */
+  it('O. 300 片内的 100 粒度失败：游标不前移（不谎报 300），重试整片重写 → 无缺口', async () => {
+    h.failSubChunkAt = 2; // 第 1 个整片内的第 2 个 100 子片失败（前 100 行已落库）
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-subchunk');
+
+    expect(h.wordsCalls).toEqual([CHUNK]); // 只尝试了第 1 个整片
+    expect(h.subChunkAttempts).toBe(2);
+    expect(h.landed.size).toBe(SUB_CHUNK); // 只有第 1 个子片落了库
+    expect(storedCursor('u-1')).toBeNull(); // 游标一次都没写 → 绝不声称「已确认 300」
+
+    // 重试：从 0 整片重写（而非从 100 或 300 续），最终 1000 个 word id 全部落库 → 无缺口
+    h.failSubChunkAt = -1;
+    h.wordsCalls.length = 0;
+    h.bookWordCalls.length = 0;
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCalls[0]).toBe(CHUNK); // 起点 0（整片重写）
+    expect(h.landed.size).toBe(TOTAL); // 每个 word id 都在库里 → 无缺口
+    expect(getSeedCursor('u-1')).toBeNull(); // 成功后清游标
+  });
+
+  /**
+   * P：落实裁决方提醒 2 —— 指纹必须「生成过程与 seedToDocs 同序」，否则同一文件两次跑会算出不同值。
+   * 端到端验证：同一文件连跑两次 → 写入的指纹 == 当次算出的指纹 → 旧游标被接受（续传生效）。
+   */
+  it('P. 指纹确定性：同一文件连跑两次同值 → 旧游标被接受（续传生效，不会误判为「种子变过」）', async () => {
+    const fp = seedFingerprint(SEED);
+    expect(seedFingerprint(SEED)).toBe(fp); // 纯函数幂等
+
+    h.failWordsCall = 3;
+    await expect(seedLibraryToCloud('u-1')).rejects.toThrow('boom-words');
+    expect(storedCursor('u-1')?.fingerprint).toBe(fp); // 游标里的指纹 = 当次算出的指纹
+
+    // 同一文件再跑（同序）→ 指纹相等 → 游标被接受 → 走续传而非全量
+    h.wordsCalls.length = 0;
+    h.bookWordCalls.length = 0;
+    h.failWordsCall = -1;
+    h.cloudWords = 600;
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCalls).toEqual([CHUNK, TOTAL - 3 * CHUNK]); // 只补 600 之后
+  });
+
+  /** Q：指纹对顺序敏感（首尾不变，仅内部两词对调）→ 故必须与 seedToDocs 同序遍历 */
+  it('Q. 指纹对顺序敏感：内部两词对调（首尾与词数均不变）→ 指纹不同', () => {
+    const swapped = [...SEED];
+    [swapped[100], swapped[101]] = [swapped[101], swapped[100]];
+    expect(swapped.length).toBe(SEED.length);
+    expect(swapped[0]).toBe(SEED[0]); // 首未变
+    expect(swapped[SEED.length - 1]).toBe(SEED[SEED.length - 1]); // 末未变
+    expect(seedFingerprint(swapped)).not.toBe(seedFingerprint(SEED)); // 差异只可能来自校验和
   });
 });

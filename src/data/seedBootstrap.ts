@@ -48,6 +48,10 @@ export interface SeedCursor {
  * 刻意不做 `JSON.stringify` 整包 hash（1.1MB 每次白算，没必要且慢）。
  * 校验和按 lemma 逐条 FNV-1a（32 位，`Math.imul` 保精度），词间混入分隔符避免拼接歧义
  * （否则 ["ab","c"] 与 ["a","bc"] 会撞成同一个值）。
+ *
+ * ⚠ **遍历顺序必须与 seedToDocs 一致（都是 seed 数组序）**：本函数对顺序敏感（内部两词对调即变值），
+ * 若与生成 words 的顺序不一致，同一份文件两次跑会算出不同指纹 → 判定「种子变过」→ 每次都全量重灌，
+ * 指纹也就形同虚设。两边若要改，必须一起改。
  */
 export function seedFingerprint(seed: SeedWord[]): string {
   const len = seed.length;
@@ -228,7 +232,15 @@ async function upsertChunked(
   return rows.length;
 }
 
-/** 对账 count 请求失败 → 返回 null（= 对账失败）。调用方必须据此走全量，**绝不**沿用游标跳过 */
+/**
+ * 对账 count 请求失败 → 返回 null（= 对账失败）。调用方必须据此走全量，**绝不**沿用游标跳过。
+ *
+ * ⚠ 两种「拿不到可信计数」的情形都朝**安全方向**降级：
+ *  1. count 抛错（超时 / 403 抖动 / 网络）→ 这里捕获为 null → `planStart` 归 0（全量幂等）；
+ *  2. 请求成功但信封里没有 count（`Repository.count` 是 `env.count ?? 0`，见 repository.ts:136）
+ *     → 得到 0 → `planStart` 同样归 0（全量）。若这个兜底值不是 0 而是别的（如 total），
+ *     就会退化成「对账通过但值是错的」——那比没有对账更坏。**改动这里必须保住 0 这个方向。**
+ */
 async function countOrNull(count: () => Promise<number>): Promise<number | null> {
   try {
     return await count();
