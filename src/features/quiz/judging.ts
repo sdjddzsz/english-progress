@@ -107,17 +107,17 @@ export function verdictLabel(v: QuizVerdict): string {
   }
 }
 
-/** 判定配色（考查页 chip 用）：熟练绿、认识蓝、不熟橙、生词红 */
-export function verdictColor(v: QuizVerdict): 'success' | 'info' | 'warning' | 'error' {
+/** 判定 chip 的柔和底色（用户 2026-10-14：浅底深字，不用艳色实心） */
+export function verdictChipSx(v: QuizVerdict): { bgcolor: string; color: string } {
   switch (v) {
     case 'skilled':
-      return 'success';
+      return { bgcolor: '#e6f4ea', color: '#1b5e20' };
     case 'recognized':
-      return 'info';
+      return { bgcolor: '#e3f2fd', color: '#0d47a1' };
     case 'unfamiliar':
-      return 'warning';
+      return { bgcolor: '#fff4e0', color: '#8d5300' };
     case 'unknown':
-      return 'error';
+      return { bgcolor: '#fdecea', color: '#b3261e' };
   }
 }
 

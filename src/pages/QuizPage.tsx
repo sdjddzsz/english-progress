@@ -39,7 +39,7 @@ import {
   isSameUtcDay,
   quizDayStreakAfter,
   QUIZ_DAY_PASS_COUNT,
-  verdictColor,
+  verdictChipSx,
   verdictLabel,
   type QuizVerdict,
   type QuizDayThreshold,
@@ -336,7 +336,9 @@ export default function QuizPage() {
               const isPicked = pickedKey === o.key;
               const isCorrect = o.key === correctKey;
               const showState = verdict !== null;
-              // 判定后（用户 2026-10-14）：选对→所选条实心绿；选错→所选条实心红 + 正确条实心绿
+              // 判定后（用户 2026-10-14 第 4 次反馈）：柔和平权——
+              // 选对=所选条浅绿底深绿字带 ✓；选错=所选条浅红底深红字带 ✗、正确条浅绿带 ✓；
+              // 其余未选项浅灰禁用。不用实心艳色块。
               const state: 'correct' | 'wrong' | 'neutral' = showState
                 ? isCorrect
                   ? 'correct'
@@ -344,29 +346,28 @@ export default function QuizPage() {
                     ? 'wrong'
                     : 'neutral'
                 : 'neutral';
+              const softStyle = {
+                correct: { bgcolor: '#e6f4ea', color: '#1b5e20', borderColor: '#a5d6a7' },
+                wrong: { bgcolor: '#fdecea', color: '#b3261e', borderColor: '#ef9a9a' },
+                neutral: { bgcolor: '#f5f5f5', color: 'text.disabled' },
+              }[state];
+              const mark = state === 'correct' ? '✓ ' : state === 'wrong' ? '✗ ' : '';
               return (
                 <Button
                   key={o.key}
                   fullWidth
-                  variant={state === 'neutral' ? 'outlined' : 'contained'}
-                  color={state === 'correct' ? 'success' : state === 'wrong' ? 'error' : 'inherit'}
-                  disabled={verdict !== null}
+                  variant={showState ? 'contained' : 'outlined'}
+                  disableElevation
+                  disabled={showState}
                   onClick={() => void answer(o.key)}
                   sx={{
                     justifyContent: 'flex-start',
                     textTransform: 'none',
-                    ...(state === 'correct' && {
-                      bgcolor: 'success.main',
-                      color: '#fff',
-                      '&:hover': { bgcolor: 'success.dark' },
-                    }),
-                    ...(state === 'wrong' && {
-                      bgcolor: 'error.main',
-                      color: '#fff',
-                      '&:hover': { bgcolor: 'error.dark' },
-                    }),
+                    py: 1.2,
+                    ...(showState ? { border: '1px solid', ...softStyle } : {}),
                   }}
                 >
+                  {mark}
                   {o.pos ? `${o.pos} ` : ''}
                   {o.zh}
                 </Button>
@@ -376,7 +377,7 @@ export default function QuizPage() {
           {verdict && (
             <Stack spacing={1.5} alignItems="center" sx={{ mt: 2 }}>
               <Stack direction="row" spacing={1} alignItems="center">
-                <Chip label={verdictLabel(verdict)} color={verdictColor(verdict)} size="small" />
+                <Chip label={verdictLabel(verdict)} size="small" sx={verdictChipSx(verdict)} />
                 <Typography variant="body2" color="text.secondary">
                   {verdict === 'skilled' ? '继续，连对 5 次就毕业' : '这个词标记后会更频繁出现'}
                 </Typography>
@@ -395,20 +396,13 @@ export default function QuizPage() {
               )}
             </Stack>
           )}
-          {/* 不会/想不起/不确定（用户 2026-10-14）：点击即判生词，展示正确答案后进下一题 */}
+          {/* 不会/想不起/不确定（用户 2026-10-14 第 2 次反馈：三个合成一个）：
+              点击即判生词、展示正确答案，再手动进下一题 */}
           {verdict === null && (
-            <Stack direction="row" spacing={1} sx={{ mt: 2 }} justifyContent="center" flexWrap="wrap" useFlexGap>
-              {(['不会', '想不起', '不确定'] as const).map((label) => (
-                <Button
-                  key={label}
-                  size="small"
-                  variant="text"
-                  color="error"
-                  onClick={() => void answer('', true)}
-                >
-                  {label}
-                </Button>
-              ))}
+            <Stack sx={{ mt: 2 }} alignItems="center">
+              <Button size="small" variant="text" color="error" onClick={() => void answer('', true)}>
+                不会 / 想不起 / 不确定
+              </Button>
             </Stack>
           )}
         </Paper>
