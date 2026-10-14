@@ -628,7 +628,10 @@ export default function SettingsPage() {
                   ? '主轨密钥（Azure KEY1）'
                   : '主轨密钥（可留空）'
             }
-            type="password"
+            // ★ 明文显示（用户 2026-10-14 明确要求：「谁家填 API 的时候保密到这种程度，
+            // 你就不能让它明文」）。原来是 type="password"（一串圆点），填完看不清对不对、
+            // 也无法确认粘贴是否完整。单人自用设备上遮挡没有实际收益，只添麻烦。
+            type="text"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             size="small"
