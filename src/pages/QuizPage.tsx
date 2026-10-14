@@ -22,6 +22,8 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import { useSettingsStore } from '../store/useSettingsStore';
+import { useTTS } from '../hooks/useTTS';
+import { useSfx } from '../hooks/useSfx';
 import { chatTurn } from '../ai/llmClient';
 import { normalizeSenses } from '../features/senses';
 import type { BookWord, Word } from '../types/domain';
@@ -57,6 +59,8 @@ export default function QuizPage() {
   const navigate = useNavigate();
   const { activeBookId, userId } = useAppStore();
   const { aiChannel, aiBaseUrl, aiModel } = useSettingsStore();
+  const { speakAuto } = useTTS();
+  const sfx = useSfx();
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
   const [items, setItems] = useState<QuizItem[]>([]);
@@ -150,6 +154,8 @@ export default function QuizPage() {
     setVerdict(null);
     setPickedKey('');
     showAtRef.current = Date.now();
+    // 自动发音（用户 2026-10-14，遵循设置页「自动发音」开关）：出题即朗读单词
+    void speakAuto({ text: current.word.lemma, mode: 'word' }, current.bookWord.wordId);
   }, [phase, current]);
 
   /** 答题 → 判定 → 落库 → 反馈 → 下一题 */
@@ -159,6 +165,9 @@ export default function QuizPage() {
     const correct = key === correctKey;
     // 不会/想不起/不确定三按钮（用户 2026-10-14）：点击即判生词，不进入计时判定
     const v: QuizVerdict = forceUnknown ? 'unknown' : judgeAnswer(elapsed, correct);
+    // 答题音效（用户 2026-10-14，遵循设置页「答题音效」开关）：
+    // 熟练/认识=对音，不熟/生词/三按钮=错音（考查有客观对错，接音效合理）
+    sfx(v === 'skilled' || v === 'recognized' ? 'correct' : 'wrong');
     setPickedKey(key);
     setVerdict(v);
     const bw = current.bookWord;

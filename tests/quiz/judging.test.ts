@@ -117,10 +117,13 @@ describe('shouldQuizToday：频率（越生疏越勤）+ 特种训练必考 + �
       shouldQuizToday({ tier: 1, streak: 3, specialTraining: false, lastQuizAt: daysAgo(4) }, now),
     ).toBe(true);
   });
-  it('特种训练无视间隔每天必考（未毕业）', () => {
+  it('特种训练每天必考，但同日不重复（中断重进不会立刻重出刚答过的词）', () => {
+    expect(
+      shouldQuizToday({ tier: 2, streak: 1, specialTraining: true, lastQuizAt: daysAgo(1) }, now),
+    ).toBe(true);
     expect(
       shouldQuizToday({ tier: 2, streak: 1, specialTraining: true, lastQuizAt: daysAgo(0) }, now),
-    ).toBe(true);
+    ).toBe(false);
   });
   it('特种训练但已毕业 → 不考', () => {
     expect(

@@ -76,16 +76,16 @@ export const TIER_QUIZ_INTERVAL_DAYS: Record<Tier, number> = { 1: 4, 2: 3, 3: 2,
 
 /**
  * 该词今天该不该考：
- *   特种训练 → 必考；已毕业（streak≥5）→ 不考；否则按层间隔 + 上次考查时间。
+ *   已毕业（streak≥5）→ 不考；特种训练 → 视为 T4（每天必考，但**同日不重复**——
+ *   否则中断后重进页面，刚答过的特种词会立刻再出，像从头开始）；否则按层间隔。
  */
 export function shouldQuizToday(
   word: { tier: Tier; streak: number; specialTraining: boolean; lastQuizAt?: string },
   now: Date = new Date(),
 ): boolean {
-  if (word.specialTraining && word.streak < QUIZ_GRADUATE_STREAK) return true;
   if (word.streak >= QUIZ_GRADUATE_STREAK) return false;
   if (!word.lastQuizAt) return true;
-  const interval = TIER_QUIZ_INTERVAL_DAYS[word.tier];
+  const interval = word.specialTraining ? 1 : TIER_QUIZ_INTERVAL_DAYS[word.tier];
   const last = new Date(word.lastQuizAt);
   if (Number.isNaN(last.getTime())) return true;
   const dayStart = (d: Date): number =>

@@ -423,7 +423,7 @@ export default function SettingsPage() {
             <Box>
               <Typography variant="body2">自动发音</Typography>
               <Typography variant="caption" color="text.secondary">
-                进入/揭晓当前词时自动朗读一次（摸底、背词、拼写都算）。列表页不自动朗读。
+                进入/揭晓当前词时自动朗读一次（考查出题、背词、拼写都算）。列表页不自动朗读。
               </Typography>
             </Box>
             <Switch
@@ -436,8 +436,8 @@ export default function SettingsPage() {
             <Box>
               <Typography variant="body2">答题音效</Typography>
               <Typography variant="caption" color="text.secondary">
-                拼写练习里答对/答错时播放提示音（本地合成，不联网、不占流量）。
-                其它环节是自评式，没有客观对错，因此不播。
+                考查与拼写里答对/答错时播放提示音（本地合成，不联网、不占流量）。
+                熟练/认识=对音，不熟/生词=错音。其它环节是自评式，没有客观对错，因此不播。
               </Typography>
             </Box>
             <Switch
