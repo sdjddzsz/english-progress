@@ -7,7 +7,7 @@
  * 密钥默认只写会话内存（hooks/useTTS.setRuntimeTTSApiKey，刷新即失）；
  * 勾选"跨刷新保留"时才随 apiKeyRef 机制落库（RLS owner-only，架构 §8 #2 唯一例外）。
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Box,
@@ -15,6 +15,7 @@ import {
   Chip,
   CircularProgress,
   Divider,
+  IconButton,
   LinearProgress,
   MenuItem,
   Paper,
@@ -26,7 +27,8 @@ import {
 } from '@mui/material';
 import type { TTSProviderConfig, TTSProviderName } from '../types/domain';
 import type { LLMChannel } from '../ai/llmClient';
-import { listModels } from '../ai/llmClient';
+import { listModels, type LLMModelInfo } from '../ai/llmClient';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import { isCloudConfigured } from '../data/cloud';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import { useSettingsStore } from '../store/useSettingsStore';
@@ -42,6 +44,9 @@ import {
 } from '../config/constants';
 import { cacheHitRate, readUsageStats, resetUsageStats, type UsageStats } from '../tts/usageStats';
 import { backfillArpabetFromSeed, type BackfillProgress } from '../data/backfillArpabet';
+
+/** 模型下拉里「自定义…」这一项的哨兵值 —— 不是真实模型 id，仅用于触发手填兜底 */
+const CUSTOM_MODEL = '__custom__';
 
 export default function SettingsPage() {
   const bootstrap = useAppStore((s) => s.bootstrap);
@@ -68,6 +73,12 @@ export default function SettingsPage() {
   const [baseUrl, setBaseUrl] = useState(settings.aiBaseUrl);
   const [model, setModel] = useState(settings.aiModel);
   const [channel, setChannel] = useState<LLMChannel>(settings.aiChannel);
+  /** 模型下拉的选项来源（listModels 实时拉取）；拉不到时才退到「自定义」手填 */
+  const [modelOptions, setModelOptions] = useState<LLMModelInfo[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsErr, setModelsErr] = useState('');
+  /** 选中「自定义…」时为 true（也用于回显"已存模型不在列表里"的情况） */
+  const [customOpen, setCustomOpen] = useState(false);
   const [probeMsg, setProbeMsg] = useState('');
   const [probeErr, setProbeErr] = useState('');
 
@@ -145,11 +156,40 @@ export default function SettingsPage() {
     setProbeErr('');
     try {
       const models = await listModels({ channel, ...(baseUrl ? { baseUrl } : {}) });
+      setModelOptions(models);
       setProbeMsg(`连接正常，可用模型 ${models.length} 个${models[0] ? `（如 ${models[0].id}）` : ''}。`);
     } catch (e) {
       setProbeErr(e instanceof Error ? e.message : String(e));
     }
   };
+
+  /**
+   * 拉取模型列表（模型下拉的选项来源，用户 2026-10-14 要求改为下拉选择）。
+   * workbuddy 通道走云端 models.list；openai_compatible 走 `${baseUrl}/models`。
+   * 失败不阻塞：保留「自定义…」手填兜底，且把原因显示出来。
+   */
+  const loadModels = useCallback(async () => {
+    setModelsLoading(true);
+    setModelsErr('');
+    try {
+      const models = await listModels({ channel, ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}) });
+      setModelOptions(models);
+      if (models.length === 0) setModelsErr('端点返回了空的模型列表');
+    } catch (e) {
+      setModelsErr(e instanceof Error ? e.message : String(e));
+      setModelOptions([]);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [channel, baseUrl]);
+
+  // 进页面 / 换通道 / 改 Base URL 后自动拉一次（400ms 防抖，避免输 URL 时连发请求）
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void loadModels();
+    }, 400);
+    return () => clearTimeout(t);
+  }, [loadModels]);
 
   const handleSaveAI = () => {
     settings.setAI(channel, baseUrl.trim(), model.trim());
@@ -394,22 +434,71 @@ export default function SettingsPage() {
           </TextField>
 
           {channel === 'openai_compatible' && (
-            <>
-              <TextField
-                label="Base URL（形如 https://host/v1）"
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                size="small"
-              />
-              <TextField label="模型名" value={model} onChange={(e) => setModel(e.target.value)} size="small" />
-            </>
-          )}
-          {channel === 'workbuddy' && (
             <TextField
-              label="模型名（留空用默认）"
+              label="Base URL（形如 https://host/v1）"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              size="small"
+              helperText="改完会自动重新拉取模型列表"
+            />
+          )}
+
+          {/* 模型：下拉选择（用户 2026-10-14 要求改为下拉，不要手填）。
+              选项由 listModels 实时拉取；列表拉不到、或已存模型不在列表里时，
+              才退到「自定义…」手填 —— 兜底不能没有，否则端点异常时就无法配置了。 */}
+          <Stack direction="row" spacing={1} alignItems="flex-start">
+            <TextField
+              select
+              label="模型"
+              value={modelOptions.some((o) => o.id === model) ? model : model ? CUSTOM_MODEL : ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === CUSTOM_MODEL) {
+                  setCustomOpen(true);
+                  if (!model) setModel('');
+                } else {
+                  setCustomOpen(false);
+                  setModel(v);
+                }
+              }}
+              size="small"
+              sx={{ flex: 1, minWidth: 260 }}
+              disabled={modelsLoading && modelOptions.length === 0}
+              helperText={
+                modelsErr
+                  ? `模型列表拉取失败：${modelsErr}（可选手动填）`
+                  : modelOptions.length > 0
+                    ? `共 ${modelOptions.length} 个可用模型`
+                    : modelsLoading
+                      ? '正在拉取模型列表…'
+                      : ''
+              }
+              SelectProps={{
+                displayEmpty: true,
+                startAdornment: modelsLoading ? <CircularProgress size={14} sx={{ mr: 1 }} /> : undefined,
+              }}
+            >
+              <MenuItem value="" disabled>
+                选择模型
+              </MenuItem>
+              {modelOptions.map((m) => (
+                <MenuItem key={m.id} value={m.id} disabled={m.disabled}>
+                  {m.name ? `${m.name}（${m.id}）` : m.id}
+                </MenuItem>
+              ))}
+              <MenuItem value={CUSTOM_MODEL}>自定义…</MenuItem>
+            </TextField>
+            <IconButton onClick={() => void loadModels()} size="small" title="重新拉取模型列表" disabled={modelsLoading}>
+              <RefreshIcon fontSize="small" />
+            </IconButton>
+          </Stack>
+          {(customOpen || (model !== '' && modelOptions.length > 0 && !modelOptions.some((o) => o.id === model))) && (
+            <TextField
+              label="自定义模型名"
               value={model}
               onChange={(e) => setModel(e.target.value)}
               size="small"
+              helperText="端点上真实存在的模型 id"
             />
           )}
 
