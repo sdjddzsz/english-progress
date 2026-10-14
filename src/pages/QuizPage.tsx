@@ -20,6 +20,9 @@ import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
+import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useTTS } from '../hooks/useTTS';
@@ -71,7 +74,7 @@ export default function QuizPage() {
   const navigate = useNavigate();
   const { activeBookId, userId } = useAppStore();
   const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold } = useSettingsStore();
-  const { speakAuto } = useTTS();
+  const { speakAuto, speak, loading, phaseLabel } = useTTS();
   const sfx = useSfx();
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
@@ -321,6 +324,22 @@ export default function QuizPage() {
                 /{senseOf.ipa}/
               </Typography>
             )}
+            {/* 音标旁喇叭（用户 2026-10-14：考查页也要能手动点发音）：
+                出题已自动朗读（遵循 autoSpeak 开关），这里补手动入口，读当前义项的单词 */}
+            <Tooltip title={loading ? phaseLabel : '发音'}>
+              <span>
+                <IconButton
+                  size="small"
+                  disabled={loading}
+                  aria-label="play quiz word"
+                  onClick={() =>
+                    void speak({ text: current.word.lemma, mode: 'word' }, current.bookWord.wordId)
+                  }
+                >
+                  {loading ? <CircularProgress size={18} /> : <VolumeUpIcon fontSize="small" />}
+                </IconButton>
+              </span>
+            </Tooltip>
             {multiSense && senseOf.pos && (
               <Typography variant="body2" color="text.secondary">
                 {senseOf.pos}
@@ -349,22 +368,24 @@ export default function QuizPage() {
               const softStyle = {
                 correct: { bgcolor: '#e6f4ea', color: '#1b5e20', borderColor: '#a5d6a7' },
                 wrong: { bgcolor: '#fdecea', color: '#b3261e', borderColor: '#ef9a9a' },
-                neutral: { bgcolor: '#f5f5f5', color: 'text.disabled' },
+                neutral: { bgcolor: '#f5f5f5', color: 'rgba(0,0,0,0.38)' },
               }[state];
               const mark = state === 'correct' ? '✓ ' : state === 'wrong' ? '✗ ' : '';
               return (
                 <Button
                   key={o.key}
                   fullWidth
-                  variant={showState ? 'contained' : 'outlined'}
+                  // 判定后不用 disabled（MUI 的 .Mui-disabled 样式优先级高于 sx，
+                  // 会把自定义绿/红底色盖成灰——2026-10-14 截图色块异常的根源）：
+                  // 保持 outlined + sx 全量接管配色，用 pointerEvents 挡点击。
+                  variant="outlined"
                   disableElevation
-                  disabled={showState}
-                  onClick={() => void answer(o.key)}
+                  onClick={showState ? undefined : () => void answer(o.key)}
                   sx={{
                     justifyContent: 'flex-start',
                     textTransform: 'none',
                     py: 1.2,
-                    ...(showState ? { border: '1px solid', ...softStyle } : {}),
+                    ...(showState ? { border: '1px solid', pointerEvents: 'none', ...softStyle } : {}),
                   }}
                 >
                   {mark}
