@@ -347,6 +347,8 @@ export interface PronunciationLog {
   chars?: number;
   /** P0-9：音素来源。cmu=dashscope phoneme 注入；ipa=azure phoneme；text=纯文本降级 */
   phonemeSource?: 'cmu' | 'ipa' | 'text';
+  /** 2026-10-14：云音频库本次缺词（该音色此前没录过）→ 现场合成；合成成功会回传云端 */
+  cloudMiss?: boolean;
   createdAt: string;
 }
 

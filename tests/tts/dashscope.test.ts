@@ -438,6 +438,8 @@ describe('编排器：dashscope 配置 → PronunciationLog 带 phonemeSource/ch
         logs.push(e);
       },
       cache: inMemoryAudioCache(),
+      // 本文件只测发音链路本身；云音频库由 cloudAudioStore.test.ts 单独覆盖
+      remote: null,
       neural: {
         id: 'neural_tts',
         synthesize: async () => ({ audio: new ArrayBuffer(8), engine: 'neural_tts' as const, fromCache: false, phonemeSource: 'cmu' as const, usageChars: 7 }),
@@ -458,6 +460,8 @@ describe('编排器：dashscope 配置 → PronunciationLog 带 phonemeSource/ch
         logs.push(e);
       },
       cache: inMemoryAudioCache(),
+      // 本文件只测发音链路本身；云音频库由 cloudAudioStore.test.ts 单独覆盖
+      remote: null,
       neural: { id: 'neural_tts', synthesize: async () => ({ audio: new ArrayBuffer(8), engine: 'neural_tts' as const, fromCache: false }) },
       espeak: { id: 'ipa_espeak', synthesize: async () => ({ audio: new ArrayBuffer(4), engine: 'ipa_espeak' as const, fromCache: false }) },
     };

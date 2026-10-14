@@ -53,7 +53,7 @@ const CUSTOM_MODEL = '__custom__';
 export default function SettingsPage() {
   const bootstrap = useAppStore((s) => s.bootstrap);
   const settings = useSettingsStore();
-  const { speak, loading: ttsLoading } = useTTS();
+  const { speak, loading: ttsLoading, phaseLabel: ttsPhaseLabel } = useTTS();
 
   const [ttsConfig, setTtsConfig] = useState<TTSProviderConfig | null>(null);
   const [apiKey, setApiKey] = useState(peekRuntimeTTSApiKey());
@@ -734,7 +734,7 @@ export default function SettingsPage() {
           <Stack direction="row" justifyContent="flex-end" alignItems="center" spacing={1}>
             {ttsLoading && <CircularProgress size={18} />}
             <Button size="small" disabled={ttsLoading} onClick={() => void handleTryListen()}>
-              {ttsLoading ? '合成中…' : '试听'}
+              {ttsLoading ? ttsPhaseLabel : '试听'}
             </Button>
             <Button
               size="small"

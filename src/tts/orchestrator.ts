@@ -6,7 +6,11 @@
 import type { TTSEngine, TTSProviderConfig } from '../types/domain';
 import { espeakProvider } from './espeakProvider';
 import { neuralProvider } from './neuralProvider';
+import { sniffAudioMime } from './mime';
 import type { PhonemeSource, TTSProvider, TTSRequest, TTSResult } from './types';
+import type { RemoteAudioStore } from '../data/cloudAudioStore';
+import { cloudAudioPath, cloudAudioStore } from '../data/cloudAudioStore';
+import { isCloudConfigured } from '../data/cloud';
 
 export interface AudioCache {
   get(key: string): Promise<{ audio: ArrayBuffer; engine: TTSEngine } | null>;
@@ -108,7 +112,16 @@ export interface PronunciationLogEntry {
   chars?: number;
   /** P0-9：音素来源（从 TTSResult 透传；'text' = 纯文本降级） */
   phonemeSource?: PhonemeSource;
+  /** 2026-10-14：云音频库缺词、本次为现场合成（合成成功后会回传云端） */
+  cloudMiss?: boolean;
 }
+
+/**
+ * 取音阶段（用户 2026-10-14：提示要按实际状态显示）：
+ * - 'reading'      = 读已有音频（本地缓存命中 / 正在从云音频库下载）
+ * - 'synthesizing' = 云音频库没这个词，正在现场合成
+ */
+export type AudioPhase = 'reading' | 'synthesizing';
 
 export interface OrchestratorDeps {
   /** 读云端 TTSProviderConfig + 已解析 key（运行时从配置文档取入内存） */
@@ -118,39 +131,78 @@ export interface OrchestratorDeps {
   /** Provider 可注入（测试 mock） */
   neural?: TTSProvider;
   espeak?: TTSProvider;
+  /**
+   * 云音频库（可选）。未注入 = 关闭云端取音，行为退回旧逻辑（只走本地缓存 + 合成）。
+   * 缺省实现会碰云 SDK，单测/SSR 请注入内存实现。
+   */
+  remote?: RemoteAudioStore | null;
+  /** 阶段回调（UI 显示「读取中」/「合成中」） */
+  onPhase?(phase: AudioPhase): void;
 }
 
 export function createOrchestrator(deps: OrchestratorDeps) {
   const neural = deps.neural ?? neuralProvider;
   const espeak = deps.espeak ?? espeakProvider;
+  // 未显式传 remote 时：仅当云已配置才启用云音频库（未配置 ⇒ 不查云、不计缺词）；
+  // 显式传 null = 关闭云音频库（单测/非云环境）
+  const remote: RemoteAudioStore | null =
+    deps.remote === undefined ? (isCloudConfigured() ? cloudAudioStore() : null) : deps.remote;
 
   return {
     async getAudio(req: TTSRequest, wordId?: string): Promise<TTSResult> {
       // 先读配置：缓存 key 必须含 voice/model（v2），否则换音色不换 key、命中旧音频。
       // 多一次云端读仍在 <800ms 体验路径内，且只有未命中时才付这个代价。
       const cfg = await deps.getConfig();
-      const key = cfg ? cacheKey(req, cfg.config.voice, cfg.config.model) : cacheKey(req);
+      const voice = cfg?.config.voice;
+      const model = cfg?.config.model;
+      const key = cfg ? cacheKey(req, voice, model) : cacheKey(req);
 
-      // 1) 缓存命中（<800ms 体验路径）
+      // 1) 本地缓存命中（<800ms 体验路径）
+      deps.onPhase?.('reading');
       const hit = await deps.cache.get(key);
       if (hit) return { ...hit, fromCache: true };
 
-      // 2) 主轨：status=active 且 key 已加载
+      // 2) 云音频库（用户 2026-10-14）：该音色此前合成过这个词 → 直接取文件，不再合成。
+      //    路径含音色目录 + 由含 voice/model 的 key 派生的 hash ⇒ 不可能取到别的音色的音频。
+      //    无配置（音色未定）时不查云端：不确定音色就不该复用任何音频。
+      let cloudPath: string | null = null;
+      if (remote && cfg) {
+        cloudPath = await cloudAudioPath(req, voice, model);
+        const cloudAudio = await remote.get(cloudPath);
+        if (cloudAudio && cloudAudio.byteLength > 0) {
+          // 回写本地缓存，下次连下载都省掉；engine 恒为主轨（云端只存主轨音频）
+          await deps.cache.put(key, cloudAudio, 'neural_tts');
+          return { audio: cloudAudio, engine: 'neural_tts', fromCache: true };
+        }
+      }
+
+      // 3) 主轨：status=active 且 key 已加载
       if (cfg && cfg.config.status === 'active' && cfg.apiKey) {
         try {
+          deps.onPhase?.('synthesizing');
           const r = await neural.synthesize(req, { config: cfg.config, apiKey: cfg.apiKey });
           await deps.cache.put(key, r.audio, r.engine);
+          // 云音频库缺词 → 合成成功即回传云端（后台，失败不阻断），
+          // 下次同一音色遇到这个词直接读文件，不再付合成。
+          // ★ 只传主轨音频：espeak 兜底音频不上传，否则机械音污染音色库。
+          if (cloudPath && r.engine === 'neural_tts') {
+            void remote?.put(cloudPath, r.audio, sniffAudioMime(r.audio));
+          }
           await deps.log({
             engine: 'neural_tts',
             success: true,
             fallbackUsed: false,
             wordId,
+            // 本次是「云音频库缺词 → 现场合成」：留痕以便统计待补词量。
+            // 没启用云音频库时**不写这个键**（保持旧日志形态，零回退）
+            ...(cloudPath ? { cloudMiss: true } : {}),
             ...(r.usageChars != null ? { chars: r.usageChars } : {}),
             ...(r.phonemeSource ? { phonemeSource: r.phonemeSource } : {}),
           });
           return r;
         } catch (err) {
-          // 3) 主轨失败/超时 → 兜底轨 + 记录回退
+          // 3) 主轨失败/超时 → 兜底轨 + 记录回退（本地 espeak 也是现场合成）
+          deps.onPhase?.('synthesizing');
           const fb = await espeak.synthesize(req);
           // ★ 兜底音频**绝不入缓存**（2026-10-14 修复）：
           // 主轨失败多半是瞬时的（网络抖动 / CORS / 密钥未注入），
@@ -169,7 +221,8 @@ export function createOrchestrator(deps: OrchestratorDeps) {
         }
       }
 
-      // 4) 未配置 / pending_user_setup / error → 兜底轨（同样不入缓存，理由同上）
+      // 4) 未配置 / pending_user_setup / error → 兜底轨（同样不入缓存、不上传云端，理由同上）
+      deps.onPhase?.('synthesizing');
       const fb2 = await espeak.synthesize(req);
       fallbackNoticePending = true;
       await deps.log({ engine: 'ipa_espeak', success: true, fallbackUsed: true, wordId });

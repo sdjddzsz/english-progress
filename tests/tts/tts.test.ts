@@ -116,6 +116,8 @@ describe('编排器：缓存 → 主轨 → 兜底 → 日志 → 轻提示一�
       cache,
       neural: providers.neural,
       espeak: providers.espeak,
+      // 本文件只测发音链路本身；云音频库由 cloudAudioStore.test.ts 单独覆盖
+      remote: null,
     };
   }
 

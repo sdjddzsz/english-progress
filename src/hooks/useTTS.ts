@@ -5,7 +5,7 @@
  */
 import { useCallback, useState } from 'react';
 import type { TTSEngine } from '../types/domain';
-import { cacheStorageCache, consumeFallbackNotice, createOrchestrator, inMemoryAudioCache, type AudioCache, type TTSOrchestrator } from '../tts/orchestrator';
+import { cacheStorageCache, consumeFallbackNotice, createOrchestrator, inMemoryAudioCache, type AudioCache, type AudioPhase, type TTSOrchestrator } from '../tts/orchestrator';
 import { LruAudioCache } from '../offline/audioCacheManager';
 import type { TTSRequest } from '../tts/types';
 import { recordCacheHit, recordSynthesis } from '../tts/usageStats';
@@ -29,6 +29,10 @@ export function peekRuntimeTTSApiKey(): string {
 // ===== 编排器单例 =====
 
 let orchestratorSingleton: TTSOrchestrator | null = null;
+
+// 当前阶段订阅者（用户 2026-10-14：提示要按实际状态显示「读取中」/「合成中」）。
+// 编排器是单例、只建一次，故用模块级引用接收阶段回调，再由 hook 订阅。
+let phaseListener: ((p: AudioPhase) => void) | null = null;
 
 function getOrchestrator(): TTSOrchestrator {
   if (orchestratorSingleton) return orchestratorSingleton;
@@ -59,6 +63,9 @@ function getOrchestrator(): TTSOrchestrator {
       // key 从会话内存取（用户在设置页粘贴）；云端配置文档里的 apiKeyRef 指向的字段由部署侧填充
       return { config, ...(runtimeApiKey ? { apiKey: runtimeApiKey } : {}) };
     },
+    onPhase: (phase) => {
+      phaseListener?.(phase);
+    },
     log: async (entry) => {
       try {
         await getRepos().feedback.logPronunciation({
@@ -69,6 +76,7 @@ function getOrchestrator(): TTSOrchestrator {
           ...(entry.error ? { error: entry.error } : {}),
           ...(entry.chars != null ? { chars: entry.chars } : {}),
           ...(entry.phonemeSource ? { phonemeSource: entry.phonemeSource } : {}),
+          ...(entry.cloudMiss ? { cloudMiss: true } : {}),
         });
       } catch {
         // 日志失败不阻断学习
@@ -119,6 +127,10 @@ export interface UseTTSApi {
    */
   speakAuto(req: TTSRequest, wordId?: string): Promise<TTSEngine | null>;
   loading: boolean;
+  /** 取音阶段：reading=读已有音频（本地/云端文件）；synthesizing=现场合成；idle=未进行 */
+  phase: AudioPhase | 'idle';
+  /** 阶段文案（用户 2026-10-14：按实际状态显示「读取中…」/「合成中…」） */
+  phaseLabel: string;
   lastEngine: TTSEngine | null;
   /** espeak 兜轨首次触发的一次性轻提示（消费一次后复位） */
   fallbackNotice: boolean;
@@ -127,6 +139,7 @@ export interface UseTTSApi {
 
 export function useTTS(): UseTTSApi {
   const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState<AudioPhase | 'idle'>('idle');
   const [lastEngine, setLastEngine] = useState<TTSEngine | null>(null);
   const [fallbackNotice, setFallbackNotice] = useState(false);
   // 注意：这里用 getState() 而不是 useSettingsStore(selector) —— 后者依赖 React 渲染器，
@@ -135,6 +148,9 @@ export function useTTS(): UseTTSApi {
 
   const speak = useCallback(async (req: TTSRequest, wordId?: string): Promise<TTSEngine | null> => {
     setLoading(true);
+    // 默认「读取中」：先本地缓存、再云音频库；真要现场合成时编排器会回调改成 synthesizing
+    setPhase('reading');
+    phaseListener = setPhase;
     try {
       const res = await getOrchestrator().getAudio(req, wordId);
       // P1-1 本地用量聚合：缓存命中不计字符；仅主轨（计费）合成计入
@@ -160,6 +176,7 @@ export function useTTS(): UseTTSApi {
       return null;
     } finally {
       setLoading(false);
+      setPhase('idle');
     }
   }, []);
 
@@ -172,5 +189,6 @@ export function useTTS(): UseTTSApi {
   );
 
   const dismissFallbackNotice = useCallback(() => setFallbackNotice(false), []);
-  return { speak, speakAuto, loading, lastEngine, fallbackNotice, dismissFallbackNotice };
+  const phaseLabel = phase === 'synthesizing' ? '合成中…' : '读取中…';
+  return { speak, speakAuto, loading, phase, phaseLabel, lastEngine, fallbackNotice, dismissFallbackNotice };
 }

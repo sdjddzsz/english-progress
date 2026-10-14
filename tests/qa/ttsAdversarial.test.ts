@@ -62,6 +62,8 @@ function mkDeps(over: Partial<OrchestratorDeps> = {}) {
       logs.push(e);
     }),
     cache: inMemoryAudioCache(),
+    // 本文件只测发音链路本身；云音频库由 cloudAudioStore.test.ts 单独覆盖
+    remote: null,
     neural: mkNeural(),
     espeak: mkEspeak(),
     ...over,

@@ -39,7 +39,7 @@ export default function WordCard({
   compact = false,
   sense,
 }: WordCardProps) {
-  const { speak, speakAuto, loading } = useTTS();
+  const { speak, speakAuto, loading, phaseLabel } = useTTS();
   const autoSpeak = useSettingsStore((s) => s.autoSpeak);
 
   const wordId = word?.id ?? '';
@@ -103,7 +103,7 @@ export default function WordCard({
         {multiPron && !hideText && (
           <Chip size="small" color="warning" variant="outlined" label={`${entries.length} 种读音/词性`} />
         )}
-        <Tooltip title={loading ? '合成中…' : '发音'}>
+        <Tooltip title={loading ? phaseLabel : '发音'}>
           <span>
             <IconButton onClick={speakTarget} disabled={loading} aria-label="play word">
               {loading ? <CircularProgress size={20} /> : <VolumeUpIcon />}
