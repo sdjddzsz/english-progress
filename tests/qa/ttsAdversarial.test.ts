@@ -83,10 +83,12 @@ describe('TTS 编排：主轨失败与超时', () => {
     expect(logs[0].error).toContain('401');
     expect(consumeFallbackNotice()).toBe(true);
     expect(consumeFallbackNotice()).toBe(false); // 仅一次
-    // 结果入缓存（下次直接命中兜底音频）
-    const again = await orch.getAudio(wordReq);
-    expect(again.fromCache).toBe(true);
-    expect(again.engine).toBe('ipa_espeak');
+    // ★ 兜底音频**绝不入缓存**（2026-10-14 修复）：
+    // 主轨失败多半是瞬时的（网络/CORS/密钥未注入），缓存了机械音后，
+    // 即使主轨恢复，同一个词也永远命中它 —— 用户「手机一直机械音、刷新也没用」。
+    const again = await orch.getAudio(wordReq, 'w1');
+    expect(again.fromCache).toBe(false); // 不命中缓存
+    expect(again.engine).toBe('ipa_espeak'); // 重新走兜底合成
   });
 
   it('主轨真实超时（>3s 不返回）→ abort → espeak 兜底', async () => {
@@ -189,14 +191,16 @@ describe('回归锚点：缓存键含 IPA 且长度前缀无歧义（P2-2 修复
     expect(second.audio).not.toBe(first.audio); // 不串音
   });
 
-  it('③ 新 key 为长度前缀格式，形如 7:abandon|4:word|10:/əˈbændən/|0:|0:', () => {
-    // 架构增量 v0.1：第 4 段纳入 arpabet（换发音真源必须换缓存），voice 段后移为第 5 段
+  it('③ 新 key 为长度前缀格式，形如 2:v2|7:abandon|4:word|10:/əˈbændən/|0:|0:|0:', () => {
+    // 架构增量 v0.1：第 4 段纳入 arpabet（换发音真源必须换缓存），voice 段后移为第 5 段。
+    // 2026-10-14 v2：加 v2 版本前缀 + 第 6 段 model（页面不传 voice，必须由编排器补）。
     const key = cacheKey({ text: 'abandon', mode: 'word', ipa: '/əˈbændən/' });
-    expect(key).toBe(`7:abandon|4:word|${'/əˈbændən/'.length}:/əˈbændən/|0:|0:`);
+    expect(key).toBe(`2:v2|7:abandon|4:word|${'/əˈbændən/'.length}:/əˈbændən/|0:|0:|0:`);
     expect('/əˈbændən/'.length).toBe(10);
     // 字段含 '|' 时长度前缀保证唯一解码（任意切分都会校验长度失败）
+    // 七段：v2 | text | mode | ipa | arpabet | voice | model
     const tricky = cacheKey({ text: 'a|4:x', mode: 'word', voice: 'v' });
-    expect(tricky).toBe('5:a|4:x|4:word|0:|0:|1:v');
+    expect(tricky).toBe('2:v2|5:a|4:x|4:word|0:|0:|1:v|0:');
   });
 });
 

@@ -63,8 +63,24 @@ function lenPrefixed(part: string): string {
   return `${part.length}:${part}`;
 }
 
-export function cacheKey(req: TTSRequest): string {
-  return [req.text, req.mode, req.ipa ?? '', req.arpabet ?? '', req.voice ?? ''].map(lenPrefixed).join('|');
+/**
+ * 缓存 key（v2，2026-10-14 修复）。
+ *
+ * v1 只有 `text|mode|ipa|arpabet|voice`，而**所有页面调 speak() 都不传 voice**
+ * ⇒ `req.voice` 恒为 undefined ⇒ key 与发音人、模型完全无关。
+ * 后果一：换发音人 / 换模型后，同一个词命中旧音频 —— 用户报「所有发音人都是同一个音」。
+ *
+ * v2 把 voice + model 并进来（由调用方从云端配置取），并加 `v2` 版本前缀：
+ * 前缀一改，线上已沉淀的旧格式缓存**自然失效、不迁移** —— 这一点是必需的，
+ * 因为 v1 时代**兜底的机械音也被写进了缓存**（见 getAudio 里的修复注释），
+ * 用户手机上「刷新也没用」正是命中了那份 espeak 音频；不清掉它就永远听不到主轨。
+ */
+export function cacheKey(req: TTSRequest, voice?: string, model?: string): string {
+  // voice 双来源：优先调用方显式传入（编排器传云端配置里的真音色/模型），
+  // 其次 req.voice（页面若传了也认）—— 两者都不传才视为空。
+  return ['v2', req.text, req.mode, req.ipa ?? '', req.arpabet ?? '', voice ?? req.voice ?? '', model ?? '']
+    .map(lenPrefixed)
+    .join('|');
 }
 
 // ===== 前台轻提示（本会话仅一次）=====
@@ -110,13 +126,16 @@ export function createOrchestrator(deps: OrchestratorDeps) {
 
   return {
     async getAudio(req: TTSRequest, wordId?: string): Promise<TTSResult> {
-      const key = cacheKey(req);
+      // 先读配置：缓存 key 必须含 voice/model（v2），否则换音色不换 key、命中旧音频。
+      // 多一次云端读仍在 <800ms 体验路径内，且只有未命中时才付这个代价。
+      const cfg = await deps.getConfig();
+      const key = cfg ? cacheKey(req, cfg.config.voice, cfg.config.model) : cacheKey(req);
+
       // 1) 缓存命中（<800ms 体验路径）
       const hit = await deps.cache.get(key);
       if (hit) return { ...hit, fromCache: true };
 
       // 2) 主轨：status=active 且 key 已加载
-      const cfg = await deps.getConfig();
       if (cfg && cfg.config.status === 'active' && cfg.apiKey) {
         try {
           const r = await neural.synthesize(req, { config: cfg.config, apiKey: cfg.apiKey });
@@ -133,7 +152,11 @@ export function createOrchestrator(deps: OrchestratorDeps) {
         } catch (err) {
           // 3) 主轨失败/超时 → 兜底轨 + 记录回退
           const fb = await espeak.synthesize(req);
-          await deps.cache.put(key, fb.audio, fb.engine);
+          // ★ 兜底音频**绝不入缓存**（2026-10-14 修复）：
+          // 主轨失败多半是瞬时的（网络抖动 / CORS / 密钥未注入），
+          // 一旦把机械音写进 CacheStorage，即使主轨随后恢复，同一个词也永远命中它 ——
+          // 用户表现就是「手机一直机械音、刷新也没用」（缓存在 CacheStorage，刷新清不掉）。
+          // 代价是兜底路径每次重新合成（本地 WASM，几十毫秒），可接受。
           fallbackNoticePending = true;
           await deps.log({
             engine: 'ipa_espeak',
@@ -146,9 +169,8 @@ export function createOrchestrator(deps: OrchestratorDeps) {
         }
       }
 
-      // 4) 未配置 / pending_user_setup / error → 兜底轨
+      // 4) 未配置 / pending_user_setup / error → 兜底轨（同样不入缓存，理由同上）
       const fb2 = await espeak.synthesize(req);
-      await deps.cache.put(key, fb2.audio, fb2.engine);
       fallbackNoticePending = true;
       await deps.log({ engine: 'ipa_espeak', success: true, fallbackUsed: true, wordId });
       return fb2;

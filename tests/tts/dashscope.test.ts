@@ -400,12 +400,24 @@ describe('cacheKey：arpabet 进 key（换发音真源必须换缓存）', () =>
     expect(cacheKey(a)).not.toBe(cacheKey(b));
   });
 
-  it('五段长度前缀格式（text|mode|ipa|arpabet|voice）', () => {
+  it('v2 七段长度前缀格式（v2|text|mode|ipa|arpabet|voice|model）', () => {
+    // 2026-10-14：v2 把 voice/model 并进 key（原来页面调 speak 从不传 voice，
+    // req.voice 恒空 ⇒ 换发音人/换模型后同一个词命中旧音频），并加 v2 前缀
+    // 让线上已沉淀的旧格式缓存（含误存的兜底机械音）自然失效。
     const key = cacheKey({ text: 'abandon', mode: 'word', ipa: '/əˈbændən/' });
-    expect(key).toBe(`7:abandon|4:word|10:/əˈbændən/|0:|0:`);
+    expect(key).toBe(`2:v2|7:abandon|4:word|10:/əˈbændən/|0:|0:|0:`);
     const withArpa = cacheKey({ text: 'abandon', mode: 'word', ipa: '/əˈbændən/', arpabet: 'AH0 B AE1 N D AH0 N' });
     // 长度前缀 = 该段实际字符数：'AH0 B AE1 N D AH0 N'.length === 19
-    expect(withArpa).toBe(`7:abandon|4:word|10:/əˈbændən/|19:AH0 B AE1 N D AH0 N|0:`);
+    expect(withArpa).toBe(`2:v2|7:abandon|4:word|10:/əˈbændən/|19:AH0 B AE1 N D AH0 N|0:|0:`);
+  });
+
+  it('★ 换发音人 / 换模型必须换 key（2026-10-14「所有发音人同一个音」的回归锚点）', () => {
+    const base = { text: 'abandon', mode: 'word' } as TTSRequest;
+    const v1 = cacheKey(base, 'longanyang', 'cosyvoice-v3-flash');
+    const v2 = cacheKey(base, 'longxiaochun', 'cosyvoice-v3-flash');
+    const m2 = cacheKey(base, 'longanyang', 'cosyvoice-v2');
+    expect(v1).not.toBe(v2); // 换音色 → 换 key
+    expect(v1).not.toBe(m2); // 换模型 → 换 key
   });
 
   it('arpabet 含 "|" 时长度前缀消歧（不与 voice 段串音）', () => {
