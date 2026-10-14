@@ -292,7 +292,8 @@ export default function SearchPage() {
                   {i + 1}.
                 </Typography>
                 <Typography variant="body2" sx={{ flex: 1 }}>
-                  {s.zh || s.pos}
+                  {/* 词性显式标注（用户 2026-10-14）：同一单词不同义项词性可能不同 */}
+                  {s.pos ? `${s.pos} ${s.zh}`.trim() : s.zh}
                 </Typography>
                 <Typography
                   variant="caption"

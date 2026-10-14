@@ -585,7 +585,8 @@ export default function PlacementPage() {
                             variant="body2"
                             sx={{ flex: 1, fontWeight: isThis ? 700 : 400 }}
                           >
-                            {s.zh || s.pos} · {senseLabel(s)}
+                            {/* 词性显式标注（用户 2026-10-14）：摸底选项也要能按词性区分义项 */}
+                            {s.pos ? `${s.pos} ${s.zh}`.trim() : s.zh} · {senseLabel(s)}
                             {s.ipa ? ` · /${s.ipa.replace(/^\/|\/$/g, '')}/` : ''}
                           </Typography>
                           <IconButton

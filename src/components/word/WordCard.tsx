@@ -144,7 +144,11 @@ export default function WordCard({
                     {i + 1}.
                   </Typography>
                   <Typography variant="body1" sx={{ flex: 1 }}>
-                    {s.zh || s.pos}
+                    {/* ★ 词性必须显式标注（用户 2026-10-14：「有些单词的不同意思对应有不同词性，
+                        但现在普遍只标注了单一词性」）。数据侧每个义项都带 pos
+                        （8296 词里 6110 个是多义项且词性互不相同），
+                        原来写 `s.zh || s.pos` 等于只在释义缺失时才顺带露出词性。 */}
+                    {s.pos ? `${s.pos} ${s.zh}`.trim() : s.zh}
                   </Typography>
                   {/* 读音列：与该义项绑定（不是单词级那一个） */}
                   {s.ipa && (

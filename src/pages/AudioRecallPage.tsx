@@ -78,7 +78,7 @@ export default function AudioRecallPage() {
           sense: {
             ...primary,
             senseId,
-            zh: group.map((g) => g.zh || g.pos).filter(Boolean).join(' / '),
+            zh: group.map((g) => (g.pos ? `${g.pos} ${g.zh}`.trim() : g.zh || g.pos)).filter(Boolean).join(' / '),
           },
           senses,
           pronunciationCount: distinct,
