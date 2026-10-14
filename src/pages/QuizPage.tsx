@@ -58,7 +58,7 @@ type Phase = 'loading' | 'quiz' | 'between' | 'done';
 export default function QuizPage() {
   const navigate = useNavigate();
   const { activeBookId, userId } = useAppStore();
-  const { aiChannel, aiBaseUrl, aiModel } = useSettingsStore();
+  const { aiChannel, aiBaseUrl, aiModel, quizAutoNext } = useSettingsStore();
   const { speakAuto } = useTTS();
   const sfx = useSfx();
   const [phase, setPhase] = useState<Phase>('loading');
@@ -195,10 +195,13 @@ export default function QuizPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-    setTimeout(() => {
-      if (idx + 1 >= items.length) setPhase('done');
-      else setIdx((i) => i + 1);
-    }, 950);
+    // 自动下一题（设置开关，默认关=手动点「下一题」，用户 2026-10-14：答完要能看清对错与正确答案）
+    if (quizAutoNext) {
+      setTimeout(() => {
+        if (idx + 1 >= items.length) setPhase('done');
+        else setIdx((i) => i + 1);
+      }, 950);
+    }
   };
 
   const senseOf = useMemo(() => {
@@ -297,21 +300,36 @@ export default function QuizPage() {
               const isPicked = pickedKey === o.key;
               const isCorrect = o.key === correctKey;
               const showState = verdict !== null;
+              // 判定后（用户 2026-10-14）：选对→所选条实心绿；选错→所选条实心红 + 正确条实心绿
+              const state: 'correct' | 'wrong' | 'neutral' = showState
+                ? isCorrect
+                  ? 'correct'
+                  : isPicked
+                    ? 'wrong'
+                    : 'neutral'
+                : 'neutral';
               return (
                 <Button
                   key={o.key}
                   fullWidth
-                  variant={showState && isCorrect ? 'contained' : 'outlined'}
-                  color={
-                    showState && isCorrect
-                      ? 'success'
-                      : showState && isPicked && !isCorrect
-                        ? 'error'
-                        : 'inherit'
-                  }
+                  variant={state === 'neutral' ? 'outlined' : 'contained'}
+                  color={state === 'correct' ? 'success' : state === 'wrong' ? 'error' : 'inherit'}
                   disabled={verdict !== null}
                   onClick={() => void answer(o.key)}
-                  sx={{ justifyContent: 'flex-start', textTransform: 'none' }}
+                  sx={{
+                    justifyContent: 'flex-start',
+                    textTransform: 'none',
+                    ...(state === 'correct' && {
+                      bgcolor: 'success.main',
+                      color: '#fff',
+                      '&:hover': { bgcolor: 'success.dark' },
+                    }),
+                    ...(state === 'wrong' && {
+                      bgcolor: 'error.main',
+                      color: '#fff',
+                      '&:hover': { bgcolor: 'error.dark' },
+                    }),
+                  }}
                 >
                   {o.pos ? `${o.pos} ` : ''}
                   {o.zh}
@@ -320,11 +338,25 @@ export default function QuizPage() {
             })}
           </Stack>
           {verdict && (
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 2 }} justifyContent="center">
-              <Chip label={verdictLabel(verdict)} color={verdictColor(verdict)} size="small" />
-              <Typography variant="body2" color="text.secondary">
-                {verdict === 'skilled' ? '继续，连对 5 次就毕业' : '这个词标记后会更频繁出现'}
-              </Typography>
+            <Stack spacing={1.5} alignItems="center" sx={{ mt: 2 }}>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Chip label={verdictLabel(verdict)} color={verdictColor(verdict)} size="small" />
+                <Typography variant="body2" color="text.secondary">
+                  {verdict === 'skilled' ? '继续，连对 5 次就毕业' : '这个词标记后会更频繁出现'}
+                </Typography>
+              </Stack>
+              {/* 手动下一题（quizAutoNext 关时显示，默认关——答完可看清对错与正确答案再走） */}
+              {!quizAutoNext && (
+                <Button
+                  variant="contained"
+                  onClick={() => {
+                    if (idx + 1 >= items.length) setPhase('done');
+                    else setIdx((i) => i + 1);
+                  }}
+                >
+                  {idx + 1 >= items.length ? '看总结' : '下一题'}
+                </Button>
+              )}
             </Stack>
           )}
           {/* 不会/想不起/不确定（用户 2026-10-14）：点击即判生词，展示正确答案后进下一题 */}

@@ -33,6 +33,8 @@ export interface SettingsState {
    * 只作用于有客观对错的环节（拼写/听音选词/中译英），自评式环节（摸底、背词）不播。
    */
   sfxEnabled: boolean;
+  /** 考查答完是否自动进入下一题（用户 2026-10-14：默认关=手动点下一题） */
+  quizAutoNext: boolean;
 
   setDevice(device: Device): void;
   setCnToEn(enabled: boolean, dailyWords?: number): void;
@@ -41,6 +43,7 @@ export interface SettingsState {
   setTTS(provider: TTSProviderName, voice: string, model?: string): void;
   setAutoSpeak(enabled: boolean): void;
   setSfxEnabled(enabled: boolean): void;
+  setQuizAutoNext(enabled: boolean): void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -57,6 +60,7 @@ export const useSettingsStore = create<SettingsState>()(
       ttsModel: DASHSCOPE_DEFAULT_MODEL,
       autoSpeak: true,
       sfxEnabled: true,
+      quizAutoNext: false,
 
       setDevice: (device) => set({ device }),
       setCnToEn: (cnToEnEnabled, dailyWords) =>
@@ -66,6 +70,7 @@ export const useSettingsStore = create<SettingsState>()(
         set({ ttsProvider, ttsVoice, ...(ttsModel != null ? { ttsModel } : {}) }),
       setAutoSpeak: (autoSpeak) => set({ autoSpeak }),
       setSfxEnabled: (sfxEnabled) => set({ sfxEnabled }),
+      setQuizAutoNext: (quizAutoNext) => set({ quizAutoNext }),
     }),
     { name: 'ep-settings' },
   ),

@@ -6,7 +6,7 @@
  * - 答题音效是**反馈**，迟 200ms 就失去意义，合成是 0 延迟；
  * - 不需要入 PWA 预缓存清单（避免又多一份 1MB 资源）。
  *
- * 边界：只做反馈音，不做朗读（朗读走 useTTS）。音量刻意压得低（≈0.1），不刺耳、不盖住发音。
+ * 边界：只做反馈音，不做朗读（朗读走 useTTS）。音量中档（≈0.35，用户 2026-10-14：0.1 太小听不见），有淡入+指数衰减保护，不爆音。
  */
 
 export type SfxKind = 'correct' | 'wrong';
@@ -55,11 +55,11 @@ export function playSfx(kind: SfxKind): void {
   if (ac.state === 'suspended') void ac.resume();
   const t0 = ac.currentTime + 0.01;
   if (kind === 'correct') {
-    tone(ac, 880.0, t0, 0.11, 0.1);
-    tone(ac, 1318.5, t0 + 0.085, 0.16, 0.09);
+    tone(ac, 880.0, t0, 0.11, 0.35);
+    tone(ac, 1318.5, t0 + 0.085, 0.16, 0.3);
   } else {
-    tone(ac, 311.1, t0, 0.15, 0.1, 'triangle');
-    tone(ac, 233.1, t0 + 0.1, 0.22, 0.09, 'triangle');
+    tone(ac, 311.1, t0, 0.15, 0.35, 'triangle');
+    tone(ac, 233.1, t0 + 0.1, 0.22, 0.3, 'triangle');
   }
 }
 

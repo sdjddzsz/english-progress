@@ -447,6 +447,20 @@ export default function SettingsPage() {
           </Stack>
 
           <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Box>
+              <Typography variant="body2">自动进入下一题（考查）</Typography>
+              <Typography variant="caption" color="text.secondary">
+                开=答完约 1 秒自动进下一题；关（默认）=答完停在原地，显示判定与正确答案，
+                自己点「下一题」再走。
+              </Typography>
+            </Box>
+            <Switch
+              checked={settings.quizAutoNext}
+              onChange={(e) => settings.setQuizAutoNext(e.target.checked)}
+            />
+          </Stack>
+
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Typography variant="body2">见中文联想英文（每日一小段）</Typography>
             <Switch
               checked={settings.cnToEnEnabled}
