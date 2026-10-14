@@ -106,6 +106,13 @@ export default function SettingsPage() {
           if (cfg.voice) setVoice(cfg.voice);
           if (cfg.model) setTtsModel(cfg.model);
           setPersistKey(Boolean(cfg.runtimeApiKey));
+          // ★ 跨刷新保留的密钥回填进输入框（2026-10-14 修「每次试音都要重填 API」）：
+          // 勾了「跨刷新保留」且云端有 runtimeApiKey 时，刷新后输入框不再空白；
+          // 否则静默保存/试听都会拿空 key 把云端已有 key 覆盖掉（实测发生）。
+          if (cfg.runtimeApiKey) {
+            setApiKey(cfg.runtimeApiKey);
+            setRuntimeTTSApiKey(cfg.runtimeApiKey); // 会话内存同步注入，主轨立即可用
+          }
         }
       } catch {
         setTtsConfig(null);
@@ -241,7 +248,8 @@ export default function SettingsPage() {
     const v = effectiveVoice.trim() || (isDashscope ? DASHSCOPE_DEFAULT_VOICE : '');
     const m = ttsModel.trim() || (isDashscope ? DASHSCOPE_DEFAULT_MODEL : '');
     settings.setTTS(provider, v, m);
-    setRuntimeTTSApiKey(apiKey);
+    // 输入框空但勾着「跨刷新保留」时不清会话内存密钥（防静默保存毁掉可用 key）
+    if (apiKey || !persistKey) setRuntimeTTSApiKey(apiKey);
 
     const userId = useAppStore.getState().userId;
     if (!userId) {
@@ -253,7 +261,7 @@ export default function SettingsPage() {
       const repos = getRepos();
       const cfg = (await repos.config.getTTSConfig(userId)) ?? (await repos.config.initDefaultTTSConfig(userId));
       const key = apiKey.trim();
-      const ready = Boolean(ep && v && key);
+      const ready = Boolean(ep && v && (key || cfg.runtimeApiKey));
       const patch: Partial<TTSProviderConfig> = {
         provider,
         endpoint: ep || undefined,
@@ -265,6 +273,11 @@ export default function SettingsPage() {
       if (persistKey && key) {
         patch.apiKeyRef = 'runtimeApiKey';
         patch.runtimeApiKey = key;
+      } else if (persistKey && !key && cfg.runtimeApiKey) {
+        // ★ 输入框空但勾着「跨刷新保留」且云端已有 key：保留云端 key 不覆盖。
+        // （2026-10-14 修：试听前静默保存曾拿空 key 把云端 key 清掉 → 主轨失效，
+        //  用户每次刷新后都得重填一遍 API——不合理。想真正删 key：取消勾选再保存。）
+        patch.apiKeyRef = 'runtimeApiKey';
       } else {
         // 空串即清空（undefined 会被 JSON 序列化丢掉，等于不改）
         patch.apiKeyRef = '';
