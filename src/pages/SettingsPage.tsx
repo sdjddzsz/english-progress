@@ -225,10 +225,19 @@ export default function SettingsPage() {
     if (engine === 'neural_tts') {
       setTtsMsg('主轨（神经语音）发音成功。');
     } else if (engine === 'ipa_espeak') {
+      // 先分清「密钥根本不在会话里」与「密钥在但主轨请求失败」——这两者现象一样（机械音）、
+      // 修法完全不同。原先只列了 CORS/Key/端点三条，把最常见的「刷新后密钥丢了」漏掉了，
+      // 用户会以为是音质变差（2026-10-14 实际发生）。
+      const hasKey = Boolean(peekRuntimeTTSApiKey());
       setTtsErr(
-        '走的是 espeak 兜底（机械音）——主轨没通。常见原因：① 浏览器 CORS/预检不放行（控制台报 Failed to fetch）——' +
-          'DashScope 会自动改走 WebSocket 直连，若仍落到兜底说明 WS 也不通；② API Key 无效或未开通百炼；' +
-          '③ 端点与密钥所在资源不匹配。请对照控制台报错逐项排查。',
+        hasKey
+          ? '走的是 espeak 兜底（机械音）——密钥在会话里，但主轨请求没通。常见原因：' +
+            '① 浏览器 CORS/预检不放行（控制台报 Failed to fetch，DashScope 会自动改走 WebSocket 直连，' +
+            '若仍落到兜底说明 WS 也不通）；② Key 无效或未开通百炼；③ 端点与密钥所在资源不匹配。' +
+            '请对照控制台报错逐项排查。'
+          : '走的是 espeak 兜底（机械音）——原因是**会话里没有 API Key**：密钥默认只存内存、刷新即失，' +
+            '所以昨天试听是自然音、今天刷新后就变成机械音。' +
+            '勾选上方「跨刷新保留」再点一次保存，以后刷新会自动从云端取回密钥，主轨（神经语音）就一直是自然音。',
       );
     } else if (engine === 'web_speech') {
       setTtsMsg(
@@ -325,6 +334,20 @@ export default function SettingsPage() {
             <Switch
               checked={settings.autoSpeak}
               onChange={(e) => settings.setAutoSpeak(e.target.checked)}
+            />
+          </Stack>
+
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Box>
+              <Typography variant="body2">答题音效</Typography>
+              <Typography variant="caption" color="text.secondary">
+                拼写练习里答对/答错时播放提示音（本地合成，不联网、不占流量）。
+                其它环节是自评式，没有客观对错，因此不播。
+              </Typography>
+            </Box>
+            <Switch
+              checked={settings.sfxEnabled}
+              onChange={(e) => settings.setSfxEnabled(e.target.checked)}
             />
           </Stack>
 

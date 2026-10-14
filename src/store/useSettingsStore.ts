@@ -28,6 +28,11 @@ export interface SettingsState {
    * 只作用于"当前词"场景（学习/摸底/拼写/听音），列表页不自动朗读。
    */
   autoSpeak: boolean;
+  /**
+   * 答题音效：答对/答错时播放短促提示音（用户 2026-10-14 要求，可关闭）。
+   * 只作用于有客观对错的环节（拼写/听音选词/中译英），自评式环节（摸底、背词）不播。
+   */
+  sfxEnabled: boolean;
 
   setDevice(device: Device): void;
   setCnToEn(enabled: boolean, dailyWords?: number): void;
@@ -35,6 +40,7 @@ export interface SettingsState {
   /** 第三参 model 可选（旧调用兼容；缺省保留当前 ttsModel） */
   setTTS(provider: TTSProviderName, voice: string, model?: string): void;
   setAutoSpeak(enabled: boolean): void;
+  setSfxEnabled(enabled: boolean): void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -50,6 +56,7 @@ export const useSettingsStore = create<SettingsState>()(
       ttsVoice: '',
       ttsModel: DASHSCOPE_DEFAULT_MODEL,
       autoSpeak: true,
+      sfxEnabled: true,
 
       setDevice: (device) => set({ device }),
       setCnToEn: (cnToEnEnabled, dailyWords) =>
@@ -58,6 +65,7 @@ export const useSettingsStore = create<SettingsState>()(
       setTTS: (ttsProvider, ttsVoice, ttsModel) =>
         set({ ttsProvider, ttsVoice, ...(ttsModel != null ? { ttsModel } : {}) }),
       setAutoSpeak: (autoSpeak) => set({ autoSpeak }),
+      setSfxEnabled: (sfxEnabled) => set({ sfxEnabled }),
     }),
     { name: 'ep-settings' },
   ),

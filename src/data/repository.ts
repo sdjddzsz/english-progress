@@ -208,22 +208,30 @@ export class Repository<T extends { id: string }> {
    *  - 「短页」（返回条数 < pageSize）视为读完；
    *  - 返回条数上限保护 `maxRows`：达到即停并抛错（说明服务端在静默截断，宁可报错也不能少数据）。
    */
-  async listAll(filters: Filter[] = [], opts: ListOptions & { pageSize?: number; maxRows?: number } = {}): Promise<T[]> {
+  async listAll(
+    filters: Filter[] = [],
+    opts: ListOptions & { pageSize?: number; maxRows?: number; onPage?: (loaded: number) => void } = {},
+  ): Promise<T[]> {
+    const { onPage, ...listOpts } = opts;
     const pageSize = Math.max(1, opts.pageSize ?? 1000);
     const maxRows = Math.max(pageSize, opts.maxRows ?? 100_000);
     const out: T[] = [];
     let offset = opts.offset ?? 0;
-    // 分页必须有稳定排序：调用方给了 orderBy 就用它，否则强制按主键 id
+    // 分页必须有稳定排序：调用方给了 orderBy 就用它，否则强制按主键 id。
+    // ⚠ 调用方给的 orderBy **必须是唯一列**（如主键 id）——非唯一列（如 orderInList）
+    //   会让 Postgres 不保证跨页顺序，出现行重复 / 漏行（见 wordRepo.listBookWords 的注释）。
     const orderBy = opts.orderBy ?? 'id';
     for (;;) {
       const page = await this.list(filters, {
-        ...opts,
+        ...listOpts,
         orderBy,
         ascending: opts.ascending ?? true,
         offset,
         limit: pageSize,
       });
       out.push(...page);
+      // 分页进度回调：全表读动辄 9 页、几十秒，调用方需要能显示"读到哪了"
+      onPage?.(out.length);
       if (page.length < pageSize) break;
       offset += pageSize;
       if (out.length >= maxRows) {

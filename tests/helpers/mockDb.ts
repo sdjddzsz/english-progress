@@ -153,7 +153,11 @@ export class MockQuery implements PostgrestQuery {
       if (out.length === 0) return { data: null, error: null };
       return { data: out[0], error: null };
     }
-    return { data: out, error: null, count: this.countExact ? rows.length : null };
+    // ⚠ count 必须是**过滤后**的行数（PostgREST `count=exact` 的语义是 WHERE 之后、分页之前的总数）。
+    //   原先写 `rows.length`（全表）⇒ `count(filters)` 在测试里永远返回全表数，
+    //   于是「按 tier 计数」「按 bookId 计数」这类调用在测试中**看起来都对**，实际全错。
+    //   2026-10-14 由 tests/data/placementLoad.test.ts 的 countBookWordsByTier 用例抓出。
+    return { data: out, error: null, count: this.countExact ? filtered.length : null };
   }
 }
 

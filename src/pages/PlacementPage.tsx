@@ -98,6 +98,13 @@ export default function PlacementPage() {
   const [error, setError] = useState('');
   /** 本机存着的未提交摸底草稿（断点续做的依据） */
   const [draft, setDraft] = useState<PlacementSession | null>(null);
+  /**
+   * 加载进度（用户 2026-10-12 铁律：会让用户等的操作必须配可见进度）。
+   * 摸底要先读完整本词书（8296 行 = 9 个分页请求），十几秒里页面不能只转一个圈。
+   */
+  const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number } | null>(null);
+  /** 当前正在做的长动作名（显示在进度条上方，避免"卡在哪一步"说不清） */
+  const [loadStage, setLoadStage] = useState('');
   const startedAtRef = useRef<string>(new Date().toISOString());
 
   useEffect(() => {
@@ -161,11 +168,22 @@ export default function PlacementPage() {
       setError('');
       try {
         const repos = getRepos();
-        const bws = await repos.word.listBookWords(bookId);
+        // 可见进度：先取总数拿到分母，再按分页回调刷新已读数。
+        // 这一整段要读 8296 行（9 个分页请求），十几秒里不能只给用户一个转圈。
+        setLoadStage('正在读取词表');
+        setLoadProgress({ loaded: 0, total: 0 });
+        const total = await repos.word.countBookWords(bookId);
+        setLoadProgress({ loaded: 0, total });
+        const bws = await repos.word.listBookWords(bookId, {
+          onPage: (loaded) => setLoadProgress({ loaded, total }),
+        });
+        setLoadStage('正在抽取摸底样本');
+        setLoadProgress(null);
         const book = await repos.word.getBook(bookId);
         // ⚠ 先按词频序预抽，再只取这批词：摸底只要 300 个判定单位，
         //   不该把整本 8296 个词全拉下来（92 个请求 / 十几 MB ⇒ 线上 Failed to fetch）。
         const picked = pickBookWordSample(bws, book?.listSize ?? DEFAULT_LIST_SIZE, PLACEMENT_MAX_WORDS);
+        setLoadStage('正在加载词条详情');
         const words: Word[] = await repos.word.listWordsByIds(picked.map((b) => b.wordId));
         const candidates = toSenseCandidates(words);
         const sample = pickPlacementSample(candidates, PLACEMENT_MAX_WORDS);
@@ -181,6 +199,8 @@ export default function PlacementPage() {
         setError(readableError(e));
       } finally {
         setBusy(false);
+        setLoadProgress(null);
+        setLoadStage('');
       }
     },
     [userId, activeBookId, books],
@@ -265,7 +285,10 @@ export default function PlacementPage() {
     setError('');
     try {
       const repos = getRepos();
-      const bws = await repos.word.listBookWords(bookId);
+      // ⚠ 只取本次答过的词对应的词书行（≤300），**不要 listBookWords 把整本 8296 行拉回来**：
+      // 那是 2026-10-14 线上「答完 300 题点提交后卡在分层环节」的成因（9 个分页请求 + 全表载荷）。
+      const neededWordIds = [...new Set(items.map((i) => `word_${i.senseId.split('#')[0]}`))];
+      const bws = await repos.word.listBookWordsByWordIds(bookId, neededWordIds);
       const idByWord = new Map(bws.map((bw) => [bw.wordId, bw.id]));
       // 义项 → 词书行：同 lemma 的多个义项共享同一个 bookWord 行（层是词级属性）
       const assignments = estimateTierAssignments(responses)
@@ -349,9 +372,8 @@ export default function PlacementPage() {
         status: 'active',
         createdAt: new Date().toISOString(),
       });
-      const bws = await repos.word.listBookWords(bookId);
-      const tierCountsLocal: Record<number, number> = {};
-      for (const bw of bws) tierCountsLocal[bw.tier] = (tierCountsLocal[bw.tier] ?? 0) + 1;
+      // 各层词量：4 个 count 并发（只回数字）—— 不要为了统计分布把整本 8296 行拉下来
+      const tierCountsLocal = await repos.word.countBookWordsByTier(bookId);
       const params: PlanParams = {
         tierRounds: { ...RECOMMENDED_TIER_ROUNDS },
         planMode: 'recommended',
@@ -440,6 +462,26 @@ export default function PlacementPage() {
                 {busy ? <CircularProgress size={20} /> : items.length > 0 ? '重新摸底' : '开始摸底'}
               </Button>
             </>
+          )}
+          {/* 可见进度：读全表要 9 个分页请求、十几秒，必须让用户看到"读到哪了" */}
+          {loadProgress && (
+            <Box sx={{ mt: 2, textAlign: 'left' }}>
+              <Typography variant="caption" color="text.secondary">
+                {loadStage}
+                {loadProgress.total > 0
+                  ? ` · 已读 ${loadProgress.loaded} / ${loadProgress.total} 行`
+                  : '…'}
+              </Typography>
+              <LinearProgress
+                variant={loadProgress.total > 0 ? 'determinate' : 'indeterminate'}
+                value={
+                  loadProgress.total > 0
+                    ? Math.min(100, (loadProgress.loaded / loadProgress.total) * 100)
+                    : undefined
+                }
+                sx={{ mt: 0.5, borderRadius: 1 }}
+              />
+            </Box>
           )}
           {Object.keys(responses).length > 0 && !msg && (
             <Button sx={{ ml: 1 }} variant="outlined" onClick={() => setPhase('review')}>

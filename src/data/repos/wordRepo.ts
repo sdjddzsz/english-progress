@@ -23,7 +23,10 @@ export interface WordRepo {
 
   /** 导入词书：批量写 book_words（tier/list 归属） */
   upsertBookWords(rows: (BookWord & Record<string, unknown>)[]): Promise<void>;
-  listBookWords(bookId: string, opts?: { tier?: Tier; listNo?: number; status?: WordStatus }): Promise<BookWord[]>;
+  listBookWords(
+    bookId: string,
+    opts?: { tier?: Tier; listNo?: number; status?: WordStatus; onPage?: (loaded: number) => void },
+  ): Promise<BookWord[]>;
   listWordsByIds(ids: string[]): Promise<Word[]>;
   updateWordTier(bookWordId: string, tier: Tier): Promise<BookWord | null>;
   updateBookWordStatus(bookWordId: string, status: WordStatus): Promise<BookWord | null>;
@@ -37,6 +40,21 @@ export interface WordRepo {
   updateWordTiers(pairs: { bookWordId: string; tier: Tier }[]): Promise<number>;
   /** 词书总词量（**只数不读**：不要为了算一个比值把整本 8296 行拉下来） */
   countBookWords(bookId: string): Promise<number>;
+  /**
+   * 按 wordId 批量取词书行（分片 `in` 查询）。
+   *
+   * 为什么必须有：摸底**提交**时只需要本次答过的 ≤300 个词对应的 bookWord 行
+   * （用来把义项判定映射回 bookWordId），但原实现走 `listBookWords(bookId)`
+   * 把整本 8296 行拉下来（9 个分页请求）——
+   * 这正是 2026-10-14 线上「答完 300 题点提交后卡在分层环节」的成因。
+   * 改为只取需要的那些行：请求数 ceil(300/100)=3，行数 300。
+   */
+  listBookWordsByWordIds(bookId: string, wordIds: string[]): Promise<BookWord[]>;
+  /**
+   * 各层词量（4 个 `count` 并发，只回数字不回行）。
+   * 原实现为了统计 tier 分布把整本 8296 行拉下来算 —— 同一个坑的第二次踩点。
+   */
+  countBookWordsByTier(bookId: string): Promise<Record<Tier, number>>;
 
   // ===== 收藏 / 生词本（用户 2026-10-13 要求的基础功能）=====
 
@@ -129,7 +147,11 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
       if (opts?.tier != null) filters.push({ column: 'tier', op: 'eq', value: opts.tier });
       if (opts?.listNo != null) filters.push({ column: 'listNo', op: 'eq', value: opts.listNo });
       if (opts?.status != null) filters.push({ column: 'status', op: 'eq', value: opts.status });
-      return bookWords.listAll(filters, { orderBy: 'orderInList', ascending: true });
+      // ⚠ 分页排序键**必须唯一**：listAll 靠 offset 翻页，而非唯一列会让 Postgres 不保证跨页稳定
+      // （行重复出现 / 部分行永不出现）。原先用 `orderInList` —— 它在 listSize=50 的切分下
+      // 8296 行里只有 166 个不同值，重复率极高，属于典型的「翻页排序键不唯一」错误。
+      // 改为主键 id（唯一）。需要词频序的调用方请自行排序 —— `pickBookWordSample` 就是这么做的。
+      return bookWords.listAll(filters, { orderBy: 'id', ascending: true, ...(opts?.onPage ? { onPage: opts.onPage } : {}) });
     },
     /**
      * 按 id 批量取词 —— **必须分片**：入参可能上千（摸底页传入全书 8296 个 wordId），
@@ -176,6 +198,36 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
       return patched.length;
     },
     countBookWords: (bookId) => bookWords.count([{ column: 'bookId', op: 'eq', value: bookId }]),
+
+    listBookWordsByWordIds: async (bookId, wordIds) => {
+      const unique = [...new Set(wordIds.filter((w): w is string => typeof w === 'string' && w.length > 0))];
+      if (unique.length === 0) return [];
+      const batches: string[][] = [];
+      for (let i = 0; i < unique.length; i += ID_BATCH) batches.push(unique.slice(i, i + ID_BATCH));
+      const pages = await mapLimit(batches, ID_BATCH_CONCURRENCY, (batch) =>
+        bookWords.list(
+          [
+            { column: 'bookId', op: 'eq', value: bookId },
+            { column: 'wordId', op: 'in', values: batch },
+          ],
+          { limit: batch.length },
+        ),
+      );
+      return pages.flat();
+    },
+
+    countBookWordsByTier: async (bookId) => {
+      const tiers: Tier[] = [1, 2, 3, 4];
+      const counts = await Promise.all(
+        tiers.map((t) =>
+          bookWords.count([
+            { column: 'bookId', op: 'eq', value: bookId },
+            { column: 'tier', op: 'eq', value: t },
+          ]),
+        ),
+      );
+      return { 1: counts[0], 2: counts[1], 3: counts[2], 4: counts[3] } as Record<Tier, number>;
+    },
 
     // ===== 收藏 / 生词本 =====
 

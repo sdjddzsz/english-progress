@@ -31,6 +31,7 @@ import type { L1State, Word } from '../types/domain';
 import { useAppStore } from '../store/useAppStore';
 import { useFeedback } from '../hooks/useFeedback';
 import { useTTS } from '../hooks/useTTS';
+import { useSfx } from '../hooks/useSfx';
 
 type Mode = 'spell' | 'dictation';
 
@@ -66,6 +67,7 @@ export default function SpellingPage() {
   const { todayHits, wordMap } = useAppStore();
   const { submit, startSession } = useFeedback();
   const { speak } = useTTS();
+  const sfx = useSfx();
 
   const [mode, setMode] = useState<Mode>('spell');
   /** 默认每日词量 20（可在页面内调；不写进设置，避免为一个小选项新增云端配置） */
@@ -143,8 +145,16 @@ export default function SpellingPage() {
     const v = checkSpelling(input, current.lemma);
     setVerdict(v);
     setAttempts((a) => a + 1);
-    if (v.kind === 'wrong') setWrongCount((c) => c + 1);
-  }, [current, input]);
+    // 答题音效（用户 2026-10-14 要求，可在设置里关）：
+    // 拼写是全书**唯一有客观对错**的环节，所以"答对/答错"音效只在这里播；
+    // empty 不播 —— 敲个回车就"咚"一声会变成噪声。
+    if (v.kind === 'wrong') {
+      setWrongCount((c) => c + 1);
+      sfx('wrong');
+    } else if (v.kind === 'correct') {
+      sfx('correct');
+    }
+  }, [current, input, sfx]);
 
   if (items.length === 0) {
     return (
