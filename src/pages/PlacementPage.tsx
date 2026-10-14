@@ -329,6 +329,11 @@ export default function PlacementPage() {
       clearSession(userId, bookId);
       setDraft(null);
       setPhase('idle');
+      // ★ 分层写入后直接衔接生成推荐档计划（用户 2026-10-14 反馈「摸底了一次还是没有生成计划」）：
+      //   原流程里「生成推荐档计划」按钮只在 phase==='review' 时渲染（679 行），
+      //   而点完上面的「确认写入初始分层」会 setPhase('idle') ⇒ 按钮随即消失，
+      //   用户根本没机会再点。改为摸底完成一步到底，计划生成结果由下方 msg/error 展示。
+      await createRecommendedPlan();
     } catch (e) {
       setError(readableError(e));
     } finally {
