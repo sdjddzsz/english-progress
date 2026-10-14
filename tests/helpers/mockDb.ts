@@ -142,6 +142,13 @@ export class MockQuery implements PostgrestQuery {
     }
     if (this.rangeFrom != null) out = out.slice(this.rangeFrom, (this.rangeTo ?? out.length - 1) + 1);
     else if (this.limitN != null) out = out.slice(0, this.limitN);
+    // ⚠ 模拟服务端 PostgREST 的 **max-rows 默认上限 1000**（2026-10-13 线上实测确认）。
+    //   不加这条，mock 会「老实」返回全部行 ⇒ `list()` 在超 1000 行时看起来完全正常，
+    //   而真实云端会**静默截断**在 1000 行 —— 这正是那次线上事故的成因
+    //   （rebuildWordBook 只备份/删除了 1000 条，剩下 4407 条形同不存在；
+    //    refreshToday 只调度到前 1000 词，其余词永远排不进队列，且界面无任何异常）。
+    //   模拟它，才逼出 `Repository.listAll` 的翻页实现。
+    if (out.length > MockDb.SERVER_MAX_ROWS) out = out.slice(0, MockDb.SERVER_MAX_ROWS);
     if (this.singleMode) {
       if (out.length === 0) return { data: null, error: null };
       return { data: out[0], error: null };
@@ -151,6 +158,8 @@ export class MockQuery implements PostgrestQuery {
 }
 
 export class MockDb implements CloudDatabaseLike {
+  /** 服务端 PostgREST 的 max-rows 默认上限（线上实测确认，不是猜的） */
+  static readonly SERVER_MAX_ROWS = 1000;
   tables = new Map<string, Row[]>();
   seq = 1;
   from(table: string): PostgrestQuery {

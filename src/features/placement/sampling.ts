@@ -121,6 +121,53 @@ function sortByFrequency<T extends PlacementCandidate>(items: T[]): T[] {
   return [...items].sort((a, b) => b.frequency - a.frequency || (a.senseId < b.senseId ? -1 : 1));
 }
 
+/**
+ * **预抽样**（在取词**之前**）：从 `book_words` 里按词频序抽出一小批，再去取这批词的详情。
+ *
+ * 为什么必须有这一步：摸底只要 `PLACEMENT_MAX_WORDS`(300) 个判定单位，而词书有 8296 词。
+ * 先把整本的词全拉下来 = 9（book_words）+ 83（words 分片）个请求、十几 MB 载荷 ——
+ * 2026-10-13 线上「摸底分层 Failed to fetch」的成因之一就是这么打爆的。
+ *
+ * 词频序从哪来（**不查 words 表**）：`book_words.listNo / orderInList` 由种子按**词频降序**生成
+ * （`seedToDocs`：idx = 种子下标，listNo = floor(idx/listSize)+1，orderInList = idx%listSize+1）
+ * ⇒ `rank = (listNo-1)*listSize + (orderInList-1)` 就是词频排名。
+ *
+ * 抽样口径与 `pickPlacementSample` 一致（4 带 + BAND_RATIOS、带内均匀步进取），
+ * 所以抽出来的分布在统计上等价于「先全量再抽」。
+ */
+export function pickBookWordSample<
+  T extends { listNo: number; orderInList: number; wordId: string },
+>(rows: T[], listSize: number, max: number): T[] {
+  if (rows.length === 0 || max <= 0) return [];
+  const rank = (r: T): number => (r.listNo - 1) * Math.max(1, listSize) + (r.orderInList - 1);
+  const sorted = [...rows].sort((a, b) => rank(a) - rank(b));
+  if (sorted.length <= max) return sorted;
+
+  const out: T[] = [];
+  const bandSize = Math.ceil(sorted.length / 4);
+  let quotaLeft = max;
+  BAND_RATIOS.forEach((ratio, band) => {
+    const bandItems = sorted.slice(band * bandSize, (band + 1) * bandSize);
+    const take = band === BAND_RATIOS.length - 1 ? quotaLeft : Math.min(bandItems.length, Math.floor(max * ratio));
+    quotaLeft -= take;
+    if (take <= 0) return;
+    const step = bandItems.length / take;
+    for (let i = 0; i < take; i += 1) out.push(bandItems[Math.floor(i * step)]);
+  });
+  // 配额没用完（某带比配额短）⇒ 按 wordId 哈希确定性补齐（不引入随机，重试结果一致）
+  if (out.length < max) {
+    const chosen = new Set(out.map((r) => r.wordId));
+    const rest = sorted
+      .filter((r) => !chosen.has(r.wordId))
+      .sort((a, b) => hashString(a.wordId) - hashString(b.wordId));
+    for (const r of rest) {
+      if (out.length >= max) break;
+      out.push(r);
+    }
+  }
+  return out.slice(0, max);
+}
+
 /** L1 快答 → 初始难度层 */
 export function l1ToTier(l1: L1State): Tier {
   switch (l1) {

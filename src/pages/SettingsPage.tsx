@@ -13,6 +13,7 @@ import {
   Box,
   Button,
   Chip,
+  CircularProgress,
   Divider,
   LinearProgress,
   MenuItem,
@@ -45,7 +46,7 @@ import { backfillArpabetFromSeed, type BackfillProgress } from '../data/backfill
 export default function SettingsPage() {
   const bootstrap = useAppStore((s) => s.bootstrap);
   const settings = useSettingsStore();
-  const { speak } = useTTS();
+  const { speak, loading: ttsLoading } = useTTS();
 
   const [ttsConfig, setTtsConfig] = useState<TTSProviderConfig | null>(null);
   const [apiKey, setApiKey] = useState(peekRuntimeTTSApiKey());
@@ -229,8 +230,13 @@ export default function SettingsPage() {
           'DashScope 会自动改走 WebSocket 直连，若仍落到兜底说明 WS 也不通；② API Key 无效或未开通百炼；' +
           '③ 端点与密钥所在资源不匹配。请对照控制台报错逐项排查。',
       );
+    } else if (engine === 'web_speech') {
+      setTtsMsg(
+        '走的是浏览器内置语音（最后一道兜底）：主轨没通、离线 WASM 合成也没成功。' +
+          '出声是有保证的，但音色由系统决定。想要神经语音请检查上方主轨配置。',
+      );
     } else {
-      setTtsErr('发音失败，请打开浏览器控制台查看 [tts] 报错。');
+      setTtsErr('发音失败：主轨、离线合成、浏览器内置语音都没出声。请打开浏览器控制台查看 [tts] 报错。');
     }
     const userId = useAppStore.getState().userId;
     const id = ttsConfig?.id;
@@ -308,6 +314,19 @@ export default function SettingsPage() {
             <MenuItem value="desktop">桌面</MenuItem>
             <MenuItem value="mobile">移动</MenuItem>
           </TextField>
+
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Box>
+              <Typography variant="body2">自动发音</Typography>
+              <Typography variant="caption" color="text.secondary">
+                进入/揭晓当前词时自动朗读一次（摸底、背词、拼写都算）。列表页不自动朗读。
+              </Typography>
+            </Box>
+            <Switch
+              checked={settings.autoSpeak}
+              onChange={(e) => settings.setAutoSpeak(e.target.checked)}
+            />
+          </Stack>
 
           <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Typography variant="body2">见中文联想英文（每日一小段）</Typography>
@@ -505,9 +524,10 @@ export default function SettingsPage() {
           {ttsMsg && <Alert severity="success">{ttsMsg}</Alert>}
           {ttsErr && <Alert severity="error">{ttsErr}</Alert>}
 
-          <Stack direction="row" justifyContent="flex-end">
-            <Button size="small" onClick={() => void handleTryListen()}>
-              试听
+          <Stack direction="row" justifyContent="flex-end" alignItems="center" spacing={1}>
+            {ttsLoading && <CircularProgress size={18} />}
+            <Button size="small" disabled={ttsLoading} onClick={() => void handleTryListen()}>
+              {ttsLoading ? '合成中…' : '试听'}
             </Button>
             <Button
               size="small"
@@ -546,7 +566,8 @@ export default function SettingsPage() {
 
           <Divider />
           <Typography variant="caption" color="text.secondary">
-            优先级：音频缓存 → 主轨（3 秒超时）→ espeak 兜底。兜底首次触发会有一次轻提示，不影响学习节奏。
+            优先级：音频缓存 → 主轨（3 秒超时）→ espeak 离线合成 → 浏览器内置语音。
+            兜底首次触发会有一次轻提示，不影响学习节奏。
           </Typography>
 
           <Divider />

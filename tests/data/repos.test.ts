@@ -17,7 +17,7 @@ import { createPlanRepo } from '../../src/data/repos/planRepo';
 import { hitDeterministicId } from '../../src/data/collections';
 import { localDb } from '../../src/data/localDb';
 import { enqueueOp, takePendingOps, resolveOp } from '../../src/data/queue';
-import type { Hit } from '../../src/types/domain';
+import type { Hit, Tier } from '../../src/types/domain';
 import { MockDb } from '../helpers/mockDb';
 
 // ===== Repository CRUD =====
@@ -355,5 +355,76 @@ describe('wordRepo.listWordsByIds 分片（URL 长度保护）', () => {
     expect(worstUrl(LONGEST_ID.length)).toBeLessThanOrEqual(3_000); // 保留 ~3 倍余量（目标 ≤3KB）
     // 自更新的敏感性证明：同一公式对「更长的 id」会变红（当前 lemma ≤26 字符才守得住 3KB 余量）
     expect(worstUrl(30)).toBeGreaterThan(3_000);
+  });
+});
+
+/**
+ * updateWordTiers —— 摸底分层必须**批量**写（2026-10-13 线上「摸底分层 Failed to fetch」）：
+ * 一次摸底 ~300 条 assignments，逐条 `updateWordTier` 就是 ~300 个串行请求，
+ * 网关/连接一扛不住就整段 `Failed to fetch`，而且前面写过的已经落库、重试还会重复写。
+ */
+describe('wordRepo.updateWordTiers 批量改层（不是逐条 update）', () => {
+  function seeded(n: number): { db: MockDb; rec: RecordingDb } {
+    const db = new MockDb();
+    db.tables.set(
+      'book_words',
+      Array.from({ length: n }, (_, i) => ({
+        id: `bw_${i}`,
+        bookId: 'b1',
+        wordId: `word_${i}`,
+        listNo: Math.floor(i / 50) + 1,
+        orderInList: (i % 50) + 1,
+        tier: 4,
+        status: 'normal',
+      })),
+    );
+    return { db, rec: new RecordingDb(db) };
+  }
+
+  it('300 条：按 id 分片读（3 批）+ 批量写，整体写完 300 条', async () => {
+    const { rec } = seeded(300);
+    const repo = createWordRepo(rec);
+    const done = await repo.updateWordTiers(
+      Array.from({ length: 300 }, (_, i) => ({ bookWordId: `bw_${i}`, tier: ((i % 4) + 1) as Tier })),
+    );
+
+    expect(done).toBe(300);
+    // 读：ceil(300/100)=3 批；**不是** 300 次单条请求
+    expect(rec.inSizes.length).toBe(3);
+    expect(Math.max(...rec.inSizes)).toBeLessThanOrEqual(ID_BATCH);
+    expect(rec.inSizes.reduce((a, b) => a + b, 0)).toBe(300);
+  });
+
+  it('层真的写进去了（读回校验，不只是"请求数变少"）', async () => {
+    const { rec } = seeded(300);
+    const repo = createWordRepo(rec);
+    await repo.updateWordTiers([
+      { bookWordId: 'bw_0', tier: 1 as Tier },
+      { bookWordId: 'bw_1', tier: 3 as Tier },
+    ]);
+    const rows = await repo.listBookWords('b1');
+    expect(rows.find((r) => r.id === 'bw_0')?.tier).toBe(1);
+    expect(rows.find((r) => r.id === 'bw_1')?.tier).toBe(3);
+    expect(rows.find((r) => r.id === 'bw_2')?.tier).toBe(4); // 没点到的一律不动
+  });
+
+  it('同一 id 重复出现以最后一条为准（同 lemma 多义项共享一条 book_word）', async () => {
+    const { rec } = seeded(3);
+    const repo = createWordRepo(rec);
+    await repo.updateWordTiers([
+      { bookWordId: 'bw_1', tier: 2 as Tier },
+      { bookWordId: 'bw_1', tier: 3 as Tier },
+    ]);
+    const rows = await repo.listBookWords('b1');
+    expect(rows.find((r) => r.id === 'bw_1')?.tier).toBe(3);
+    expect(rec.inSizes).toEqual([1]); // 去重后只读 1 条
+  });
+
+  it('空入参 / id 不存在：不写无谓请求、返回 0', async () => {
+    const { rec } = seeded(3);
+    const repo = createWordRepo(rec);
+    expect(await repo.updateWordTiers([])).toBe(0);
+    expect(rec.inSizes).toEqual([]);
+    expect(await repo.updateWordTiers([{ bookWordId: 'nope', tier: 2 as Tier }])).toBe(0);
   });
 });

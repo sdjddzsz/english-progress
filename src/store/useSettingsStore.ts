@@ -23,12 +23,18 @@ export interface SettingsState {
   ttsVoice: string;
   /** TTS 模型名（dashscope：cosyvoice-v2 等）。默认取 DashScope 常量 */
   ttsModel: string;
+  /**
+   * 自动发音：进入/揭晓当前词时自动朗读一次（用户 2026-10-13 要求）。
+   * 只作用于"当前词"场景（学习/摸底/拼写/听音），列表页不自动朗读。
+   */
+  autoSpeak: boolean;
 
   setDevice(device: Device): void;
   setCnToEn(enabled: boolean, dailyWords?: number): void;
   setAI(channel: LLMChannel, baseUrl: string, model: string): void;
   /** 第三参 model 可选（旧调用兼容；缺省保留当前 ttsModel） */
   setTTS(provider: TTSProviderName, voice: string, model?: string): void;
+  setAutoSpeak(enabled: boolean): void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -43,6 +49,7 @@ export const useSettingsStore = create<SettingsState>()(
       ttsProvider: DEFAULT_TTS_PROVIDER,
       ttsVoice: '',
       ttsModel: DASHSCOPE_DEFAULT_MODEL,
+      autoSpeak: true,
 
       setDevice: (device) => set({ device }),
       setCnToEn: (cnToEnEnabled, dailyWords) =>
@@ -50,6 +57,7 @@ export const useSettingsStore = create<SettingsState>()(
       setAI: (aiChannel, aiBaseUrl, aiModel) => set({ aiChannel, aiBaseUrl, aiModel }),
       setTTS: (ttsProvider, ttsVoice, ttsModel) =>
         set({ ttsProvider, ttsVoice, ...(ttsModel != null ? { ttsModel } : {}) }),
+      setAutoSpeak: (autoSpeak) => set({ autoSpeak }),
     }),
     { name: 'ep-settings' },
   ),

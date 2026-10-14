@@ -6,11 +6,14 @@
  * 展示型组件：不含调度逻辑；数据由页面/store 注入。
  */
 import { Box, Chip, IconButton, Stack, Tooltip, Typography } from '@mui/material';
+import { useEffect } from 'react';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
+import { CircularProgress } from '@mui/material';
 import type { Word, WordSense } from '../../types/domain';
 import { useTTS } from '../../hooks/useTTS';
 import { describeSenses, senseLabel } from '../../features/senses';
+import { useSettingsStore } from '../../store/useSettingsStore';
 
 export interface WordCardProps {
   word: Word | null;
@@ -36,7 +39,24 @@ export default function WordCard({
   compact = false,
   sense,
 }: WordCardProps) {
-  const { speak, loading } = useTTS();
+  const { speak, speakAuto, loading } = useTTS();
+  const autoSpeak = useSettingsStore((s) => s.autoSpeak);
+
+  const wordId = word?.id ?? '';
+  const senseKey = sense?.senseId ?? '';
+  const targetIpa = sense?.ipa || word?.ipa || '';
+  const targetArpabet = sense?.arpabet || word?.arpabet || '';
+  const targetLemma = sense?.lemma || word?.lemma || '';
+
+  /**
+   * 自动发音：进入新词 / 从"隐藏"切到"揭晓"时读一次（受设置开关控制）。
+   * 只在词真的变了时才触发 —— 否则每次重渲染都会读一遍。
+   */
+  useEffect(() => {
+    if (!autoSpeak || !wordId || hideText) return;
+    void speakAuto({ text: targetLemma, ipa: targetIpa, arpabet: targetArpabet, mode: 'word' }, wordId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSpeak, wordId, senseKey, hideText]);
 
   if (!word) {
     return (
@@ -74,9 +94,10 @@ export default function WordCard({
           </Typography>
         )}
         {!hideText && sense && <Typography variant="body1" color="text.secondary">{senseLabel(sense)}</Typography>}
-        {!hideText && !sense && word.ipa && (
+        {/* 音标挨着词形：限定义项时用该义项的读音，否则用单词级读音 */}
+        {!hideText && targetIpa && (
           <Typography variant={compact ? 'body2' : 'body1'} color="text.secondary">
-            /{word.ipa.replace(/^\/|\/$/g, '')}/
+            /{targetIpa.replace(/^\/|\/$/g, '')}/
           </Typography>
         )}
         {multiPron && !hideText && (
@@ -85,7 +106,7 @@ export default function WordCard({
         <Tooltip title={loading ? '合成中…' : '发音'}>
           <span>
             <IconButton onClick={speakTarget} disabled={loading} aria-label="play word">
-              <VolumeUpIcon />
+              {loading ? <CircularProgress size={20} /> : <VolumeUpIcon />}
             </IconButton>
           </span>
         </Tooltip>

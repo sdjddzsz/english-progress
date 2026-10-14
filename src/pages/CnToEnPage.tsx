@@ -166,7 +166,11 @@ export default function CnToEnPage() {
             <Typography variant="h4" sx={{ mt: 2 }}>
               {current.lemma}
             </Typography>
-            {current.ipa && <Typography variant="body1" color="text.secondary">/{current.ipa}/</Typography>}
+            {current.ipa && (
+              <Typography variant="body1" color="text.secondary">
+                /{current.ipa.replace(/^\/|\/$/g, '')}/
+              </Typography>
+            )}
             <Button variant="contained" fullWidth sx={{ mt: 2 }} onClick={() => setIdx((i) => i + 1)}>
               下一词
             </Button>

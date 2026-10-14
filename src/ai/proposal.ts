@@ -60,7 +60,7 @@ export interface ProposalStats {
 
 /** AI 有效性面板：提案采纳率 / 驳回率（PRD §7.6 防"形式主义"） */
 export async function proposalStats(proposals: Repository<AIProposal>, planId: string): Promise<ProposalStats> {
-  const rows = await proposals.list([{ column: 'planId', op: 'eq', value: planId }]);
+  const rows = await proposals.listAll([{ column: 'planId', op: 'eq', value: planId }]);
   const pending = rows.filter((r) => r.status === 'pending').length;
   const applied = rows.filter((r) => r.status === 'applied' || r.status === 'approved').length;
   const rejected = rows.filter((r) => r.status === 'rejected').length;

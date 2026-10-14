@@ -84,6 +84,12 @@ const h = vi.hoisted(() => ({
   dropOnce: new Set<number>(),
   /** 「假成功」注入 2：每个整片内第 N 个子片永远静默不落库；-1 = 从不 */
   dropAlwaysInBatch: -1,
+  /** 孤儿清理：bookWords.listAll 调用次数 */
+  bookWordsListAllCalls: 0,
+  /** bookWords.listAll 抛错（清理失败不得阻断导入） */
+  failBookWordsListAll: false,
+  /** 孤儿清理实际删除的 book_word id */
+  removedBookWordIds: [] as string[],
   /** createBook 抛错（撞 PK 23505 等） */
   failCreateBook: false,
   bookExists: false,
@@ -185,6 +191,21 @@ vi.mock('../../src/data/repos/wordRepo', () => {
           if (h.failListIdsAt === h.bookWordsListIdsCalls) throw new Error('boom-listIds');
           return page(bookWordsIds(filters as Row[]), opts.offset ?? 0, opts.limit ?? ID_PAGE);
         },
+        /**
+         * 真实 Repository.listAll 会翻页读全；这里直接返回全量（但**尊重 filters**）。
+         * 返回 `{ id }` 对象数组（与真实文档形状在「只取 id」这一用法上同构）。
+         */
+        listAll: async (filters: unknown[]) => {
+          h.bookWordsListAllCalls += 1;
+          if (h.failBookWordsListAll) throw new Error('boom-listAll');
+          return [...bookWordsIds(filters as Row[])].map((id) => ({ id }));
+        },
+        removeMany: async (ids: string[]) => {
+          h.removedBookWordIds.push(...ids);
+          const s = setOf(h.bookWordsByOwner, h.owner);
+          for (const id of ids) s.delete(id);
+          return ids.length;
+        },
       },
     }),
   };
@@ -264,6 +285,16 @@ function seedCloudIds(ids: Iterable<string>, owner = h.owner): void {
   for (const id of ids) s.add(id);
 }
 
+/** 预置：某 owner 云端有任意一批 book_word id（含不在种子里的「孤儿」） */
+function seedCloudBookWordIds(ids: Iterable<string>, owner = h.owner): void {
+  let s = h.bookWordsByOwner.get(owner);
+  if (!s) {
+    s = new Set<string>();
+    h.bookWordsByOwner.set(owner, s);
+  }
+  for (const id of ids) s.add(id);
+}
+
 function resetCloud(): void {
   h.wordsByOwner.clear();
   h.bookWordsByOwner.clear();
@@ -295,6 +326,9 @@ beforeEach(() => {
   h.failCreateBook = false;
   h.bookExists = false;
   h.createBookCalls = 0;
+  h.bookWordsListAllCalls = 0;
+  h.failBookWordsListAll = false;
+  h.removedBookWordIds.length = 0;
   installLocalStorage();
   stubSeed(SEED);
 });
@@ -699,6 +733,57 @@ describe('seedLibraryToCloud 断点续传', () => {
     await seedLibraryToCloud('u-1');
     expect([...h.writtenWordIds].sort()).toEqual(expected.words.map((w) => w.id).sort());
     expect([...h.writtenBookWordIds].sort()).toEqual(expected.bookWords.map((b) => b.id).sort());
+  });
+
+  /**
+   * Y1：线上残留的善后（2026-10-13）。upsert 只能覆盖已有行、**删不掉**不该存在的行 ——
+   * 上次重建中途失败后 book_words 残留了 4407 条旧关联。若其中混着新版种子不再收录的词，
+   * 导入后它们会复活成「词书里多出来的词」（声称 8296 词、实际更多）。
+   * ⇒ 导入收尾必须把「本 bookId + 本 owner 下不在种子集合里的行」删掉。
+   */
+  it('Y1. 云端残留不在种子里的旧关联 → 导入后被删掉（书里不会出现「多出来的词」）', async () => {
+    seedCloudBookWordIds(['bw_book_cet6_full_ghost', 'bw_book_cet6_full_w0']);
+    const result = await seedLibraryToCloud('u-1');
+
+    expect([...new Set(h.removedBookWordIds)]).toEqual(['bw_book_cet6_full_ghost']); // 只删孤儿，种子内的不动
+    const bw = h.bookWordsByOwner.get('u-1')!;
+    expect(bw.has('bw_book_cet6_full_ghost')).toBe(false);
+    expect(bw.has('bw_book_cet6_full_w0')).toBe(true);
+    expect(bw.size).toBe(TOTAL); // 恰好一本种子
+    expect(result.skipped).toBe(false);
+    expect(h.createBookCalls).toBe(1);
+  });
+
+  it('Y2. 孤儿清理自身读失败 → 吞掉异常，导入照常完成并建书（孤儿只是多几个词）', async () => {
+    h.failBookWordsListAll = true;
+    await expect(seedLibraryToCloud('u-1')).resolves.toMatchObject({ skipped: false });
+    expect(h.createBookCalls).toBe(1);
+  });
+
+  it('Y3. 云端没有孤儿时不删任何行（清理不是无差别清表）', async () => {
+    await seedLibraryToCloud('u-1');
+    expect(h.removedBookWordIds).toEqual([]);
+    expect(h.bookWordsListAllCalls).toBeGreaterThan(0); // 确实跑过清理这一步
+  });
+
+  /**
+   * Y4：**行数相等也证明不了内容是新的**。词数不变、内容变过（例：IPA / 义项修错）时，
+   * 行 id 与行数都不变 ⇒ 只比行数就会**永久跳过刷新**，云端一直留着旧内容
+   * （历史上「两份种子文件不一致 ⇒ 云端拿到旧 IPA」就是这一类）。
+   * 判据必须再加上「本机游标确认过该表已完整写入当前这份种子」（对比用例 D）。
+   */
+  it('Y4. 行数恰好相等、但游标未确认写过当前种子 → 不跳过，全量重写（防内容变旧却永不刷新）', async () => {
+    seedCloudWords(TOTAL); // words 行数恰好 = 种子行数
+    // 本机**没有**游标（换设备 / 清缓存 / 种子换过 ⇒ 指纹不符）
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 必须全量重写（旧判据 `===` 会在这里跳过）
+  });
+
+  it('Y5. 云端行数多于种子行数（残留 / 别家词源）→ 不跳过，全量重写对齐内容', async () => {
+    seedCloudWords(TOTAL);
+    seedCloudIds(['word_extra_1']); // 多出一行 ⇒ 1001 > 1000
+    await seedLibraryToCloud('u-1');
+    expect(h.wordsCalls).toEqual(FULL_CHUNKS); // 旧判据 `>=` 会在这里跳过
   });
 
   it('X. 分页读全：2500 词（> ID_PAGE）→ 每表 3 次分页读、校验通过、正常建书', async () => {

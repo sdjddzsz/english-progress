@@ -20,6 +20,7 @@ import {
   applySelfCheck,
   estimateTierAssignments,
   l1ToTier,
+  pickBookWordSample,
   pickPlacementSample,
   toSenseCandidates,
   type PlacementCandidate,
@@ -279,5 +280,63 @@ describe('前两周每日校准', () => {
 
   it('阈值常量与 PRD §4.3 一致（0.1）', () => {
     expect(TIER_RECALIBRATION_CONFIRM_RATIO).toBe(0.1);
+  });
+});
+
+/**
+ * 预抽样（2026-10-13 线上「摸底分层 Failed to fetch」的修法）：
+ * 摸底只要 300 个判定单位，却曾先把整本 8296 个词全拉下来（92 个请求 / 十几 MB）。
+ * 现在先在 book_words 上按词频排名抽一小批，再只取这批词的详情。
+ */
+describe('摸底预抽样（先小批、后取词）', () => {
+  /** 造一本 8296 词的词书关联：listNo/orderInList 由种子按词频降序生成 */
+  function makeBookWords(n: number, listSize = 50) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `bw_${i}`,
+      wordId: `word_lemma${i}`,
+      listNo: Math.floor(i / listSize) + 1,
+      orderInList: (i % listSize) + 1,
+    }));
+  }
+
+  it('8296 词只抽 ≤300 条 ⇒ 取词请求从 83 批降到 3 批', () => {
+    const bws = makeBookWords(8296);
+    const picked = pickBookWordSample(bws, 50, PLACEMENT_MAX_WORDS);
+    expect(picked.length).toBe(PLACEMENT_MAX_WORDS);
+    expect(picked.length).toBeLessThanOrEqual(300);
+    // 关键：预抽后的 id 集合必须是原集合的子集（不能凭空造词）
+    const all = new Set(bws.map((b) => b.id));
+    for (const p of picked) expect(all.has(p.id)).toBe(true);
+  });
+
+  it('按词频序抽样：高频带（前 1/4）占比最高，四个带都有代表', () => {
+    const bws = makeBookWords(8296);
+    const picked = pickBookWordSample(bws, 50, PLACEMENT_MAX_WORDS);
+    // rank = (listNo-1)*50 + (orderInList-1) = 原下标 ⇒ 用 id 反推下标即可分带
+    const idxOf = (p: { id: string }) => Number(p.id.slice(3));
+    const bandSize = Math.ceil(8296 / 4);
+    const counts = [0, 0, 0, 0];
+    for (const p of picked) counts[Math.min(3, Math.floor(idxOf(p) / bandSize))] += 1;
+    expect(counts.every((c) => c > 0)).toBe(true); // 四带都有代表
+    expect(counts[0]).toBeGreaterThan(counts[1]);
+    expect(counts[1]).toBeGreaterThan(counts[3]); // 高频带权重最高，最低频带最少
+  });
+
+  it('确定性：同输入两次抽样逐项一致（重试不会换一批词）', () => {
+    const bws = makeBookWords(8296);
+    expect(pickBookWordSample(bws, 50, 300)).toEqual(pickBookWordSample(bws, 50, 300));
+  });
+
+  it('词量 ≤ 上限时全量返回（小词书不抽稀）', () => {
+    const bws = makeBookWords(120);
+    expect(pickBookWordSample(bws, 50, PLACEMENT_MAX_WORDS).length).toBe(120);
+  });
+
+  it('不依赖 words 表：只看 listNo/orderInList（预抽发生在取词之前）', () => {
+    const bws = makeBookWords(8296);
+    const picked = pickBookWordSample(bws, 50, 300);
+    // 传入的行里没有任何 frequency 字段 —— 排名完全由 listNo/orderInList 推出
+    expect(Object.keys(bws[0])).toEqual(['id', 'wordId', 'listNo', 'orderInList']);
+    expect(picked.length).toBe(300);
   });
 });

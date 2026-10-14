@@ -46,7 +46,7 @@ export function createPlanRepo(db: CloudDatabaseLike = getDb()): PlanRepo {
       );
       return rows[0] ?? null;
     },
-    listPlans: (bookId) => plans.list([{ column: 'bookId', op: 'eq', value: bookId }]),
+    listPlans: (bookId) => plans.listAll([{ column: 'bookId', op: 'eq', value: bookId }]),
 
     updatePlan: (id, patch) => plans.update(id, patch),
 
@@ -56,10 +56,10 @@ export function createPlanRepo(db: CloudDatabaseLike = getDb()): PlanRepo {
       await rounds.insertMany(next.map((r) => ({ ...r, planId })));
     },
     listRounds: (planId) =>
-      rounds.list([{ column: 'planId', op: 'eq', value: planId }], { orderBy: 'roundNo', ascending: true }),
+      rounds.listAll([{ column: 'planId', op: 'eq', value: planId }], { orderBy: 'roundNo', ascending: true }),
 
     savePlanVersion: (version) => versions.insert(version),
     listPlanVersions: (planId) =>
-      versions.list([{ column: 'planId', op: 'eq', value: planId }], { orderBy: 'versionNo', ascending: false }),
+      versions.listAll([{ column: 'planId', op: 'eq', value: planId }], { orderBy: 'versionNo', ascending: false }),
   };
 }

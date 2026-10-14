@@ -27,6 +27,16 @@ export interface WordRepo {
   listWordsByIds(ids: string[]): Promise<Word[]>;
   updateWordTier(bookWordId: string, tier: Tier): Promise<BookWord | null>;
   updateBookWordStatus(bookWordId: string, status: WordStatus): Promise<BookWord | null>;
+  /**
+   * **批量**改层 —— 必须成批，不可逐条（2026-10-13 线上「摸底分层 Failed to fetch」的成因之一）：
+   * 一次摸底提交 ~300 条 assignments，逐条 `update` 就是 ~300 个串行请求，
+   * 网关/连接扛不住就会整个 `Failed to fetch`（且前面写过的已经落库，重试还会重复写）。
+   * 做法：按 id 分片读回原行 → 改 tier → 分片 upsert ⇒ 请求数 2×ceil(n/100)。
+   * @returns 实际落库的行数（只读回到的那些；id 不存在则不计）
+   */
+  updateWordTiers(pairs: { bookWordId: string; tier: Tier }[]): Promise<number>;
+  /** 词书总词量（**只数不读**：不要为了算一个比值把整本 8296 行拉下来） */
+  countBookWords(bookId: string): Promise<number>;
 
   // ===== 收藏 / 生词本（用户 2026-10-13 要求的基础功能）=====
 
@@ -93,7 +103,7 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
 
     createBook: (book) => books.insert(book),
     getBook: (id) => books.getById(id),
-    listBooks: (userId) => books.list([{ column: 'userId', op: 'eq', value: userId }], { orderBy: 'createdAt' }),
+    listBooks: (userId) => books.listAll([{ column: 'userId', op: 'eq', value: userId }], { orderBy: 'createdAt' }),
 
     upsertWords: (rows) => words.upsertMany(rows),
     getWordByLemma: async (lemma) => {
@@ -106,12 +116,20 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
         : words.list([{ column: 'lemma', op: 'gte', value: prefix.trim() }], { orderBy: 'lemma', ascending: true, limit }),
 
     upsertBookWords: (rows) => bookWords.upsertMany(rows),
+    /**
+     * ⚠ 必须走 `listAll`（自动翻页）而不是 `list`：
+     *   服务端 PostgREST 的 max-rows 默认上限是 **1000**，不翻页就会静默只回前 1000 条。
+     *   实测（2026-10-13）：5407 行的 book_words 表上，`list` 只返回 1000 条、不报错 ——
+     *   导致重建只删/只备份 1000 条（剩 4407 条形同不存在），
+     *   且每日队列只会调度到前 1000 个词，词书其余部分永远排不进学习。
+     *   详见 `Repository.listAll` 的注释。
+     */
     listBookWords: async (bookId, opts) => {
       const filters: Filter[] = [{ column: 'bookId', op: 'eq', value: bookId }];
       if (opts?.tier != null) filters.push({ column: 'tier', op: 'eq', value: opts.tier });
       if (opts?.listNo != null) filters.push({ column: 'listNo', op: 'eq', value: opts.listNo });
       if (opts?.status != null) filters.push({ column: 'status', op: 'eq', value: opts.status });
-      return bookWords.list(filters, { orderBy: 'orderInList', ascending: true });
+      return bookWords.listAll(filters, { orderBy: 'orderInList', ascending: true });
     },
     /**
      * 按 id 批量取词 —— **必须分片**：入参可能上千（摸底页传入全书 8296 个 wordId），
@@ -132,6 +150,32 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
     updateWordTier: (bookWordId, tier) =>
       bookWords.update(bookWordId, { tier, tierUpdatedAt: new Date().toISOString() } as Partial<BookWord>),
     updateBookWordStatus: (bookWordId, status) => bookWords.update(bookWordId, { status } as Partial<BookWord>),
+    updateWordTiers: async (pairs) => {
+      // 同一 id 多次出现时以最后一条为准（摸底里同 lemma 的多个义项共享一条 book_word）
+      const wanted = new Map<string, Tier>();
+      for (const p of pairs) {
+        if (p && typeof p.bookWordId === 'string' && p.bookWordId) wanted.set(p.bookWordId, p.tier);
+      }
+      const ids = [...wanted.keys()];
+      if (ids.length === 0) return 0;
+      const batches: string[][] = [];
+      for (let i = 0; i < ids.length; i += ID_BATCH) batches.push(ids.slice(i, i + ID_BATCH));
+      const pages = await mapLimit(batches, ID_BATCH_CONCURRENCY, (batch) =>
+        bookWords.list([{ column: 'id', op: 'in', values: batch }], { limit: batch.length }),
+      );
+      const now = new Date().toISOString();
+      const patched = pages
+        .flat()
+        .filter((r) => wanted.has(r.id))
+        .map(
+          (r) =>
+            ({ ...r, tier: wanted.get(r.id) as Tier, tierUpdatedAt: now }) as BookWord & Record<string, unknown>,
+        );
+      if (patched.length === 0) return 0;
+      await bookWords.upsertMany(patched);
+      return patched.length;
+    },
+    countBookWords: (bookId) => bookWords.count([{ column: 'bookId', op: 'eq', value: bookId }]),
 
     // ===== 收藏 / 生词本 =====
 
@@ -148,7 +192,8 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
     removeBookmark: async (userId, wordId) => {
       await bookmarks.remove(bookmarkId(userId, wordId));
     },
-    listBookmarks: (userId) => bookmarks.list([{ column: 'userId', op: 'eq', value: userId }], { orderBy: 'createdAt', ascending: false }),
+    listBookmarks: (userId) =>
+      bookmarks.listAll([{ column: 'userId', op: 'eq', value: userId }], { orderBy: 'createdAt', ascending: false }),
     listBookmarkedWordIds: async (userId, wordIds) => {
       const ids = [...new Set(wordIds)].filter(Boolean);
       if (ids.length === 0) return new Set<string>();

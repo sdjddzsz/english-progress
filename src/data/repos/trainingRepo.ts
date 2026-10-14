@@ -34,6 +34,6 @@ export function createTrainingRepo(db: CloudDatabaseLike = getDb()): TrainingRep
 
     createRecord: (record) => records.insert(record),
     listRecordsBySession: (sessionId) =>
-      records.list([{ column: 'sessionId', op: 'eq', value: sessionId }], { orderBy: 'createdAt' }),
+      records.listAll([{ column: 'sessionId', op: 'eq', value: sessionId }], { orderBy: 'createdAt' }),
   };
 }

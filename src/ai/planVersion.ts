@@ -48,7 +48,7 @@ export async function rollbackToVersion(
   versionNo: number,
   changedBy: 'user' | 'ai' | 'system' = 'user',
 ): Promise<{ plan: StudyPlan; newVersion: PlanVersion }> {
-  const versions = await deps.versions.list([{ column: 'planId', op: 'eq', value: planId }]);
+  const versions = await deps.versions.listAll([{ column: 'planId', op: 'eq', value: planId }]);
   const target = versions.find((v) => v.versionNo === versionNo);
   if (!target) throw new Error(`plan ${planId} has no version ${versionNo}`);
   const snapshot = { ...(target.snapshot as Record<string, unknown>) };

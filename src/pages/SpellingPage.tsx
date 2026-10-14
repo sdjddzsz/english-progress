@@ -271,10 +271,27 @@ export default function SpellingPage() {
             )}
             {verdict.kind === 'wrong' && (
               <Alert severity="warning">
-                拼写不对 —— {verdict.hint}。正确拼写是 <strong>{current.lemma}</strong>。
+                拼写不对 —— {verdict.hint}。正确拼写是 <strong>{current.lemma}</strong>
+                {current.ipa ? ` /${current.ipa.replace(/^\/|\/$/g, '')}/` : ''}。
               </Alert>
             )}
             <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ mt: 1.5 }}>
+              {/* 上一词：点错了「下一个」能退回去，不用认栽 */}
+              {idx > 0 && (
+                <Button
+                  variant="text"
+                  size="small"
+                  disabled={busy}
+                  onClick={() => {
+                    setIdx((i) => Math.max(0, i - 1));
+                    setInput('');
+                    setVerdict(null);
+                    setAttempts(0);
+                  }}
+                >
+                  ← 上一词
+                </Button>
+              )}
               <Button variant="contained" disabled={busy} onClick={() => void submitAnswer()}>
                 {busy ? <CircularProgress size={20} /> : idx + 1 >= items.length ? '完成' : '下一个'}
               </Button>

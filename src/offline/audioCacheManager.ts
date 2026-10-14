@@ -5,6 +5,7 @@
  * - 双实现：Cache Storage 直删（浏览器）与内存 LRU（测试 / 内层包装）。
  */
 import { AUDIO_CACHE_BUDGET_BYTES } from '../config/constants';
+import type { TTSEngine } from '../types/domain';
 import type { AudioCache } from '../tts/orchestrator';
 
 export interface LruOptions {
@@ -129,7 +130,7 @@ export function recordingMemoryCache(): Omit<AudioCache, 'remove'> & {
   remove(key: string): Promise<void>;
   keys(): string[];
 } {
-  const store = new Map<string, { audio: ArrayBuffer; engine: 'neural_tts' | 'ipa_espeak' }>();
+  const store = new Map<string, { audio: ArrayBuffer; engine: TTSEngine }>();
   return {
     async get(key) {
       return store.get(key) ?? null;

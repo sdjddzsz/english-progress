@@ -95,10 +95,12 @@ export function createFeedbackRepo(db: CloudDatabaseLike = getDb()): FeedbackRep
         await feedbacks.insert(input as unknown as Omit<Feedback, 'id'> & { id?: string });
       }),
 
+    // ⚠ listAll：服务端 max-rows 默认 1000，不翻页会静默少数据。
+    //   feedback 决定掌握度升降（aggregateSteadiness）与掌握判定，少读 = 判错层。
     listFeedbacksBySession: (sessionId) =>
-      feedbacks.list([{ column: 'sessionId', op: 'eq', value: sessionId }], { orderBy: 'createdAt' }),
+      feedbacks.listAll([{ column: 'sessionId', op: 'eq', value: sessionId }], { orderBy: 'createdAt' }),
     listFeedbacksRange: (fromIso, toIso) =>
-      feedbacks.list([
+      feedbacks.listAll([
         { column: 'createdAt', op: 'gte', value: fromIso },
         { column: 'createdAt', op: 'lte', value: toIso },
       ]),

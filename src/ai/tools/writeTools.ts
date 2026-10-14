@@ -151,12 +151,14 @@ export const writeToolImpls: Record<string, WriteToolImpl> = {
   recompute_word_tiers: async (input, ctx) => {
     const bookId = s(input.bookId);
     const assignments = Array.isArray(input.assignments) ? (input.assignments as { bookWordId: string; tier: Tier }[]) : [];
-    let done = 0;
-    for (const a of assignments) {
-      const updated = await ctx.repos.word.updateWordTier(a.bookWordId, a.tier);
-      if (updated) done += 1;
-    }
-    const total = (await ctx.repos.word.listBookWords(bookId)).length;
+    // ⚠ 必须批量：一次摸底 ~300 条，逐条 update = ~300 个串行请求 ⇒ 线上直接 Failed to fetch
+    const done = await ctx.repos.word.updateWordTiers(
+      assignments
+        .filter((a) => a && typeof a.bookWordId === 'string' && typeof a.tier === 'number')
+        .map((a) => ({ bookWordId: a.bookWordId, tier: a.tier })),
+    );
+    // 总数只用来算「本次重分层占比」，用 count（1 个请求），不要 listBookWords 把整本拉回来
+    const total = await ctx.repos.word.countBookWords(bookId);
     return { summary: `重分层 ${done}/${assignments.length}（总 ${total} 词，${(assignments.length / Math.max(1, total)).toFixed(2)}）`, data: { done } };
   },
 

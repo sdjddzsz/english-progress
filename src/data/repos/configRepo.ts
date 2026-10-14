@@ -116,7 +116,7 @@ export function createConfigRepo(db: CloudDatabaseLike = getDb()): ConfigRepo {
     saveTierSnapshot: (snapshot) => tierSnapshots.insert(snapshot),
     saveAbilitySnapshot: (snapshot) => abilitySnapshots.insert(snapshot),
     listAbilitySnapshots: (userId) =>
-      abilitySnapshots.list([{ column: 'userId', op: 'eq', value: userId }], { orderBy: 'weekStart', ascending: false }),
+      abilitySnapshots.listAll([{ column: 'userId', op: 'eq', value: userId }], { orderBy: 'weekStart', ascending: false }),
 
     saveMockRecord: (record) => mockRecords.insert(record),
     saveMockRule: (rule) => mockRules.insert(rule),
@@ -145,7 +145,7 @@ export function createConfigRepo(db: CloudDatabaseLike = getDb()): ConfigRepo {
       }),
     decideProposal: (id, status) => proposals.update(id, { status, decidedAt: new Date().toISOString() }),
     listPendingProposals: (planId) =>
-      proposals.list(
+      proposals.listAll(
         [
           { column: 'planId', op: 'eq', value: planId },
           { column: 'status', op: 'eq', value: 'pending' },

@@ -306,7 +306,10 @@ export async function rebuildWordBook(
   // ① 备份：把当前词量 + 分层分布写进 tier_snapshots（fail closed 的前提）
   //    tier_snapshots 属于 configRepo 的集合范围（与 seedBootstrap 原本只碰 wordRepo 的边界不同，
   //    这里是重建场景的必要例外：删数据前必须留痕）。
-  const bws = await repo.bookWords.list([
+  // ⚠ 必须 listAll：服务端 max-rows 默认 1000。实测 5407 行的 book_words
+  //   用 list() 只回 1000 条 —— 于是这里只备份/只删除了 1000 条，
+  //   剩下 4407 条「从未被看见」（词书被删、关联被删一半，用户直接看不到词书）。
+  const bws = await repo.bookWords.listAll([
     { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
     { column: 'owner_id', op: 'eq', value: userId },
   ]);
@@ -439,10 +442,20 @@ export async function seedLibraryToCloud(
 
   /**
    * 单表续传决策 + 执行：
-   * - 云端已齐（count >= 总行数）→ 整步跳过（零请求），仅上报该步完成；
+   * - 云端行数**恰好**等于本次种子行数 **且** 游标确认过该表已写完当前这份种子 → 整步跳过（零请求）；
    * - 否则起点 = planStart(游标, 云端实测, 总行数)（对账失败时为 0，即全量）；
    * - 起点已越过总行数 → 同样整步跳过。
    * `cloudCount === null` 即「无条件全量重写」（回退路径用它）。
+   *
+   * ⚠⚠ `cloudCount >= rows.length` **不能单独作为跳过依据**（2026-10-13 线上事故）：
+   *   续传假设「前 N 行已经是新种子的内容」，这只在**同一份种子**下成立。
+   *   换种子后行数可能不变（或云端残留更少），但前 N 行的**内容已过时**
+   *   （实测：上次重建中途失败留下 4407 行旧 book_words，新种子 8296 行 ——
+   *    若直接跳过，就会留下一批**旧层号**的关联，而这些词的层级永远不会被纠正成新规则的层）。
+   *   ⇒ 必须额外校验「云端已存在行数 = 本次要写的全部行数」这一更强的条件才允许跳过；
+   *   否则一律从 0 全量重写（幂等 upsert，重写安全）。
+   *   终局的身份集合校验（verify）只能证明「该有的 id 都在」，**证明不了内容是新的** ——
+   *   所以这里的前置判断不能省。
    */
   const runTable = async (
     step: 'words' | 'book_words',
@@ -452,11 +465,19 @@ export async function seedLibraryToCloud(
     upsert: (batch: (Word | BookWord)[]) => Promise<void>,
     onChunkDone: (done: number) => void,
   ): Promise<void> => {
-    if (cloudCount !== null && cloudCount >= rows.length) {
+    // 跳过条件：行数**恰好**够（不是 >=），**且**本机游标确认过该表已完整写入当前这份种子。
+    // 前半（=== 而非 >=）：行数多于预期说明云端有别的词源或旧版本残留，此时也全量重写，
+    //   把每行的内容对齐到本次种子。
+    // 后半（cursorValue >= rows.length）：**行数相等也证明不了内容是新的** ——
+    //   词数不变、内容变过（例：IPA / 义项修错）时，行 id 与行数都不变，只比行数就会
+    //   **永久跳过刷新**，云端一直留着旧内容（历史上「两份种子文件不一致 ⇒ 云端拿到旧 IPA」
+    //   就是这一类）。游标已过指纹校验，它声称写完 ⇒ 内容确实是这一版种子。
+    if (cloudCount !== null && cloudCount === rows.length && cursorValue >= rows.length) {
       onProgress?.({ step, done: rows.length, total: rows.length });
       return;
     }
-    const start = planStart(cursorValue, cloudCount, rows.length);
+    // 续传只在「云端行数是本次种子的前缀」时安全；行数与本次种子对不上（多或少）都全量重写。
+    const start = cloudCount === null || cloudCount > rows.length ? 0 : planStart(cursorValue, cloudCount, rows.length);
     if (start >= rows.length) {
       onProgress?.({ step, done: rows.length, total: rows.length });
       return;
@@ -573,6 +594,24 @@ export async function seedLibraryToCloud(
     verdict = await verify();
     if (verdict === null) throw unverifiableError();
     if (verdict.missingWords.length > 0 || verdict.missingBookWords.length > 0) throw shortfallError(verdict);
+  }
+
+  // ===== 孤儿关联清理（2026-10-13 线上残留的善后）=====
+  //
+  // upsert 只能**覆盖**已有行，**删不掉**不该存在的行。上次重建中途失败后 book_words
+  // 残留了 4407 条旧关联（books 行已删 ⇒ 词书直接看不见）。若旧词书里混着新版种子不再收录的词，
+  // 这些行会在本次导入后**复活成「词书里多出来的词」** —— 与「静默少词」同类的静默不一致，
+  // 本项目不接受。作用域严格限定：本 bookId + 本 owner，且只删 id 不在本次种子集合内的行。
+  // 清理失败**不**阻断导入（孤儿只是多几个词，下次导入会重试），因此吞掉异常。
+  try {
+    const existingBw = await repo.bookWords.listAll([
+      { column: 'bookId', op: 'eq', value: CET6_BOOK_ID },
+      { column: 'owner_id', op: 'eq', value: userId },
+    ]);
+    const orphanIds = existingBw.filter((b) => !expectedBookWordIds.has(b.id)).map((b) => b.id);
+    if (orphanIds.length > 0) await repo.bookWords.removeMany(orphanIds);
+  } catch {
+    /* 清理失败：不阻断导入 */
   }
 
   onProgress?.({ step: 'book', done: 0, total: 1 });

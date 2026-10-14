@@ -188,6 +188,54 @@ export class Repository<T extends { id: string }> {
     return this.unwrap(env).map((r) => r.id);
   }
 
+  /**
+   * 读全表（自动翻页）—— **凡是「要拿到全量行」的调用都必须用它**，不要用 `list()`。
+   *
+   * ⚠⚠ 为什么（2026-10-13 线上实测踩到）：
+   *   `list()` 不传 limit 时虽然把 range 上界写成 `from + 1_000_000`，
+   *   但**服务端（PostgREST）有 max-rows 默认上限 1000**，超出部分被静默丢弃 ——
+   *   不报错、不告警，返回的就是前 1000 条。
+   *   实际后果：`listBookWords` 在 5407 词的旧书上也只回了 **1000** 条（实测云端
+   *   book_words 5407 行时 `.length` 为 1000）⇒
+   *    - `rebuildWordBook` 只备份/删除了 1000 条，剩下 4407 条**它从未看见**；
+   *    - `refreshToday`（每日队列展开）与 `expandDayForWords` 只会调度到前 1000 个词，
+   *      词书里 80% 的词**永远排不进学习队列**。
+   *   这类「静默少数据」比报错危险得多：它看起来完全正常。
+   *
+   * 翻页规则：
+   *  - 每页 `pageSize`（默认 1000，恰好卡在服务端上限内），按 **orderBy 稳定序 + offset** 翻；
+   *    无 orderBy 时强制按主键 `id` 排序 —— **无稳定排序的分页会重复或漏行**。
+   *  - 「短页」（返回条数 < pageSize）视为读完；
+   *  - 返回条数上限保护 `maxRows`：达到即停并抛错（说明服务端在静默截断，宁可报错也不能少数据）。
+   */
+  async listAll(filters: Filter[] = [], opts: ListOptions & { pageSize?: number; maxRows?: number } = {}): Promise<T[]> {
+    const pageSize = Math.max(1, opts.pageSize ?? 1000);
+    const maxRows = Math.max(pageSize, opts.maxRows ?? 100_000);
+    const out: T[] = [];
+    let offset = opts.offset ?? 0;
+    // 分页必须有稳定排序：调用方给了 orderBy 就用它，否则强制按主键 id
+    const orderBy = opts.orderBy ?? 'id';
+    for (;;) {
+      const page = await this.list(filters, {
+        ...opts,
+        orderBy,
+        ascending: opts.ascending ?? true,
+        offset,
+        limit: pageSize,
+      });
+      out.push(...page);
+      if (page.length < pageSize) break;
+      offset += pageSize;
+      if (out.length >= maxRows) {
+        throw new Error(
+          `[${this.table}] listAll 超过 maxRows=${maxRows} 仍未读完；` +
+            `这通常意味着服务端在静默截断分页结果。请调大 maxRows 或改用更窄的过滤条件。`,
+        );
+      }
+    }
+    return out;
+  }
+
   // ===== 写 =====
 
   /**

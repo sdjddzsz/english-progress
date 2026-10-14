@@ -62,7 +62,11 @@ export type L3Action =
 
 // ===== TTS / AI / 训练 枚举 =====
 
-export type TTSEngine = 'neural_tts' | 'ipa_espeak';
+/**
+ * neural_tts = 云端神经语音（需密钥）；ipa_espeak = 离线 WASM 兜底；
+ * web_speech = 浏览器内置 speechSynthesis（零网络零依赖，最后的兜底）。
+ */
+export type TTSEngine = 'neural_tts' | 'ipa_espeak' | 'web_speech';
 export type TTSProviderName = 'azure' | 'openai_compatible' | 'dashscope';
 export type TTSConfigStatus = 'pending_user_setup' | 'active' | 'error'; // 硬约束 #7：默认 pending_user_setup
 export type AIProviderType = 'workbuddy' | 'openai_compatible';

@@ -12,7 +12,7 @@
  * 判定单位 = **义项（senseId）**：同一单词不同读音对应不同意思 ⇒ 独立摸底、独立定层。
  * 确认后写初始层（recompute_word_tiers）→ 保存 TierSnapshot → 无计划时一步生成推荐档计划。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -44,15 +44,23 @@ import {
   applySelfCheck,
   estimateTierAssignments,
   pickPlacementSample,
+  pickBookWordSample,
   toSenseCandidates,
   type PlacementSenseItem,
 } from '../features/placement/sampling';
+import {
+  answeredCount,
+  clearSession,
+  loadSession,
+  saveSession,
+  type PlacementSession,
+} from '../features/placement/session';
+import { senseLabel } from '../features/senses';
 import { snapshotPlan } from '../ai/planVersion';
 import { decideProposal, executeTool } from '../ai/authz';
 import type { ToolContext } from '../ai/tools/readTools';
 import { getRepos, getToolCtx, todayISO, useAppStore } from '../store/useAppStore';
 import { useTTS } from '../hooks/useTTS';
-import { describeSenses } from '../features/senses';
 
 /** 第 1 步只有三键：原来那个「秒认」在这里没有意义（还没对答案，凭什么秒认） */
 const STEP1_OPTIONS: { value: L1State; label: string; color: 'primary' | 'warning' | 'error' }[] = [
@@ -75,12 +83,11 @@ type QuizState = 'answering' | 'revealed' | 'verifying';
 
 export default function PlacementPage() {
   const { userId, books, activeBookId, bootstrap } = useAppStore();
-  const { speak } = useTTS();
+  const { speak, speakAuto, loading: ttsLoading } = useTTS();
 
   const [phase, setPhase] = useState<'idle' | 'quiz' | 'review'>('idle');
   const [items, setItems] = useState<PlacementSenseItem[]>([]);
   const [idx, setIdx] = useState(0);
-  const [wordMap, setWordMap] = useState<Record<string, Word>>({});
   /** 键为 senseId（不再按 wordId —— 同词不同读音要分开记） */
   const [responses, setResponses] = useState<Record<string, L1State>>({});
   const [selfChecked, setSelfChecked] = useState<Record<string, boolean>>({});
@@ -89,40 +96,95 @@ export default function PlacementPage() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
+  /** 本机存着的未提交摸底草稿（断点续做的依据） */
+  const [draft, setDraft] = useState<PlacementSession | null>(null);
+  const startedAtRef = useRef<string>(new Date().toISOString());
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
 
-  const start = useCallback(async () => {
+  /** 换用户/换词书时重新探一次草稿（不能拿 A 词书的进度去续 B 词书） */
+  useEffect(() => {
     const bookId = activeBookId ?? books[0]?.id;
-    if (!userId || !bookId) {
-      setError('需要先有当前词书（先到「词书」页选择）。');
-      return;
-    }
-    setBusy(true);
-    setError('');
-    try {
-      const repos = getRepos();
-      const bws = await repos.word.listBookWords(bookId);
-      const words: Word[] = await repos.word.listWordsByIds(bws.map((b) => b.wordId));
-      const map: Record<string, Word> = {};
-      for (const w of words) map[w.id] = w;
-      const candidates = toSenseCandidates(words);
-      setWordMap(map);
-      const sample = pickPlacementSample(candidates, PLACEMENT_MAX_WORDS);
-      setItems(sample);
-      setResponses({});
-      setSelfChecked({});
-      setIdx(0);
-      setQuizState('answering');
-      setPhase('quiz');
-    } catch (e) {
-      setError(readableError(e));
-    } finally {
-      setBusy(false);
-    }
+    if (!userId || !bookId) return;
+    setDraft(loadSession(userId, bookId));
   }, [userId, activeBookId, books]);
+
+  // ===== 断点续做：答题过程中每一步都落盘，退出/刷新回来接着答 =====
+  useEffect(() => {
+    const bookId = activeBookId ?? books[0]?.id;
+    if (!userId || !bookId || phase !== 'quiz' || items.length === 0) return;
+    saveSession(userId, {
+      version: 1,
+      bookId,
+      startedAt: startedAtRef.current,
+      updatedAt: new Date().toISOString(),
+      items,
+      idx,
+      responses,
+      selfChecked,
+    });
+    setDraft(loadSession(userId, bookId));
+  }, [userId, activeBookId, books, phase, items, idx, responses, selfChecked]);
+
+  /** 换个词就自动读一次（受设置开关控制）；听觉/视觉都读，摸底时也省一次点击 */
+  const currentLemma = items[idx]?.senseId ?? '';
+  useEffect(() => {
+    const it = items[idx];
+    if (!it || phase !== 'quiz' || quizState !== 'answering') return;
+    void speakAuto({ text: it.lemma, ipa: it.ipa, arpabet: it.arpabet, mode: 'word' }, it.senseId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLemma, phase]);
+
+  /** 拉词 + 建抽样（force=true 表示丢弃草稿重来） */
+  const start = useCallback(
+    async (from?: PlacementSession | null, force = false) => {
+      const bookId = activeBookId ?? books[0]?.id;
+      if (!userId || !bookId) {
+        setError('需要先有当前词书（先到「词书」页选择）。');
+        return;
+      }
+      // 有草稿且不是强制重来 ⇒ 直接回到中断位置，一个词都不重拉
+      if (!force && from && from.items.length > 0) {
+        setItems(from.items);
+        setIdx(Math.min(Math.max(0, from.idx), from.items.length - 1));
+        setResponses(from.responses ?? {});
+        setSelfChecked(from.selfChecked ?? {});
+        startedAtRef.current = from.startedAt ?? new Date().toISOString();
+        setQuizState('answering');
+        setPendingL1(null);
+        setPhase('quiz');
+        return;
+      }
+      setBusy(true);
+      setError('');
+      try {
+        const repos = getRepos();
+        const bws = await repos.word.listBookWords(bookId);
+        const book = await repos.word.getBook(bookId);
+        // ⚠ 先按词频序预抽，再只取这批词：摸底只要 300 个判定单位，
+        //   不该把整本 8296 个词全拉下来（92 个请求 / 十几 MB ⇒ 线上 Failed to fetch）。
+        const picked = pickBookWordSample(bws, book?.listSize ?? DEFAULT_LIST_SIZE, PLACEMENT_MAX_WORDS);
+        const words: Word[] = await repos.word.listWordsByIds(picked.map((b) => b.wordId));
+        const candidates = toSenseCandidates(words);
+        const sample = pickPlacementSample(candidates, PLACEMENT_MAX_WORDS);
+        setItems(sample);
+        setResponses({});
+        setSelfChecked({});
+        startedAtRef.current = new Date().toISOString();
+        setIdx(0);
+        setQuizState('answering');
+        setPhase('quiz');
+        clearSession(userId, bookId);
+      } catch (e) {
+        setError(readableError(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [userId, activeBookId, books],
+  );
 
   /** 第 1 步提交：只记初评，**立刻**切到揭晓态（不跳下一词） */
   const answerStep1 = (l1: L1State) => {
@@ -141,6 +203,30 @@ export default function PlacementPage() {
       setIdx((i) => i + 1);
     }
   }, [idx, items.length]);
+
+  /**
+   * 上一词（防点错按钮）：回到上一条并**撤销它的判定**，重新走一遍自评。
+   * 只回退一条 —— 摸底是"逐条确认"的流程，连跳会让用户失去自己在哪的方位感。
+   */
+  const goBack = useCallback(() => {
+    if (idx <= 0) return;
+    const prev = items[idx - 1];
+    setIdx(idx - 1);
+    setQuizState('answering');
+    setPendingL1(null);
+    if (prev) {
+      setResponses((r) => {
+        const next = { ...r };
+        delete next[prev.senseId];
+        return next;
+      });
+      setSelfChecked((r) => {
+        const next = { ...r };
+        delete next[prev.senseId];
+        return next;
+      });
+    }
+  }, [idx, items]);
 
   /** 「见过想不起 / 不认识」：初评即最终判定，直接进下一词 */
   const acceptWithoutCheck = () => {
@@ -216,6 +302,9 @@ export default function PlacementPage() {
         calibratedAt: new Date().toISOString(),
       });
       setMsg(`初始分层已写入（抽样 ${items.length} 个判定单位，其中 ${correctedCount} 个经核对降层）。`);
+      // 已落库 ⇒ 草稿作废，否则下次进来还会提示"有未完成的摸底"
+      clearSession(userId, bookId);
+      setDraft(null);
       setPhase('idle');
     } catch (e) {
       setError(readableError(e));
@@ -319,14 +408,39 @@ export default function PlacementPage() {
 
       {phase === 'idle' && (
         <Paper sx={{ mt: 2, p: 3, textAlign: 'center' }}>
-          <Typography variant="body1" gutterBottom>
-            {items.length > 0
-              ? `上次抽样 ${items.length} 个判定单位，已写入 ${Object.keys(responses).length} 条。`
-              : `约 3-5 分钟，约 ${PLACEMENT_MAX_WORDS} 个判定单位。`}
-          </Typography>
-          <Button variant="contained" disabled={busy} onClick={() => void start()}>
-            {busy ? <CircularProgress size={20} /> : items.length > 0 ? '重新摸底' : '开始摸底'}
-          </Button>
+          {/* 断点续做：有未提交的草稿就先把"接着做"摆在最前面 */}
+          {draft ? (
+            <>
+              <Alert severity="info" sx={{ mb: 2, textAlign: 'left' }}>
+                有一份未提交的摸底：已答 <strong>{answeredCount(draft)}</strong> / {draft.items.length} 条，
+                上次停在<strong>第 {Math.min(draft.idx + 1, draft.items.length)} 条</strong>
+                （{new Date(draft.updatedAt).toLocaleString('zh-CN')}）。接着做不会重来。
+              </Alert>
+              <Stack direction="row" spacing={1} justifyContent="center" flexWrap="wrap" useFlexGap>
+                <Button variant="contained" disabled={busy} onClick={() => void start(draft)}>
+                  继续摸底（从第 {Math.min(draft.idx + 1, draft.items.length)} 条）
+                </Button>
+                <Button
+                  variant="outlined"
+                  disabled={busy}
+                  onClick={() => void start(draft, true)}
+                >
+                  放弃草稿，重新摸底
+                </Button>
+              </Stack>
+            </>
+          ) : (
+            <>
+              <Typography variant="body1" gutterBottom>
+                {items.length > 0
+                  ? `上次抽样 ${items.length} 个判定单位，已写入 ${Object.keys(responses).length} 条。`
+                  : `约 3-5 分钟，约 ${PLACEMENT_MAX_WORDS} 个判定单位。`}
+              </Typography>
+              <Button variant="contained" disabled={busy} onClick={() => void start(null, true)}>
+                {busy ? <CircularProgress size={20} /> : items.length > 0 ? '重新摸底' : '开始摸底'}
+              </Button>
+            </>
+          )}
           {Object.keys(responses).length > 0 && !msg && (
             <Button sx={{ ml: 1 }} variant="outlined" onClick={() => setPhase('review')}>
               回到确认页
@@ -350,11 +464,18 @@ export default function PlacementPage() {
             )}
           </Stack>
 
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ my: 2 }}>
+          <Stack direction="row" spacing={1} alignItems="baseline" flexWrap="wrap" useFlexGap sx={{ my: 2 }}>
             <Typography variant="h3">{current.lemma}</Typography>
+            {/* 音标必须挨着词形（用户 2026-10-13）：词旁边没有音标等于让用户猜读音 */}
+            {current.ipa && (
+              <Typography variant="h6" color="text.secondary">
+                /{current.ipa.replace(/^\/|\/$/g, '')}/
+              </Typography>
+            )}
             <Button
               size="small"
-              startIcon={<VolumeUpIcon />}
+              startIcon={ttsLoading ? <CircularProgress size={16} /> : <VolumeUpIcon />}
+              disabled={ttsLoading}
               onClick={() =>
                 void speak(
                   { text: current.lemma, ipa: current.ipa, arpabet: current.arpabet, mode: 'word' },
@@ -362,9 +483,16 @@ export default function PlacementPage() {
                 )
               }
             >
-              听读音
+              {ttsLoading ? '合成中…' : '听读音'}
             </Button>
           </Stack>
+
+          {/* 上一词：点错了能退回去重判，不用认栽 */}
+          {quizState === 'answering' && idx > 0 && (
+            <Button size="small" onClick={goBack} sx={{ mb: 1 }}>
+              ← 上一词（撤销上一条判定）
+            </Button>
+          )}
 
           {quizState === 'answering' && (
             <>
@@ -397,30 +525,30 @@ export default function PlacementPage() {
                     {current.lemma} 的全部读音与词性（本次问的是加粗那条）
                   </Typography>
                   <Stack spacing={0.25} sx={{ mt: 0.5 }}>
-                    {(wordMap[`word_${current.lemma}`] ? describeSenses(wordMap[`word_${current.lemma}`]) : []).map(
-                      ({ sense: s, label }, i) => (
+                    {(current.senses ?? []).map((s, i) => {
+                      const isThis = s.senseId === current.senseId;
+                      return (
                         <Stack key={s.senseId} direction="row" spacing={1} alignItems="baseline">
                           <Typography
                             variant="body2"
                             sx={{
                               minWidth: 26,
-                              fontWeight: s.senseId === current.senseId ? 700 : 400,
-                              color: s.senseId === current.senseId ? 'primary.main' : 'text.secondary',
+                              fontWeight: isThis ? 700 : 400,
+                              color: isThis ? 'primary.main' : 'text.secondary',
                             }}
                           >
                             {i + 1}.
                           </Typography>
                           <Typography
                             variant="body2"
-                            sx={{
-                              flex: 1,
-                              fontWeight: s.senseId === current.senseId ? 700 : 400,
-                            }}
+                            sx={{ flex: 1, fontWeight: isThis ? 700 : 400 }}
                           >
-                            {s.zh || s.pos} · {label}
+                            {s.zh || s.pos} · {senseLabel(s)}
+                            {s.ipa ? ` · /${s.ipa.replace(/^\/|\/$/g, '')}/` : ''}
                           </Typography>
                           <IconButton
                             size="small"
+                            disabled={ttsLoading}
                             onClick={() =>
                               void speak(
                                 { text: s.lemma, ipa: s.ipa, arpabet: s.arpabet, mode: 'word' },
@@ -432,8 +560,8 @@ export default function PlacementPage() {
                             <VolumeUpIcon fontSize="small" />
                           </IconButton>
                         </Stack>
-                      ),
-                    )}
+                      );
+                    })}
                   </Stack>
                 </Paper>
               )}
@@ -455,9 +583,16 @@ export default function PlacementPage() {
               )}
 
               {quizState === 'revealed' && pendingL1 !== 'recognized' && (
-                <Button variant="contained" onClick={acceptWithoutCheck}>
-                  下一词
-                </Button>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Button variant="contained" onClick={acceptWithoutCheck}>
+                    下一词
+                  </Button>
+                  {idx > 0 && (
+                    <Button variant="text" size="small" onClick={goBack}>
+                      ← 上一词（改判）
+                    </Button>
+                  )}
+                </Stack>
               )}
 
               {quizState === 'verifying' && (

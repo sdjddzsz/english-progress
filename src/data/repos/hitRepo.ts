@@ -50,8 +50,10 @@ export function createHitRepo(db: CloudDatabaseLike = getDb()): HitRepo {
 
     getHit: (id) => hits.getById(id),
 
+    // ⚠ listAll：服务端 max-rows 默认 1000。当日队列 + 欠账计算都读这里，
+    //   截断会让「已完成/欠账」判断失真（用户看到队列突然变短）。
     getHitsByDate: (planId, date) =>
-      hits.list(
+      hits.listAll(
         [
           { column: 'planId', op: 'eq', value: planId },
           { column: 'scheduledDate', op: 'eq', value: date },
@@ -60,14 +62,14 @@ export function createHitRepo(db: CloudDatabaseLike = getDb()): HitRepo {
       ),
 
     getHitsRange: (planId, fromDate, toDate) =>
-      hits.list([
+      hits.listAll([
         { column: 'planId', op: 'eq', value: planId },
         { column: 'scheduledDate', op: 'gte', value: fromDate },
         { column: 'scheduledDate', op: 'lte', value: toDate },
       ]),
 
     getOverdueHits: (planId, beforeDate) =>
-      hits.list([
+      hits.listAll([
         { column: 'planId', op: 'eq', value: planId },
         { column: 'status', op: 'in', values: ['pending', 'overdue'] },
         { column: 'scheduledDate', op: 'lt', value: beforeDate },

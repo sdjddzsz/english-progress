@@ -9,7 +9,10 @@ import { cacheStorageCache, consumeFallbackNotice, createOrchestrator, inMemoryA
 import { LruAudioCache } from '../offline/audioCacheManager';
 import type { TTSRequest } from '../tts/types';
 import { recordCacheHit, recordSynthesis } from '../tts/usageStats';
+import { sniffAudioMime } from '../tts/mime';
+import { speakWithWebSpeech } from '../tts/webSpeech';
 import { getRepos, useAppStore } from '../store/useAppStore';
+import { useSettingsStore } from '../store/useSettingsStore';
 
 // ===== 会话级运行时密钥（刷新即失；设置页可随时更新）=====
 
@@ -77,15 +80,27 @@ function getOrchestrator(): TTSOrchestrator {
 
 // ===== 音频播放（Blob → <audio>）=====
 
+/**
+ * 按魔数嗅探 MIME：mespeak 出的是 **WAV**（RIFF），主轨出的是 MP3。
+ * 原来一律按 audio/mpeg 包 Blob —— WAV 数据挂 mp3 类型，浏览器解码器会直接失败，
+ * 于是"点了发音没声音"且没有任何报错。
+ */
+function sniffMime(audio: ArrayBuffer): string {
+  return sniffAudioMime(audio);
+}
+
 async function playBuffer(audio: ArrayBuffer): Promise<void> {
   if (typeof Audio === 'undefined') return; // 非浏览器环境静默
-  const blob = new Blob([audio], { type: 'audio/mpeg' });
+  if (!audio || audio.byteLength === 0) throw new Error('empty audio buffer');
+  const blob = new Blob([audio], { type: sniffMime(audio) });
   const url = URL.createObjectURL(blob);
   try {
     await new Promise<void>((resolve, reject) => {
       const el = new Audio(url);
       el.onended = () => resolve();
       el.onerror = () => reject(new Error('audio playback failed'));
+      // iOS/Safari 需要 playsinline 语义；<audio> 无此属性但预载可降失败率
+      el.preload = 'auto';
       void el.play().catch(reject);
     });
   } finally {
@@ -96,8 +111,13 @@ async function playBuffer(audio: ArrayBuffer): Promise<void> {
 // ===== Hook =====
 
 export interface UseTTSApi {
-  /** 返回实际命中的引擎（neural_tts 主轨 / ipa_espeak 兜底）；失败返回 null */
+  /** 返回实际命中的引擎（neural_tts 主轨 / ipa_espeak 兜底 / web_speech 内置）；失败返回 null */
   speak(req: TTSRequest, wordId?: string): Promise<TTSEngine | null>;
+  /**
+   * 自动发音：只在设置开关打开时朗读，关闭时是 no-op。
+   * 用于"进入/揭晓当前词"这类无需用户点按钮的场景。
+   */
+  speakAuto(req: TTSRequest, wordId?: string): Promise<TTSEngine | null>;
   loading: boolean;
   lastEngine: TTSEngine | null;
   /** espeak 兜轨首次触发的一次性轻提示（消费一次后复位） */
@@ -109,6 +129,9 @@ export function useTTS(): UseTTSApi {
   const [loading, setLoading] = useState(false);
   const [lastEngine, setLastEngine] = useState<TTSEngine | null>(null);
   const [fallbackNotice, setFallbackNotice] = useState(false);
+  // 注意：这里用 getState() 而不是 useSettingsStore(selector) —— 后者依赖 React 渲染器，
+  // 会让 useTTS() 无法在无渲染器环境（单测直接调用 hook）下使用。
+  const autoSpeak = useSettingsStore.getState().autoSpeak;
 
   const speak = useCallback(async (req: TTSRequest, wordId?: string): Promise<TTSEngine | null> => {
     setLoading(true);
@@ -127,12 +150,27 @@ export function useTTS(): UseTTSApi {
     } catch (e) {
       // 发音失败不阻断学习；错误已在 PronunciationLog 留痕
       console.error('[tts] speak failed:', e);
+      // 最后一道兜底：浏览器内置语音。编排链彻底走不通时至少保证"点了有声音"。
+      const text = req.text || (req.ipa ? req.ipa.replace(/\//g, '') : '');
+      const ok = await speakWithWebSpeech(text, { rate: req.mode === 'word' ? 0.85 : 0.95 });
+      if (ok) {
+        setLastEngine('web_speech');
+        return 'web_speech';
+      }
       return null;
     } finally {
       setLoading(false);
     }
   }, []);
 
+  const speakAuto = useCallback(
+    async (req: TTSRequest, wordId?: string): Promise<TTSEngine | null> => {
+      if (!autoSpeak) return null;
+      return speak(req, wordId);
+    },
+    [autoSpeak, speak],
+  );
+
   const dismissFallbackNotice = useCallback(() => setFallbackNotice(false), []);
-  return { speak, loading, lastEngine, fallbackNotice, dismissFallbackNotice };
+  return { speak, speakAuto, loading, lastEngine, fallbackNotice, dismissFallbackNotice };
 }
