@@ -107,7 +107,7 @@ export default function TodayPage() {
           </Typography>
           <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
             <Button variant="contained" onClick={() => navigate('/quiz')}>
-              开始单词考查
+              开始学习
             </Button>
             <Button variant="outlined" onClick={() => navigate('/book')}>
               去词书页
@@ -132,17 +132,12 @@ export default function TodayPage() {
               <Typography variant="body1">
                 今日待完成 <strong>{todayPendingCount}</strong> / {todayHits.length}
               </Typography>
-              <Button
-                variant="outlined"
-                onClick={() => navigate('/quiz')}
-              >
-                单词考查
-              </Button>
+              {/* 考查即学习（用户 2026-10-14 第 4 条）：原「开始学习」入口删除，
+                  「单词考查」改名「开始学习」并升为主按钮 */}
               <Button
                 variant="contained"
                 startIcon={<PlayArrowIcon />}
-                disabled={todayPendingCount === 0}
-                onClick={() => navigate('/study')}
+                onClick={() => navigate('/quiz')}
               >
                 开始学习
               </Button>

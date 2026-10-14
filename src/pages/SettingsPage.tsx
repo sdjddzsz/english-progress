@@ -65,6 +65,10 @@ export default function SettingsPage() {
   const [savingTTS, setSavingTTS] = useState(false);
   /** P1-1 本地用量（成本卡数据源；仅主轨计费） */
   const [usage, setUsage] = useState<UsageStats>(() => readUsageStats());
+  // 云端实测聚合（用户 2026-10-14 第 2 条）：官网控制台没有公开用量 API（需阿里云登录态），
+  // 但 pronunciation_logs 每次主轨合成都有记录（含 DashScope usage.characters 精确字符数），
+  // 聚合它 = 跨设备一致的真实用量。
+  const [cloudUsage, setCloudUsage] = useState<{ requests: number; chars: number } | null>(null);
   /** T8 存量回填（升级发音真源） */
   const [bfRunning, setBfRunning] = useState(false);
   const [bfProgress, setBfProgress] = useState<BackfillProgress | null>(null);
@@ -109,6 +113,28 @@ export default function SettingsPage() {
     })();
     // P1-1：进入设置页刷新一次本地用量
     setUsage(readUsageStats());
+    // 云端实测聚合：本月主轨成功合成（跨设备真实数据）
+    void (async () => {
+      try {
+        const monthStart = new Date();
+        monthStart.setDate(1);
+        monthStart.setHours(0, 0, 0, 0);
+        const logs = await getRepos().feedback.pronunciationLogs.listAll(
+          [
+            { column: 'engine', op: 'eq', value: 'neural_tts' },
+            { column: 'success', op: 'eq', value: true },
+            { column: 'createdAt', op: 'gte', value: monthStart.toISOString() },
+          ],
+          { orderBy: 'createdAt', ascending: false },
+        );
+        setCloudUsage({
+          requests: logs.length,
+          chars: logs.reduce((s, l) => s + (l.chars ?? 0), 0),
+        });
+      } catch {
+        setCloudUsage(null); // 拉不到就不显示，不挡设置页
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -266,6 +292,10 @@ export default function SettingsPage() {
   const handleTryListen = async () => {
     setTtsMsg('');
     setTtsErr('');
+    // ★ 先静默保存页面当前配置（用户 2026-10-14 第 1 条：试听不需先保存+刷新）：
+    // 编排器按云端配置合成（缓存 key 含音色），试听前把下拉里选的音色直接写云端，
+    // 试听即用新音色新 key 重新合成——换音色立即出声。
+    await handleSaveTTS();
     // 探针带 arpabet（dashscope → <phoneme alphabet="cmu"> 零转换；azure 忽略该字段、回退 ipa）
     const engine = await speak({ text: 'progress', ipa: 'ˈprɒɡres', arpabet: 'P R AA1 G R EH2 S', mode: 'word' });
     setUsage(readUsageStats()); // P1-1：试听会写用量，刷新成本卡
@@ -668,16 +698,22 @@ export default function SettingsPage() {
           </Stack>
 
           <Divider />
-          <Typography variant="subtitle2">用量与成本（本地统计 · 仅主轨计费）</Typography>
+          <Typography variant="subtitle2">用量与成本（仅主轨计费）</Typography>
           <Stack direction="row" spacing={2} flexWrap="wrap">
             <Typography variant="body2">本月字符数：{usage.chars}</Typography>
             <Typography variant="body2">本月请求数：{usage.requests}</Typography>
             <Typography variant="body2">缓存命中率：{(cacheHitRate(usage) * 100).toFixed(1)}%</Typography>
           </Stack>
+          {cloudUsage && (
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              云端实测（跨设备一致，来自每次真实合成日志）：本月主轨成功 {cloudUsage.requests} 次 ·{' '}
+              {cloudUsage.chars} 字符 ≈ ¥{((cloudUsage.chars / 10000) * DASHSCOPE_PRICE_PER_10K_CHARS).toFixed(2)}
+            </Typography>
+          )}
           <Typography variant="caption" color="text.secondary">
+            阿里云控制台官网用量没有公开查询 API（需要控制台登录态），无法在此直读；上行为本应用自己的合成日志聚合，口径与官网账单一致。
             资费：{DASHSCOPE_PRICE_PER_10K_CHARS} 元/万字符；新用户开通百炼 90 天内 {DASHSCOPE_FREE_QUOTA_CHARS} 字符免费。
-            按本月字符数估算约 ¥{((usage.chars / 10000) * DASHSCOPE_PRICE_PER_10K_CHARS).toFixed(2)}
-            （免费额度未计入；缓存命中不产生新字符）。
+            （免费额度未计入；缓存命中不产生新字符）
           </Typography>
           <Stack direction="row" justifyContent="flex-end">
             <Button

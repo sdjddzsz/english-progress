@@ -18,8 +18,11 @@ import CircularProgress from '@mui/material/CircularProgress';
 import LinearProgress from '@mui/material/LinearProgress';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
+import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { getRepos, useAppStore } from '../store/useAppStore';
+import { useSettingsStore } from '../store/useSettingsStore';
+import { chatTurn } from '../ai/llmClient';
 import { normalizeSenses } from '../features/senses';
 import type { BookWord, Word } from '../types/domain';
 import {
@@ -53,6 +56,7 @@ type Phase = 'loading' | 'quiz' | 'between' | 'done';
 export default function QuizPage() {
   const navigate = useNavigate();
   const { activeBookId, userId } = useAppStore();
+  const { aiChannel, aiBaseUrl, aiModel } = useSettingsStore();
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
   const [items, setItems] = useState<QuizItem[]>([]);
@@ -65,6 +69,11 @@ export default function QuizPage() {
   const [remaining, setRemaining] = useState(0);
   const showAtRef = useRef(0);
   const poolRef = useRef<DistractorCandidate[]>([]);
+  // AI 问答框（用户 2026-10-14 第 5 条）：直接和接入的模型提问/交流，
+  // 模型自动获得角色 + 当前屏幕内容（当前考查词/词性/释义），无需另写提示词。
+  const [aiInput, setAiInput] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiThread, setAiThread] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
 
   /** 启动：拉词书行 → 过滤该考的 → 批量拉词条 → 建队列 */
   const start = useCallback(async () => {
@@ -144,11 +153,12 @@ export default function QuizPage() {
   }, [phase, current]);
 
   /** 答题 → 判定 → 落库 → 反馈 → 下一题 */
-  const answer = async (key: string): Promise<void> => {
+  const answer = async (key: string, forceUnknown = false): Promise<void> => {
     if (!current || verdict) return;
     const elapsed = Date.now() - showAtRef.current;
     const correct = key === correctKey;
-    const v = judgeAnswer(elapsed, correct);
+    // 不会/想不起/不确定三按钮（用户 2026-10-14）：点击即判生词，不进入计时判定
+    const v: QuizVerdict = forceUnknown ? 'unknown' : judgeAnswer(elapsed, correct);
     setPickedKey(key);
     setVerdict(v);
     const bw = current.bookWord;
@@ -187,6 +197,52 @@ export default function QuizPage() {
     return normalizeSenses(current.word)[current.senseIndex];
   }, [current]);
   const multiSense = current ? normalizeSenses(current.word).length > 1 : false;
+
+  /** 换词即清空 AI 对话：上下文跟着当前屏幕走 */
+  useEffect(() => {
+    setAiThread([]);
+  }, [idx]);
+
+  /** AI 问答：角色 + 当前屏幕内容自动注入 system，用户只管问 */
+  const askAi = async (): Promise<void> => {
+    if (!current || !senseOf || aiBusy || !aiInput.trim()) return;
+    const q = aiInput.trim();
+    setAiInput('');
+    setAiThread((t) => [...t, { role: 'user', content: q }]);
+    setAiBusy(true);
+    try {
+      const allSenses = normalizeSenses(current.word)
+        .map((s, i) => `${i + 1}. [${s.pos}] ${s.zh} /${s.ipa ?? ''}/`)
+        .join('\n');
+      const screen =
+        `当前考查屏幕内容：\n` +
+        `- 单词：${current.word.lemma}${senseOf.pos ? `（本义项词性 ${senseOf.pos}）` : ''}\n` +
+        `- 本义项释义：${senseOf.zh}\n` +
+        `- 音标：/${senseOf.ipa ?? ''}/\n` +
+        `- 该词全部义项：\n${allSenses}\n` +
+        `- 用户刚${verdict ? `被判定为「${verdictLabel(verdict)}」` : '还在作答'}`;
+      const result = await chatTurn(
+        [
+          {
+            role: 'system',
+            content:
+              '你是一位英语助教，正在英语学习应用的考查页里回答学习者关于当前单词的问题。' +
+              '回答要简短、口语化、直接可用，优先讲该词在当前义项下的用法，需要时给一两个短例句。' +
+              '不要重复罗列屏幕上已有的信息，除非用户要求。\n\n' +
+              screen,
+          },
+          ...aiThread.map((m) => ({ role: m.role, content: m.content })),
+          { role: 'user', content: q },
+        ],
+        { model: aiModel || 'default', channel: aiChannel, ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}) },
+      );
+      setAiThread((t) => [...t, { role: 'assistant', content: result.content || '（模型未返回内容）' }]);
+    } catch (e) {
+      setAiThread((t) => [...t, { role: 'assistant', content: `问答失败：${e instanceof Error ? e.message : String(e)}` }]);
+    } finally {
+      setAiBusy(false);
+    }
+  };
 
   return (
     <Box p={2} pb={4} maxWidth={720} mx="auto">
@@ -262,6 +318,70 @@ export default function QuizPage() {
               </Typography>
             </Stack>
           )}
+          {/* 不会/想不起/不确定（用户 2026-10-14）：点击即判生词，展示正确答案后进下一题 */}
+          {verdict === null && (
+            <Stack direction="row" spacing={1} sx={{ mt: 2 }} justifyContent="center" flexWrap="wrap" useFlexGap>
+              {(['不会', '想不起', '不确定'] as const).map((label) => (
+                <Button
+                  key={label}
+                  size="small"
+                  variant="text"
+                  color="error"
+                  onClick={() => void answer('', true)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </Stack>
+          )}
+        </Paper>
+      )}
+
+      {/* AI 问答框（用户 2026-10-14 第 5 条）：随当前考查词走，模型自动知道屏幕内容 */}
+      {phase === 'quiz' && current && (
+        <Paper sx={{ mt: 2, p: 2 }}>
+          <Typography variant="body2" color="text.secondary" gutterBottom>
+            问 AI（已带上当前单词「{current.word.lemma}」与释义上下文，直接问就行）
+          </Typography>
+          {aiThread.length > 0 && (
+            <Stack spacing={1} sx={{ mb: 1.5 }}>
+              {aiThread.map((m, i) => (
+                <Typography
+                  key={i}
+                  variant="body2"
+                  sx={{
+                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                    bgcolor: m.role === 'user' ? 'action.selected' : 'transparent',
+                    px: 1,
+                    py: 0.5,
+                    borderRadius: 1,
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  {m.role === 'user' ? `你：${m.content}` : m.content}
+                </Typography>
+              ))}
+            </Stack>
+          )}
+          <Stack direction="row" spacing={1}>
+            <TextField
+              size="small"
+              fullWidth
+              placeholder="例如：这个词在口语里怎么用？"
+              value={aiInput}
+              onChange={(e) => setAiInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void askAi();
+                }
+              }}
+              disabled={aiBusy}
+            />
+            <Button variant="outlined" disabled={aiBusy || !aiInput.trim()} onClick={() => void askAi()}>
+              {aiBusy ? <CircularProgress size={18} /> : '问'}
+            </Button>
+          </Stack>
         </Paper>
       )}
 
