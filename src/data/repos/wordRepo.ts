@@ -29,6 +29,16 @@ export interface WordRepo {
   ): Promise<BookWord[]>;
   listWordsByIds(ids: string[]): Promise<Word[]>;
   updateWordTier(bookWordId: string, tier: Tier): Promise<BookWord | null>;
+  /**
+   * 考查制单题结果写回（用户 2026-10-14 新判定机制）：
+   * tier / streak / failStreak / specialTraining / lastQuizAt 一次落库。
+   * 单题单请求（一次考查 50 题 = 50 个串行写，逐题发生、频率低，可接受；
+   * 与「批量改层必须成批」的教训不冲突——那是 300 条同刻写入的场景）。
+   */
+  updateBookWordQuiz(
+    bookWordId: string,
+    patch: { tier: Tier; streak: number; failStreak: number; specialTraining: boolean; lastQuizAt: string },
+  ): Promise<BookWord | null>;
   updateBookWordStatus(bookWordId: string, status: WordStatus): Promise<BookWord | null>;
   /**
    * **批量**改层 —— 必须成批，不可逐条（2026-10-13 线上「摸底分层 Failed to fetch」的成因之一）：
@@ -171,6 +181,11 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
     },
     updateWordTier: (bookWordId, tier) =>
       bookWords.update(bookWordId, { tier, tierUpdatedAt: new Date().toISOString() } as Partial<BookWord>),
+    updateBookWordQuiz: (bookWordId, patch) =>
+      bookWords.update(bookWordId, {
+        ...patch,
+        tierUpdatedAt: new Date().toISOString(),
+      } as Partial<BookWord>),
     updateBookWordStatus: (bookWordId, status) => bookWords.update(bookWordId, { status } as Partial<BookWord>),
     updateWordTiers: async (pairs) => {
       // 同一 id 多次出现时以最后一条为准（摸底里同 lemma 的多个义项共享一条 book_word）

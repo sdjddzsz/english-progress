@@ -223,6 +223,10 @@ export function seedToDocs(
       tier: 4 as BookWord['tier'],
       tierUpdatedAt: new Date().toISOString(),
       status: 'normal',
+      // 考查制判定字段（用户 2026-10-14）：全书从生词档起步，连续熟练 5 次毕业
+      streak: 0,
+      failStreak: 0,
+      specialTraining: false,
     });
   });
   return { words, bookWords };

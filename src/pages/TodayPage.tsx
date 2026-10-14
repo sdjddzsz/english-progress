@@ -103,11 +103,11 @@ export default function TodayPage() {
         <Paper sx={{ mt: 2, p: 3 }}>
           <Typography variant="h6">还没有生效中的计划</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            先到「词书」页选择词书，再到摸底页完成分层，或直接在「计划编辑」里确定档位与预算。
+            先到「词书」页选择词书，然后直接开始单词考查（按用时与对错判定，连续熟练 5 次毕业）。
           </Typography>
           <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
-            <Button variant="contained" onClick={() => navigate('/placement')}>
-              去摸底分层
+            <Button variant="contained" onClick={() => navigate('/quiz')}>
+              开始单词考查
             </Button>
             <Button variant="outlined" onClick={() => navigate('/book')}>
               去词书页
@@ -132,6 +132,12 @@ export default function TodayPage() {
               <Typography variant="body1">
                 今日待完成 <strong>{todayPendingCount}</strong> / {todayHits.length}
               </Typography>
+              <Button
+                variant="outlined"
+                onClick={() => navigate('/quiz')}
+              >
+                单词考查
+              </Button>
               <Button
                 variant="contained"
                 startIcon={<PlayArrowIcon />}

@@ -188,6 +188,14 @@ export interface BookWord {
   tier: Tier;
   tierUpdatedAt: string;
   status: WordStatus;
+  /** ★ 考查制（用户 2026-10-14）：连续判定「熟练」的次数；≥ QUIZ_GRADUATE_STREAK(5) 本轮出池 */
+  streak: number;
+  /** 连续「不熟/生词」次数；≥ QUIZ_SPECIAL_TRAINING_FAILS(3) 进入特种训练 */
+  failStreak: number;
+  /** 特种训练标记：无视间隔、每天必考，直到毕业 */
+  specialTraining: boolean;
+  /** 上次考查时间（按 tier 决定下次应考间隔） */
+  lastQuizAt?: string;
 }
 
 export interface StudyPlan {

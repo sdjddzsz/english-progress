@@ -17,8 +17,8 @@ import DashboardPage from './pages/DashboardPage';
 import DiagReportView from './pages/DiagReportView';
 import AiPlanPage from './pages/AiPlanPage';
 import SettingsPage from './pages/SettingsPage';
-import PlacementPage from './pages/PlacementPage';
 import MockExamPage from './pages/MockExamPage';
+import QuizPage from './pages/QuizPage';
 import LoginPage from './pages/LoginPage';
 import SearchPage from './pages/SearchPage';
 import BookmarkPage from './pages/BookmarkPage';
@@ -47,7 +47,7 @@ const TAB_DEFS = [
 function activeTabIndex(pathname: string): number {
   if (pathname.startsWith('/study')) return 0;
   if (pathname.startsWith('/training')) return 1;
-  if (pathname.startsWith('/book') || pathname.startsWith('/plan-editor') || pathname.startsWith('/placement')) return 2;
+  if (pathname.startsWith('/book') || pathname.startsWith('/plan-editor')) return 2;
   if (pathname.startsWith('/search')) return 3;
   // 生词本归属「查词」Tab：它是查词/收藏这条线的延续，不单开一个底部栏位（5 个已满）
   if (pathname.startsWith('/bookmarks')) return 3;
@@ -121,6 +121,7 @@ export default function App() {
           <Box sx={{ flex: 1 }}>
             <Routes>
               <Route path="/" element={<OverdueGuardRoute><TodayPage /></OverdueGuardRoute>} />
+              <Route path="/quiz" element={<QuizPage />} />
               <Route path="/study" element={<OverdueGuardRoute><StudyPage /></OverdueGuardRoute>} />
               <Route path="/training" element={<OverdueGuardRoute><TrainingPage /></OverdueGuardRoute>} />
               <Route path="/training/audio" element={<OverdueGuardRoute><AudioRecallPage /></OverdueGuardRoute>} />
@@ -130,7 +131,8 @@ export default function App() {
               <Route path="/bookmarks" element={<BookmarkPage />} />
               <Route path="/book" element={<BookPage />} />
               <Route path="/plan-editor" element={<PlanEditorPage />} />
-              <Route path="/placement" element={<PlacementPage />} />
+              {/* 摸底已砍（用户 2026-10-14：「把这狗屁摸底给清除了，功能砍掉」）：
+                  判定改为考查制（计时选择题，连续熟练 5 次毕业），见 QuizPage。 */}
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/dashboard/diag" element={<DiagReportView />} />
               <Route path="/mock" element={<MockExamPage />} />

@@ -55,7 +55,7 @@ function mkWord(lemma: string, over: Partial<Word> = {}): Word {
 }
 
 function mkBookWord(wordId: string, i: number): BookWord {
-  return { id: `bw_${i}`, bookId: CET6_BOOK_ID, wordId, listNo: 1, orderInList: i + 1, tier: 3, tierUpdatedAt: '', status: 'normal' };
+  return { id: `bw_${i}`, bookId: CET6_BOOK_ID, wordId, listNo: 1, orderInList: i + 1, tier: 3, tierUpdatedAt: '', status: 'normal', streak: 0, failStreak: 0, specialTraining: false };
 }
 
 function mkRepo(seedWords: Word[]): { repo: BackfillRepo; store: Map<string, Word>; upsertLog: (Word & Record<string, unknown>)[][] } {
