@@ -37,7 +37,15 @@ export interface WordRepo {
    */
   updateBookWordQuiz(
     bookWordId: string,
-    patch: { tier: Tier; streak: number; failStreak: number; specialTraining: boolean; lastQuizAt: string },
+    patch: {
+      tier: Tier;
+      streak: number;
+      failStreak: number;
+      specialTraining: boolean;
+      lastQuizAt: string;
+      quizDayStreak: number;
+      quizDayPassed: boolean;
+    },
   ): Promise<BookWord | null>;
   updateBookWordStatus(bookWordId: string, status: WordStatus): Promise<BookWord | null>;
   /**

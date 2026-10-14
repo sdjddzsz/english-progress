@@ -23,6 +23,8 @@ import {
   Stack,
   Switch,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from '@mui/material';
 import type { TTSProviderConfig, TTSProviderName } from '../types/domain';
@@ -459,6 +461,27 @@ export default function SettingsPage() {
               onChange={(e) => settings.setQuizAutoNext(e.target.checked)}
             />
           </Stack>
+
+          <Box>
+            <Typography variant="body2" gutterBottom>当天过关档位（考查）</Typography>
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={settings.quizDayThreshold}
+              onChange={(_, v) => {
+                if (v) settings.setQuizDayThreshold(v);
+              }}
+            >
+              <ToggleButton value="lenient">宽松</ToggleButton>
+              <ToggleButton value="standard">适当</ToggleButton>
+              <ToggleButton value="strict">严格</ToggleButton>
+            </ToggleButtonGroup>
+            <Typography variant="caption" color="text.secondary" display="block">
+              当天计划里，同一个词连续 3 次达到档位线才过关、当天不再出现：
+              宽松=至少「不熟」、适当=至少「认识」、严格=至少「熟练」。
+              一次没到线计数清零。总计划（明天起的考查频率）只看当天第一次判定的熟悉度。
+            </Typography>
+          </Box>
 
           <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Typography variant="body2">见中文联想英文（每日一小段）</Typography>

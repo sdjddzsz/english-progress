@@ -4,6 +4,7 @@
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { QuizDayThreshold } from '../features/quiz/judging';
 import type { Device } from '../types/domain';
 import type { LLMChannel } from '../ai/llmClient';
 import { CN_TO_EN_DAILY_WORDS, DASHSCOPE_DEFAULT_MODEL, DEFAULT_TTS_PROVIDER } from '../config/constants';
@@ -35,6 +36,8 @@ export interface SettingsState {
   sfxEnabled: boolean;
   /** 考查答完是否自动进入下一题（用户 2026-10-14：默认关=手动点下一题） */
   quizAutoNext: boolean;
+  /** 当天过关档位（用户 2026-10-14：宽松/适当/严格） */
+  quizDayThreshold: QuizDayThreshold;
 
   setDevice(device: Device): void;
   setCnToEn(enabled: boolean, dailyWords?: number): void;
@@ -44,6 +47,7 @@ export interface SettingsState {
   setAutoSpeak(enabled: boolean): void;
   setSfxEnabled(enabled: boolean): void;
   setQuizAutoNext(enabled: boolean): void;
+  setQuizDayThreshold(threshold: QuizDayThreshold): void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -61,6 +65,7 @@ export const useSettingsStore = create<SettingsState>()(
       autoSpeak: true,
       sfxEnabled: true,
       quizAutoNext: false,
+      quizDayThreshold: 'standard',
 
       setDevice: (device) => set({ device }),
       setCnToEn: (cnToEnEnabled, dailyWords) =>
@@ -71,6 +76,7 @@ export const useSettingsStore = create<SettingsState>()(
       setAutoSpeak: (autoSpeak) => set({ autoSpeak }),
       setSfxEnabled: (sfxEnabled) => set({ sfxEnabled }),
       setQuizAutoNext: (quizAutoNext) => set({ quizAutoNext }),
+      setQuizDayThreshold: (quizDayThreshold) => set({ quizDayThreshold }),
     }),
     { name: 'ep-settings' },
   ),

@@ -227,6 +227,8 @@ export function seedToDocs(
       streak: 0,
       failStreak: 0,
       specialTraining: false,
+      quizDayStreak: 0,
+      quizDayPassed: false,
     });
   });
   return { words, bookWords };

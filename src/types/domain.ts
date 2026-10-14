@@ -196,6 +196,10 @@ export interface BookWord {
   specialTraining: boolean;
   /** 上次考查时间（按 tier 决定下次应考间隔） */
   lastQuizAt?: string;
+  /** 当天小循环连续达标计数（用户 2026-10-14：当天连对 N 次才过关） */
+  quizDayStreak: number;
+  /** 当天是否已过关（只对当天有效，隔夜失效） */
+  quizDayPassed: boolean;
 }
 
 export interface StudyPlan {

@@ -34,10 +34,15 @@ import {
   streakAfterVerdict,
   failStreakAfterVerdict,
   shouldQuizToday,
-  tierAfterVerdict,
+  tierAfterQuiz,
+  isDayPassedToday,
+  isSameUtcDay,
+  quizDayStreakAfter,
+  QUIZ_DAY_PASS_COUNT,
   verdictColor,
   verdictLabel,
   type QuizVerdict,
+  type QuizDayThreshold,
 } from '../features/quiz/judging';
 import {
   buildOptions,
@@ -46,6 +51,13 @@ import {
 
 /** 单日考查上限（特种训练词不计入此限——必考） */
 const QUIZ_DAILY_LIMIT = 50;
+
+/** 当天过关档位的中文名（展示用） */
+const DAY_THRESHOLD_LABEL: Record<QuizDayThreshold, string> = {
+  lenient: '宽松',
+  standard: '适当',
+  strict: '严格',
+};
 
 interface QuizItem {
   bookWord: BookWord;
@@ -58,7 +70,7 @@ type Phase = 'loading' | 'quiz' | 'between' | 'done';
 export default function QuizPage() {
   const navigate = useNavigate();
   const { activeBookId, userId } = useAppStore();
-  const { aiChannel, aiBaseUrl, aiModel, quizAutoNext } = useSettingsStore();
+  const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold } = useSettingsStore();
   const { speakAuto } = useTTS();
   const sfx = useSfx();
   const [phase, setPhase] = useState<Phase>('loading');
@@ -69,7 +81,8 @@ export default function QuizPage() {
   const [correctKey, setCorrectKey] = useState('');
   const [verdict, setVerdict] = useState<QuizVerdict | null>(null);
   const [pickedKey, setPickedKey] = useState('');
-  const [stats, setStats] = useState({ skilled: 0, graduated: 0, special: 0, total: 0 });
+  const [stats, setStats] = useState({ skilled: 0, graduated: 0, special: 0, dayPassed: 0, total: 0 });
+  const [todayLeft, setTodayLeft] = useState(0);
   const [remaining, setRemaining] = useState(0);
   const showAtRef = useRef(0);
   const poolRef = useRef<DistractorCandidate[]>([]);
@@ -89,7 +102,10 @@ export default function QuizPage() {
       const bookId = activeBookId;
       if (!bookId) throw new Error('没有生效词书');
       const all = await repos.word.listBookWords(bookId);
-      const pool = all.filter((bw) => shouldQuizToday(bw));
+      const now = new Date();
+      // 当天小循环（用户 2026-10-14）：该考的 && 当天还没过关的才进队。
+      // 已过关的词当天不再出现，隔夜 quizDayPassed 自动失效（isDayPassedToday 判同日）。
+      const pool = all.filter((bw) => shouldQuizToday(bw) && !isDayPassedToday(bw, now));
       const graduated = all.length - all.filter((bw) => bw.streak < QUIZ_GRADUATE_STREAK).length;
       setRemaining(Math.max(0, all.length - graduated));
       if (pool.length === 0) {
@@ -123,7 +139,8 @@ export default function QuizPage() {
       poolRef.current = poolCands;
       setItems(quizItems);
       setIdx(0);
-      setStats({ skilled: 0, graduated: 0, special: 0, total: quizItems.length });
+      setTodayLeft(quizItems.length);
+      setStats({ skilled: 0, graduated: 0, special: 0, dayPassed: 0, total: quizItems.length });
       setPhase('quiz');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -171,11 +188,17 @@ export default function QuizPage() {
     setPickedKey(key);
     setVerdict(v);
     const bw = current.bookWord;
+    const now = new Date();
+    const nowIso = now.toISOString();
+    // 当天小循环：按设置档位（宽松/适当/严格）累计连续达标，3 次当天过关
+    const firstQuizOfDay = !isSameUtcDay(bw.lastQuizAt, now);
+    const nextDayStreak = quizDayStreakAfter(bw.quizDayStreak ?? 0, v, quizDayThreshold);
+    const nextDayPassed = nextDayStreak >= QUIZ_DAY_PASS_COUNT;
+    // 总计划排次：tier 只在当天第一次判定时更新（不被当天最终熟悉度影响）
+    const nextTier = tierAfterQuiz(bw.tier, v, firstQuizOfDay);
     const nextStreak = streakAfterVerdict(bw.streak, v);
     const nextFail = failStreakAfterVerdict(bw.failStreak, v);
     const nextSpecial = specialTrainingAfter(nextFail, nextStreak, bw.specialTraining);
-    const nextTier = tierAfterVerdict(bw.tier, v);
-    const nowIso = new Date().toISOString();
     const graduated = nextStreak >= QUIZ_GRADUATE_STREAK && !bw.specialTraining;
     try {
       await getRepos().word.updateBookWordQuiz(bw.id, {
@@ -184,14 +207,18 @@ export default function QuizPage() {
         failStreak: nextFail,
         specialTraining: nextSpecial,
         lastQuizAt: nowIso,
+        quizDayStreak: nextDayStreak,
+        quizDayPassed: nextDayPassed,
       });
       setStats((s) => ({
         skilled: s.skilled + (v === 'skilled' ? 1 : 0),
         graduated: s.graduated + (graduated ? 1 : 0),
         special: s.special + (nextSpecial && !bw.specialTraining ? 1 : 0),
+        dayPassed: s.dayPassed + (nextDayPassed && !isDayPassedToday(bw) ? 1 : 0),
         total: s.total,
       }));
       if (graduated) setRemaining((r) => Math.max(0, r - 1));
+      if (nextDayPassed) setTodayLeft((n) => Math.max(0, n - 1));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -287,14 +314,23 @@ export default function QuizPage() {
           />
           <Stack direction="row" spacing={1} alignItems="baseline" justifyContent="center">
             <Typography variant="h4">{current.word.lemma}</Typography>
-            {/* ★ 词性小灰字（用户 2026-10-14）：同一单词不同义项词性可能不同，
-                出题时必须在词旁标注本义项词性，否则多义词无从判断该选哪个意思 */}
+            {/* ★ 音标 + 词性小灰字（用户 2026-10-14 第 1 条：音标放单词旁边）：
+                同一单词不同义项词性/发音可能不同，出题时必须标注本义项 */}
+            {senseOf.ipa && (
+              <Typography variant="body2" color="text.secondary">
+                /{senseOf.ipa}/
+              </Typography>
+            )}
             {multiSense && senseOf.pos && (
               <Typography variant="body2" color="text.secondary">
                 {senseOf.pos}
               </Typography>
             )}
           </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, textAlign: 'center' }}>
+            今天还剩 <strong>{todayLeft}</strong> 个词待过关（连续达标 {QUIZ_DAY_PASS_COUNT} 次）·
+            当前档位「{DAY_THRESHOLD_LABEL[quizDayThreshold]}」· 总计划剩 {remaining} 词未毕业
+          </Typography>
           <Stack spacing={1.5} sx={{ mt: 3 }}>
             {options.map((o) => {
               const isPicked = pickedKey === o.key;
@@ -439,7 +475,8 @@ export default function QuizPage() {
             </Alert>
           )}
           <Typography variant="body2" color="text.secondary">
-            本轮：熟练 {stats.skilled} 次 · 毕业 {stats.graduated} 词 · 新进特种训练 {stats.special} 词
+            本轮：熟练 {stats.skilled} 次 · 毕业 {stats.graduated} 词 · 今天过关 {stats.dayPassed} 词 ·
+            新进特种训练 {stats.special} 词
           </Typography>
           <Stack direction="row" spacing={1} justifyContent="center" sx={{ mt: 2 }}>
             <Button variant="outlined" onClick={() => void start()}>

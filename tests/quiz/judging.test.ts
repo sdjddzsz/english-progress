@@ -131,3 +131,84 @@ describe('shouldQuizToday：频率（越生疏越勤）+ 特种训练必考 + �
     ).toBe(false);
   });
 });
+
+// ===== 当天小循环三档（用户 2026-10-14）=====
+import {
+  QUIZ_DAY_PASS_COUNT,
+  dayVerdictOk,
+  isDayPassedToday,
+  isSameUtcDay,
+  quizDayStreakAfter,
+  tierAfterQuiz,
+} from '../../src/features/quiz/judging';
+
+describe('当天过关三档：连续 3 次达线', () => {
+  it('宽松线 = 至少不熟（unfamiliar 及以上算过）', () => {
+    expect(dayVerdictOk('unfamiliar', 'lenient')).toBe(true);
+    expect(dayVerdictOk('recognized', 'lenient')).toBe(true);
+    expect(dayVerdictOk('skilled', 'lenient')).toBe(true);
+    expect(dayVerdictOk('unknown', 'lenient')).toBe(false);
+  });
+  it('适当线 = 至少认识', () => {
+    expect(dayVerdictOk('recognized', 'standard')).toBe(true);
+    expect(dayVerdictOk('unfamiliar', 'standard')).toBe(false);
+    expect(dayVerdictOk('unknown', 'standard')).toBe(false);
+  });
+  it('严格线 = 至少熟练', () => {
+    expect(dayVerdictOk('skilled', 'strict')).toBe(true);
+    expect(dayVerdictOk('recognized', 'strict')).toBe(false);
+  });
+  it('连续达标累加、一次不达标清零', () => {
+    expect(quizDayStreakAfter(1, 'skilled', 'strict')).toBe(2);
+    expect(quizDayStreakAfter(2, 'skilled', 'strict')).toBe(QUIZ_DAY_PASS_COUNT);
+    expect(quizDayStreakAfter(2, 'recognized', 'strict')).toBe(0);
+    expect(quizDayStreakAfter(2, 'unknown', 'lenient')).toBe(0);
+  });
+  it('宽松档 3 次不熟即可过关', () => {
+    let n = 0;
+    n = quizDayStreakAfter(n, 'unfamiliar', 'lenient');
+    n = quizDayStreakAfter(n, 'unfamiliar', 'lenient');
+    expect(quizDayStreakAfter(n, 'unfamiliar', 'lenient')).toBe(3);
+  });
+});
+
+describe('isDayPassedToday：只对当天有效，隔夜失效', () => {
+  const now = new Date('2026-10-14T20:00:00+08:00');
+  it('当天过关 → true', () => {
+    expect(
+      isDayPassedToday({ quizDayPassed: true, lastQuizAt: now.toISOString() }, now),
+    ).toBe(true);
+  });
+  it('昨天过关 → false（隔夜失效，明天重新按档位过）', () => {
+    expect(
+      isDayPassedToday(
+        { quizDayPassed: true, lastQuizAt: new Date(now.getTime() - 86400000).toISOString() },
+        now,
+      ),
+    ).toBe(false);
+  });
+  it('没过关 → false', () => {
+    expect(isDayPassedToday({ quizDayPassed: false }, now)).toBe(false);
+  });
+});
+
+describe('tierAfterQuiz：总计划排次只看当天第一次判定', () => {
+  it('当天第一次判定：按判定升/降档', () => {
+    expect(tierAfterQuiz(3, 'skilled', true)).toBe(2);
+    expect(tierAfterQuiz(3, 'unknown', true)).toBe(4);
+  });
+  it('当天后续判定：tier 冻结（不被当天最终熟悉度影响）', () => {
+    expect(tierAfterQuiz(3, 'skilled', false)).toBe(3);
+    expect(tierAfterQuiz(4, 'unknown', false)).toBe(4);
+  });
+});
+
+describe('isSameUtcDay', () => {
+  it('同日为 true、跨日为 false、空/脏值为 false', () => {
+    const now = new Date('2026-10-14T12:00:00+08:00');
+    expect(isSameUtcDay(now.toISOString(), now)).toBe(true);
+    expect(isSameUtcDay(new Date(now.getTime() - 86400000).toISOString(), now)).toBe(false);
+    expect(isSameUtcDay(undefined, now)).toBe(false);
+    expect(isSameUtcDay('not-a-date', now)).toBe(false);
+  });
+});

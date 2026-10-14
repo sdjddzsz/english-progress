@@ -120,3 +120,73 @@ export function verdictColor(v: QuizVerdict): 'success' | 'info' | 'warning' | '
       return 'error';
   }
 }
+
+// ===== 当天小循环（用户 2026-10-14：当天计划里不熟的词一直出现，连续熟 N 次才过关）=====
+
+/** 当天过关的宽松档（设置页三选一） */
+export type QuizDayThreshold = 'lenient' | 'standard' | 'strict';
+
+/** 连续达标多少次算当天过关 */
+export const QUIZ_DAY_PASS_COUNT = 3;
+
+/** 判定档位线：unknown=0 < unfamiliar=1 < recognized=2 < skilled=3 */
+const VERDICT_RANK: Record<QuizVerdict, number> = {
+  unknown: 0,
+  unfamiliar: 1,
+  recognized: 2,
+  skilled: 3,
+};
+
+/**
+ * 三档阈值线：
+ *   宽松 = 连续 3 次比「生词」好（至少不熟）→ 当天放行
+ *   适当 = 连续 3 次比「不熟」好（至少认识）→ 当天放行
+ *   严格 = 连续 3 次比「认识」好（至少熟练）→ 当天放行
+ */
+const THRESHOLD_LINE: Record<QuizDayThreshold, number> = {
+  lenient: 1,
+  standard: 2,
+  strict: 3,
+};
+
+/** 本次判定是否达到当前档位线 */
+export function dayVerdictOk(v: QuizVerdict, threshold: QuizDayThreshold): boolean {
+  return VERDICT_RANK[v] >= THRESHOLD_LINE[threshold];
+}
+
+/** 当天连续计数：达标 +1，不达标清零 */
+export function quizDayStreakAfter(
+  dayStreak: number,
+  v: QuizVerdict,
+  threshold: QuizDayThreshold,
+): number {
+  return dayVerdictOk(v, threshold) ? dayStreak + 1 : 0;
+}
+
+/** 自然日同天判断（UTC 日差=0）。lastQuizAt 为 undefined/脏值时视为不同天 */
+export function isSameUtcDay(iso: string | undefined, now: Date): boolean {
+  if (!iso) return false;
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return false;
+  return Math.floor(t.getTime() / 86400000) === Math.floor(now.getTime() / 86400000);
+}
+
+/**
+ * 总计划排次用的「当天首次判定快照」：tier 只在当天第一次判定时更新，
+ * 之后当天内的升/降档不影响明天起的频率安排（用户 2026-10-14）。
+ */
+export function tierAfterQuiz(
+  currentTier: Tier,
+  v: QuizVerdict,
+  firstQuizOfDay: boolean,
+): Tier {
+  return firstQuizOfDay ? tierAfterVerdict(currentTier, v) : currentTier;
+}
+
+/** 该词当天是否已过关（quizDayPassed 只对当天有效，隔夜自动失效） */
+export function isDayPassedToday(
+  word: { quizDayPassed?: boolean; lastQuizAt?: string },
+  now: Date = new Date(),
+): boolean {
+  return Boolean(word.quizDayPassed) && isSameUtcDay(word.lastQuizAt, now);
+}
