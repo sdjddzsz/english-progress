@@ -104,7 +104,7 @@ export default function AiPlanPage() {
           { role: 'system', content: buildSystemPrompt() },
           { role: 'user', content: buildFeedbackReviewRequest(summary) },
         ],
-        { model: aiModel || 'default', channel: aiChannel, ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}) },
+        { model: aiModel || 'step-5-preview', channel: aiChannel, ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}) },
       );
       setAiReply(result.content || '（模型未返回文本内容）');
     } catch (e) {

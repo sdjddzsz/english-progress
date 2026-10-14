@@ -234,7 +234,7 @@ export default function QuizPage() {
           ...aiThread.map((m) => ({ role: m.role, content: m.content })),
           { role: 'user', content: q },
         ],
-        { model: aiModel || 'default', channel: aiChannel, ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}) },
+        { model: aiModel || 'step-5-preview', channel: aiChannel, ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}) },
       );
       setAiThread((t) => [...t, { role: 'assistant', content: result.content || '（模型未返回内容）' }]);
     } catch (e) {
