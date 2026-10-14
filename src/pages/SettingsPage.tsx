@@ -96,7 +96,10 @@ export default function SettingsPage() {
         if (cfg) {
           // 云端是真源：回填 endpoint / voice / model / 密钥持久化开关
           if (cfg.endpoint) setEndpoint(cfg.endpoint);
-          if (cfg.voice && !voice) setVoice(cfg.voice);
+          // ★ 无条件覆盖（原来是 `if (cfg.voice && !voice)`，2026-10-14 修）：
+          // localStorage 里可能躺着历史脏 ttsVoice（实测曾把用户邮箱存进去），
+          // 旧写法在脏值非空时不覆盖 ⇒ 脏值跟着每次保存反复写回云端。
+          if (cfg.voice) setVoice(cfg.voice);
           if (cfg.model) setTtsModel(cfg.model);
           setPersistKey(Boolean(cfg.runtimeApiKey));
         }
@@ -205,7 +208,11 @@ export default function SettingsPage() {
     setTtsErr('');
     // provider 默认值（dashscope 可留空，用 constants 里的通用端点/音色/模型）
     const ep = endpoint.trim() || (isDashscope ? DASHSCOPE_DEFAULT_ENDPOINT : '');
-    const v = voice.trim() || (isDashscope ? DASHSCOPE_DEFAULT_VOICE : '');
+    // ★ 用 effectiveVoice 而不是 voice state（2026-10-14 修复）：
+    // 下拉显示的是 effectiveVoice（已按模型校正/回落），但保存若用 voice state，
+    // 遇到 localStorage 里的历史脏值（实测曾存进用户邮箱）就会"界面正常、存进去是脏值"，
+    // 主轨拿着非法音色名请求 → 400 → 试听失败。
+    const v = effectiveVoice.trim() || (isDashscope ? DASHSCOPE_DEFAULT_VOICE : '');
     const m = ttsModel.trim() || (isDashscope ? DASHSCOPE_DEFAULT_MODEL : '');
     settings.setTTS(provider, v, m);
     setRuntimeTTSApiKey(apiKey);
@@ -293,7 +300,12 @@ export default function SettingsPage() {
       try {
         const updated = await getRepos().config.updateTTSConfig(id, {
           lastTestAt: new Date().toISOString(),
-          status: engine === 'neural_tts' ? 'active' : engine ? 'error' : 'pending_user_setup',
+          // ★ 只在成功时置 active；失败**绝不动 status**（2026-10-14 线上死锁的修复）——
+          // orchestrator 要求 status==='active' 才发主轨请求，所以一旦把 status 置成 'error'，
+          // 主轨就被永久跳过：之后再点试听仍是 espeak、请求根本没发出去，用户再无自愈手段
+          // （现象就是"昨天试听是自然音，今天怎么点都是机械音"）。
+          // 配置真有问题时，红框提示 + 用户重新保存（ready 时重置为 active）就够了。
+          status: engine === 'neural_tts' ? 'active' : ttsConfig?.status ?? 'pending_user_setup',
         });
         if (updated) setTtsConfig(updated);
       } catch {
