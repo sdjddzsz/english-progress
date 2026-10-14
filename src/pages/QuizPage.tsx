@@ -72,7 +72,7 @@ type Phase = 'loading' | 'quiz' | 'between' | 'done';
 
 export default function QuizPage() {
   const navigate = useNavigate();
-  const { activeBookId, userId } = useAppStore();
+  const { activeBookId, userId, todayHits, completeHit } = useAppStore();
   const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold } = useSettingsStore();
   const { speakAuto, speak, loading, phaseLabel } = useTTS();
   const sfx = useSfx();
@@ -222,6 +222,13 @@ export default function QuizPage() {
       }));
       if (graduated) setRemaining((r) => Math.max(0, r - 1));
       if (nextDayPassed) setTodayLeft((n) => Math.max(0, n - 1));
+      // 当天过关 → 同步消掉今日队列里该词的任务（用户 2026-10-14：首页「今日待完成」要跟着真变）。
+      // 之前考查只写词书行、从不标 hit 完成 ⇒ 练了两轮首页数字纹丝不动。
+      // 完成一条 pending 即可（同词在今日队列里可能被排进多个模态，消掉一条就算当天交代过了）。
+      if (nextDayPassed) {
+        const hit = todayHits.find((h) => h.wordId === bw.wordId && h.status === 'pending');
+        if (hit) await completeHit(hit.id);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
