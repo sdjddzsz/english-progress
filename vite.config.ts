@@ -29,6 +29,19 @@ const SPA_ROUTES = [
   'mock',
   'ai-plan',
   'settings',
+  // 四阶段制（2026-10-15）：这三条路由上线时漏补，导致 /quiz、/stage/1 深链 404
+  // （stage-quiz/1 虽重定向 /quiz，但重定向前 HTML 也要能加载，一并补）
+  'quiz',
+  'stage',
+  'stage/1',
+  'stage/2',
+  'stage/3',
+  'stage/4',
+  'stage-quiz',
+  'stage-quiz/1',
+  'stage-quiz/2',
+  'stage-quiz/3',
+  'stage-quiz/4',
 ];
 
 function spaHistoryFallback(): Plugin {
