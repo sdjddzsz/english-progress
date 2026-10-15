@@ -68,5 +68,60 @@ export function senseLabel(sense: WordSense): string {
 
 /** 词卡的完整义项清单（含读音），用于「多读音明确标识」 */
 export function describeSenses(word: Word): { sense: WordSense; label: string }[] {
-  return normalizeSenses(word).map((sense) => ({ sense, label: senseLabel(sense) }));
+  return displaySenses(word).map((sense) => ({ sense, label: senseLabel(sense) }));
+}
+
+// ===== 词性展示兜底（用户 2026-10-15：词性标记始终都有）=====
+
+/**
+ * ECDICT 行首领域括注（[法]/[计]/[医]/[经]…）曾被旧解析误存进 pos，把真词性顶掉了。
+ * 判定特征：行首方括号且**不以「.」结尾**——真词性括注形如 [adj.]，领域标记如 [经]。
+ */
+export function isDomainTag(pos: string): boolean {
+  return /^\[[^\].]+\]$/.test(pos);
+}
+
+/** 旧数据 zh 内嵌词性前缀（"interj. 再会" / "pl. 裤子" / "aux. 将"）——提取进 pos */
+const EMBEDDED_POS_RE = /^(interj|pl|aux)\.\s*/;
+
+/**
+ * 展示用义项列表：
+ *  1. zh 内嵌 "interj./pl./aux." 前缀的提取到 pos（旧数据 31 条）；
+ *  2. 领域标记从 pos 撤下、保留在释义前面；词性向**最近的先行真词性义项**借
+ *     （ECDICT 行序保证领域行紧跟其词性行，实测 3216/3240 可向前借到，其余向后借，
+ *     仅 24 个全词无词性——专名类，保持空）。
+ * 不动判定字段：数组顺序、senseId、arpabet、pronunciationKey 与 normalizeSenses 完全一致，
+ * 所以 QuizPage 按 senseIndex 取义项/拼读音 key 的逻辑不受影响。
+ */
+export function displaySenses(word: Word): WordSense[] {
+  const senses = normalizeSenses(word).map((s) => {
+    if (!s.pos) {
+      const m = EMBEDDED_POS_RE.exec(s.zh);
+      if (m) return { ...s, pos: `${m[1]}.`, zh: s.zh.slice(m[0].length) };
+    }
+    return s;
+  });
+  const isReal = (s: WordSense): boolean => Boolean(s.pos) && !isDomainTag(s.pos);
+  const out = senses.slice();
+  // 第一遍：向前借（覆盖绝大多数）
+  let lastReal = '';
+  for (let i = 0; i < out.length; i++) {
+    const s = out[i];
+    if (isReal(s)) {
+      lastReal = s.pos;
+    } else if (isDomainTag(s.pos) && lastReal) {
+      out[i] = { ...s, pos: lastReal, zh: `${s.pos} ${s.zh}` };
+    }
+  }
+  // 第二遍：向后借（词开头的领域标记，前面没有真词性）
+  let nextReal = '';
+  for (let i = out.length - 1; i >= 0; i--) {
+    const s = out[i];
+    if (isReal(s)) {
+      nextReal = s.pos;
+    } else if (isDomainTag(s.pos) && nextReal) {
+      out[i] = { ...s, pos: nextReal, zh: `${s.pos} ${s.zh}` };
+    }
+  }
+  return out;
 }

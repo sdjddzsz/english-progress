@@ -28,7 +28,7 @@ import { useSettingsStore } from '../store/useSettingsStore';
 import { useTTS } from '../hooks/useTTS';
 import { useSfx } from '../hooks/useSfx';
 import { chatTurn } from '../ai/llmClient';
-import { normalizeSenses } from '../features/senses';
+import { displaySenses, normalizeSenses } from '../features/senses';
 import type { BookWord, Word } from '../types/domain';
 import {
   QUIZ_GRADUATE_STREAK,
@@ -135,7 +135,7 @@ export default function QuizPage() {
       for (const w of words) {
         const bws = all.filter((bw) => bw.wordId === w.id);
         const order = bws[0] ? bws[0].listNo * 1000 + bws[0].orderInList : 0;
-        normalizeSenses(w).forEach((s, i) => {
+        displaySenses(w).forEach((s, i) => {
           poolCands.push({ zh: s.zh, pos: s.pos, order, key: `${w.id}#${i}` });
         });
       }
@@ -161,7 +161,7 @@ export default function QuizPage() {
   /** 出题：构建四选项 + 重置计时 */
   useEffect(() => {
     if (phase !== 'quiz' || !current) return;
-    const sense = normalizeSenses(current.word)[current.senseIndex];
+    const sense = displaySenses(current.word)[current.senseIndex];
     const bw = current.bookWord;
     const correct: DistractorCandidate = {
       zh: sense.zh,
@@ -243,7 +243,7 @@ export default function QuizPage() {
 
   const senseOf = useMemo(() => {
     if (!current) return null;
-    return normalizeSenses(current.word)[current.senseIndex];
+    return displaySenses(current.word)[current.senseIndex];
   }, [current]);
   const multiSense = current ? normalizeSenses(current.word).length > 1 : false;
 
@@ -260,7 +260,7 @@ export default function QuizPage() {
     setAiThread((t) => [...t, { role: 'user', content: q }]);
     setAiBusy(true);
     try {
-      const allSenses = normalizeSenses(current.word)
+      const allSenses = displaySenses(current.word)
         .map((s, i) => `${i + 1}. [${s.pos}] ${s.zh} /${s.ipa ?? ''}/`)
         .join('\n');
       const screen =
