@@ -483,6 +483,25 @@ export default function SettingsPage() {
             </Typography>
           </Box>
 
+          <Box>
+            <Typography variant="body2" gutterBottom>
+              每日考查词量：{settings.quizDailyLimit} 词
+            </Typography>
+            <Slider
+              min={50}
+              max={1000}
+              step={50}
+              value={settings.quizDailyLimit}
+              onChange={(_, v) => settings.setQuizDailyLimit(v as number)}
+              marks
+              valueLabelDisplay="auto"
+            />
+            <Typography variant="caption" color="text.secondary" display="block">
+              每天最多新铺多少词进考查（默认 300）。答错的词当天重排直到答对，不占这个额度；
+              特种训练词每天必考，也不受此限。词量越大铺得越快，单日耗时也越长。
+            </Typography>
+          </Box>
+
           <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Typography variant="body2">见中文联想英文（每日一小段）</Typography>
             <Switch

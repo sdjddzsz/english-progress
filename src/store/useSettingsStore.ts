@@ -7,7 +7,7 @@ import { persist } from 'zustand/middleware';
 import type { QuizDayThreshold } from '../features/quiz/judging';
 import type { Device } from '../types/domain';
 import type { LLMChannel } from '../ai/llmClient';
-import { CN_TO_EN_DAILY_WORDS, DASHSCOPE_DEFAULT_MODEL, DEFAULT_TTS_PROVIDER } from '../config/constants';
+import { CN_TO_EN_DAILY_WORDS, DASHSCOPE_DEFAULT_MODEL, DEFAULT_TTS_PROVIDER, QUIZ_DAILY_LIMIT_DEFAULT, QUIZ_DAILY_LIMIT_MAX, QUIZ_DAILY_LIMIT_MIN } from '../config/constants';
 import type { TTSProviderName } from '../types/domain';
 
 export interface SettingsState {
@@ -38,6 +38,11 @@ export interface SettingsState {
   quizAutoNext: boolean;
   /** 当天过关档位（用户 2026-10-14：宽松/适当/严格） */
   quizDayThreshold: QuizDayThreshold;
+  /**
+   * 每日考查词量上限（用户 2026-10-15 拍板：默认 300，可调 50–1000）。
+   * 只限"当天新铺的词"，答错重排不占额。
+   */
+  quizDailyLimit: number;
 
   setDevice(device: Device): void;
   setCnToEn(enabled: boolean, dailyWords?: number): void;
@@ -48,6 +53,7 @@ export interface SettingsState {
   setSfxEnabled(enabled: boolean): void;
   setQuizAutoNext(enabled: boolean): void;
   setQuizDayThreshold(threshold: QuizDayThreshold): void;
+  setQuizDailyLimit(limit: number): void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -66,6 +72,7 @@ export const useSettingsStore = create<SettingsState>()(
       sfxEnabled: true,
       quizAutoNext: false,
       quizDayThreshold: 'standard',
+      quizDailyLimit: QUIZ_DAILY_LIMIT_DEFAULT,
 
       setDevice: (device) => set({ device }),
       setCnToEn: (cnToEnEnabled, dailyWords) =>
@@ -77,6 +84,13 @@ export const useSettingsStore = create<SettingsState>()(
       setSfxEnabled: (sfxEnabled) => set({ sfxEnabled }),
       setQuizAutoNext: (quizAutoNext) => set({ quizAutoNext }),
       setQuizDayThreshold: (quizDayThreshold) => set({ quizDayThreshold }),
+      setQuizDailyLimit: (quizDailyLimit) =>
+        set({
+          quizDailyLimit: Math.min(
+            QUIZ_DAILY_LIMIT_MAX,
+            Math.max(QUIZ_DAILY_LIMIT_MIN, Math.round(quizDailyLimit)),
+          ),
+        }),
     }),
     { name: 'ep-settings' },
   ),

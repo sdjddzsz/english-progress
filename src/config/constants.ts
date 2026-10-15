@@ -87,6 +87,14 @@ export const MAX_L2_TAGS = 3;
 export const NOTE_MAX_LENGTH = 60;
 /** 听词联想：犹豫超 3 秒自动判"不会" */
 export const AUDIO_RECALL_TIMEOUT_MS = 3000;
+
+/**
+ * 每日考查词量上限（用户 2026-10-15 拍板：默认 300，设置页可调 50–1000）。
+ * 背景：原硬编码 50/天，8296 词铺完一遍要 166 天，距 12-12 考试 58 天根本不够——用户抓出来的。
+ */
+export const QUIZ_DAILY_LIMIT_DEFAULT = 300;
+export const QUIZ_DAILY_LIMIT_MIN = 50;
+export const QUIZ_DAILY_LIMIT_MAX = 1000;
 /** 见中文联想英文：默认每日 15 词，可关 */
 export const CN_TO_EN_DAILY_WORDS = 15;
 

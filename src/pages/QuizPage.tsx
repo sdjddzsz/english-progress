@@ -55,9 +55,6 @@ import { buildQuestion } from '../features/quiz/question';
 import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
 
-/** 单日考查上限（特种训练词不计入此限——必考） */
-const QUIZ_DAILY_LIMIT = 50;
-
 /** 当天过关档位的中文名（展示用） */
 const DAY_THRESHOLD_LABEL: Record<QuizDayThreshold, string> = {
   lenient: '宽松',
@@ -82,7 +79,7 @@ type Phase = 'loading' | 'quiz' | 'between' | 'done';
 export default function QuizPage() {
   const navigate = useNavigate();
   const { activeBookId, userId, todayHits, completeHit } = useAppStore();
-  const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold } = useSettingsStore();
+  const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold, quizDailyLimit } = useSettingsStore();
   const { speakAuto, speak, loading, phaseLabel } = useTTS();
   const sfx = useSfx();
   const [phase, setPhase] = useState<Phase>('loading');
@@ -124,7 +121,7 @@ export default function QuizPage() {
         setPhase('done');
         return;
       }
-      const batch = pool.slice(0, QUIZ_DAILY_LIMIT);
+      const batch = pool.slice(0, quizDailyLimit);
       const words = await repos.word.listWordsByIds(batch.map((bw) => bw.wordId));
       const wordById = new Map(words.map((w) => [w.id, w]));
       const quizItems: QuizItem[] = batch
@@ -161,7 +158,7 @@ export default function QuizPage() {
       setError(e instanceof Error ? e.message : String(e));
       setPhase('done');
     }
-  }, [activeBookId, userId]);
+  }, [activeBookId, userId, quizDailyLimit]);
 
   useEffect(() => {
     void start();
