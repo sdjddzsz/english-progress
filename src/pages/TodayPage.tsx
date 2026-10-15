@@ -1,10 +1,11 @@
 /**
- * TodayPage.tsx —— 今日页（PRD §5.2.1）：
- * 今日队列（真实词表路径，store.refreshToday）/ 计划概览 / 距考试天数。
- * 欠账守卫：UI 提示（ReschedulePanel 弹窗，T05 抽出复用）+ 路由级拦截（OverdueGuardRoute）。
- * 页面不含调度逻辑：队列、校验、欠账预览全部来自 useAppStore。
+ * TodayPage.tsx —— 今日页（用户 2026-10-15 拍板 A：清单彻底改成考查制）：
+ * 「今日待完成」与考查页（QuizPage）共用 selectQuizPool 同一套规则 ——
+ * 该考的词（层间隔 + 特种训练优先）且当天未过关；考查里过关/毕业，回到本页数字立刻真降。
+ * 计划概览卡片与欠账守卫保留（仍是计划制的输入面板）；原计划制 hit 队列不再展示。
+ * 页面不含调度逻辑：词书行来自 repos，规则来自 features/quiz。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -24,7 +25,9 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import EditCalendarIcon from '@mui/icons-material/EditCalendar';
 import { diffDays } from '../scheduler';
 import { EXAM_DATE } from '../config/constants';
-import { useAppStore } from '../store/useAppStore';
+import { getRepos, useAppStore } from '../store/useAppStore';
+import { selectQuizPool } from '../features/quiz/pool';
+import type { BookWord } from '../types/domain';
 import PlanSummaryCard from '../components/plan/PlanSummaryCard';
 import ReschedulePanel from '../components/plan/ReschedulePanel';
 
@@ -36,32 +39,61 @@ export default function TodayPage() {
     loading,
     error,
     cloudReady,
+    userId,
     activePlan,
     planValidation,
     planFinish,
-    todayHits,
-    todayPendingCount,
-    wordMap,
+    activeBookId,
     overdue,
     refreshToday,
     bootstrap,
   } = useAppStore();
 
   const [guardOpen, setGuardOpen] = useState(false);
+  const [pool, setPool] = useState<BookWord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [graduated, setGraduated] = useState(0);
+  const [lemmaMap, setLemmaMap] = useState<Record<string, string>>({});
+  const [poolError, setPoolError] = useState('');
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  // 考查制今日清单：与考查页同一套 selectQuizPool。回到本页（路由重挂载）即重算，
+  // 所以在考查页练完/过关后回来，数字立刻反映最新状态。
+  const loadPool = useCallback(async () => {
+    if (!userId || !activeBookId) return;
+    try {
+      const repos = getRepos();
+      const all = await repos.word.listBookWords(activeBookId);
+      const { pool: p, total: t, graduated: g } = selectQuizPool(all);
+      setPool(p);
+      setTotal(t);
+      setGraduated(g);
+      const words = await repos.word.listWordsByIds([...new Set(p.map((bw) => bw.wordId))]);
+      const m: Record<string, string> = {};
+      for (const w of words) m[w.id] = w.lemma;
+      setLemmaMap(m);
+      setPoolError('');
+    } catch (e) {
+      setPoolError(e instanceof Error ? e.message : String(e));
+    }
+  }, [userId, activeBookId]);
+
+  useEffect(() => {
+    void loadPool();
+  }, [loadPool]);
 
   const today = new Date().toISOString().slice(0, 10);
   const daysToExam = useMemo(() => diffDays(EXAM_DATE, today), [today]);
   const inSprint = activePlan ? today >= activePlan.sprintStartDate : false;
 
   const grouped = useMemo(() => {
-    const g: Record<number, typeof todayHits> = { 1: [], 2: [], 3: [], 4: [] };
-    for (const h of todayHits) g[h.tier].push(h);
+    const g: Record<number, BookWord[]> = { 1: [], 2: [], 3: [], 4: [] };
+    for (const bw of pool) g[bw.tier].push(bw);
     return g;
-  }, [todayHits]);
+  }, [pool]);
 
   // ===== 引导态 =====
   if (!cloudReady && error) {
@@ -119,7 +151,7 @@ export default function TodayPage() {
         </Paper>
       ) : (
         <>
-          {/* 计划概览 */}
+          {/* 计划概览（计划制的输入面板，保留） */}
           <Paper sx={{ mt: 2, p: 2 }}>
             <PlanSummaryCard
               plan={activePlan}
@@ -127,13 +159,14 @@ export default function TodayPage() {
               finishDate={planFinish}
               overdueCount={overdue?.count ?? 0}
             />
-            <Divider sx={{ my: 1.5 }} />
+          </Paper>
+
+          {/* 考查制今日清单（用户 2026-10-15 拍板 A）：与考查页同一套规则 */}
+          <Paper sx={{ mt: 2, p: 2 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
               <Typography variant="body1">
-                今日待完成 <strong>{todayPendingCount}</strong> / {todayHits.length}
+                今日待完成 <strong>{pool.length}</strong> · 共 {total} 词 · 已毕业 {graduated}
               </Typography>
-              {/* 考查即学习（用户 2026-10-14 第 4 条）：原「开始学习」入口删除，
-                  「单词考查」改名「开始学习」并升为主按钮 */}
               <Button
                 variant="contained"
                 startIcon={<PlayArrowIcon />}
@@ -142,7 +175,48 @@ export default function TodayPage() {
                 开始学习
               </Button>
             </Stack>
+            {poolError && (
+              <Alert severity="error" sx={{ mt: 1.5 }}>
+                今日清单加载失败：{poolError}
+              </Alert>
+            )}
+            {!poolError && pool.length === 0 && total > 0 && (
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+                今天该考的都过关了，明天再来。
+              </Typography>
+            )}
           </Paper>
+
+          {/* 该考的词按层分组（T4 最上；特种训练有标记） */}
+          {([4, 3, 2, 1] as const).map((tier) =>
+            grouped[tier].length === 0 ? null : (
+              <Paper key={tier} sx={{ mt: 2, p: 2 }}>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Chip size="small" color={tier === 4 ? 'error' : tier === 3 ? 'warning' : 'default'} label={TIER_LABEL[tier]} />
+                  <Typography variant="body2" color="text.secondary">
+                    {grouped[tier].length} 词该考
+                  </Typography>
+                </Stack>
+                <Stack divider={<Divider flexItem />} sx={{ mt: 1 }}>
+                  {grouped[tier].map((bw) => (
+                    <Stack key={bw.id} direction="row" justifyContent="space-between" alignItems="center" py={0.75}>
+                      <Box>
+                        <Typography variant="body1" component="span">
+                          {lemmaMap[bw.wordId] ?? bw.wordId}
+                        </Typography>
+                        {bw.specialTraining && (
+                          <Chip size="small" color="error" variant="outlined" label="特种训练" sx={{ ml: 1 }} />
+                        )}
+                      </Box>
+                      <Typography variant="caption" color="text.secondary">
+                        {bw.lastQuizAt ? `上次考查 ${bw.lastQuizAt.slice(0, 10)}` : '首次考查'}
+                      </Typography>
+                    </Stack>
+                  ))}
+                </Stack>
+              </Paper>
+            ),
+          )}
 
           {/* 欠账提示（UI 级；mustReschedule 时路由级拦截已兜底，这里提供主动入口） */}
           {overdue && overdue.count > 0 && (
@@ -158,43 +232,6 @@ export default function TodayPage() {
               欠账 {overdue.count} 条（阈值 {overdue.threshold}）
               {overdue.mustReschedule ? '：已超阈值，需要重排后才能继续新任务。' : '：可在队列中顺带补上。'}
             </Alert>
-          )}
-
-          {/* 今日队列（按层分组；展示可解释信息，不含禁用概念） */}
-          {([4, 3, 2, 1] as const).map((tier) =>
-            grouped[tier].length === 0 ? null : (
-              <Paper key={tier} sx={{ mt: 2, p: 2 }}>
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <Chip size="small" color={tier === 4 ? 'error' : tier === 3 ? 'warning' : 'default'} label={TIER_LABEL[tier]} />
-                  <Typography variant="body2" color="text.secondary">
-                    {grouped[tier].filter((h) => h.status === 'pending').length} / {grouped[tier].length} 待完成
-                  </Typography>
-                </Stack>
-                <Stack divider={<Divider flexItem />} sx={{ mt: 1 }}>
-                  {grouped[tier].map((h) => {
-                    const w = wordMap[h.wordId];
-                    return (
-                      <Stack key={h.id} direction="row" justifyContent="space-between" alignItems="center" py={0.75}>
-                        <Box>
-                          <Typography variant="body1" component="span" sx={{ color: h.status === 'pending' ? 'text.primary' : 'text.disabled' }}>
-                            {w?.lemma ?? h.wordId}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                            第 {h.roundNo} 轮 · {h.modality === 'audio' ? '听觉' : '视觉'}
-                            {h.explain.lastSeen ? ` · 上次 ${h.explain.lastSeen.date}` : ' · 首见'}
-                          </Typography>
-                        </Box>
-                        <Chip
-                          size="small"
-                          variant="outlined"
-                          label={h.status === 'pending' ? '待完成' : h.status === 'done' ? '已完成' : h.status === 'deferred' ? '已暂缓' : '欠账'}
-                        />
-                      </Stack>
-                    );
-                  })}
-                </Stack>
-              </Paper>
-            ),
           )}
 
           <Button

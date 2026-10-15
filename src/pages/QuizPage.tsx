@@ -36,7 +36,6 @@ import {
   specialTrainingAfter,
   streakAfterVerdict,
   failStreakAfterVerdict,
-  shouldQuizToday,
   tierAfterQuiz,
   isDayPassedToday,
   isSameUtcDay,
@@ -51,6 +50,7 @@ import {
   buildOptions,
   type DistractorCandidate,
 } from '../features/quiz/distractors';
+import { selectQuizPool } from '../features/quiz/pool';
 
 /** 单日考查上限（特种训练词不计入此限——必考） */
 const QUIZ_DAILY_LIMIT = 50;
@@ -106,21 +106,14 @@ export default function QuizPage() {
       if (!bookId) throw new Error('没有生效词书');
       const all = await repos.word.listBookWords(bookId);
       const now = new Date();
-      // 当天小循环（用户 2026-10-14）：该考的 && 当天还没过关的才进队。
-      // 已过关的词当天不再出现，隔夜 quizDayPassed 自动失效（isDayPassedToday 判同日）。
-      const pool = all.filter((bw) => shouldQuizToday(bw) && !isDayPassedToday(bw, now));
-      const graduated = all.length - all.filter((bw) => bw.streak < QUIZ_GRADUATE_STREAK).length;
-      setRemaining(Math.max(0, all.length - graduated));
+      // 选词池与今日页共用同一套规则（用户 2026-10-15 拍板 A：features/quiz/pool.ts）。
+      const { pool, total, graduated } = selectQuizPool(all, now);
+      setRemaining(Math.max(0, total - graduated));
       if (pool.length === 0) {
         setPhase('done');
         return;
       }
-      const specialFirst = [...pool].sort((a, b) => {
-        if (a.specialTraining !== b.specialTraining) return a.specialTraining ? -1 : 1;
-        if (a.tier !== b.tier) return b.tier - a.tier; // 越生疏越靠前
-        return (a.lastQuizAt ?? '').localeCompare(b.lastQuizAt ?? '');
-      });
-      const batch = specialFirst.slice(0, QUIZ_DAILY_LIMIT);
+      const batch = pool.slice(0, QUIZ_DAILY_LIMIT);
       const words = await repos.word.listWordsByIds(batch.map((bw) => bw.wordId));
       const wordById = new Map(words.map((w) => [w.id, w]));
       const quizItems: QuizItem[] = batch
