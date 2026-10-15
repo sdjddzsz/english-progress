@@ -140,7 +140,15 @@ export default function QuizPage() {
         const bws = all.filter((bw) => bw.wordId === w.id);
         const order = bws[0] ? bws[0].listNo * 1000 + bws[0].orderInList : 0;
         displaySenses(w).forEach((s, i) => {
-          poolCands.push({ zh: s.zh, pos: s.pos, lemma: w.lemma, order, key: `${w.id}#${i}` });
+          poolCands.push({
+            zh: s.zh,
+            pos: s.pos,
+            lemma: w.lemma,
+            ...(s.ipa ? { ipa: s.ipa } : {}),
+            ...(s.arpabet ? { arpabet: s.arpabet } : {}),
+            order,
+            key: `${w.id}#${i}`,
+          });
         });
       }
       poolRef.current = poolCands;
@@ -189,8 +197,19 @@ export default function QuizPage() {
     setPickedKey('');
     setSyncHint('');
     showAtRef.current = askedAt;
-    // 自动发音（用户 2026-10-14，遵循设置页「自动发音」开关）：出题即朗读单词
-    void speakAuto({ text: current.word.lemma, mode: 'word' }, current.bookWord.wordId);
+    // 自动发音（用户 2026-10-14，遵循设置页「自动发音」开关）：出题即朗读。
+    // 用户 2026-10-15：发音必须按义项音标（espeak 按 arpabet 音素合成、主轨按音素注入），
+    // 只传 text 会变成按词形拼读——archives 这类词就读错。
+    const pronounce = displaySenses(current.word)[current.senseIndex];
+    void speakAuto(
+      {
+        text: current.word.lemma,
+        ...(pronounce?.ipa ? { ipa: pronounce.ipa } : {}),
+        ...(pronounce?.arpabet ? { arpabet: pronounce.arpabet } : {}),
+        mode: 'word',
+      },
+      current.bookWord.wordId,
+    );
   }, [phase, current, idx]);
 
   /** 答题 → 判定 → 落库 → 反馈 → 下一题 */
@@ -218,8 +237,27 @@ export default function QuizPage() {
     const nextFail = failStreakAfterVerdict(bw.failStreak, v);
     const nextSpecial = specialTrainingAfter(nextFail, nextStreak, bw.specialTraining);
     const graduated = nextStreak >= QUIZ_GRADUATE_STREAK && !bw.specialTraining;
+    // 本地行状态同步更新（重现题/同词再次作答时用的不再是 start() 时的旧快照，
+    // 否则连续达标计数会算错：错→认识→熟练 应累计 2 次，旧快照会算成 1）
+    const nextBw: BookWord = {
+      ...bw,
+      tier: nextTier,
+      streak: nextStreak,
+      failStreak: nextFail,
+      specialTraining: nextSpecial,
+      lastQuizAt: nowIso,
+      quizDayStreak: nextDayStreak,
+      quizDayPassed: nextDayPassed,
+    };
     // 作答结果先写入本题缓存（「上一题」回顾的原样恢复依赖它）
-    setItems((its) => its.map((it, i) => (i === idx ? { ...it, verdict: v, pickedKey: key } : it)));
+    setItems((its) =>
+      its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, verdict: v, pickedKey: key } : it)),
+    );
+    // 答错的词排到队尾重来，直到答对才放行（用户 2026-10-15 定案）
+    if (v === 'unknown') {
+      const senseIndex = Math.floor(Math.random() * normalizeSenses(current.word).length);
+      setItems((its) => [...its, { bookWord: nextBw, word: current.word, senseIndex }]);
+    }
     const quizPatch = {
       tier: nextTier,
       streak: nextStreak,
@@ -326,7 +364,7 @@ export default function QuizPage() {
       <Typography variant="h5">单词考查</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
         看单词选词义：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。
-        连续熟练 {QUIZ_GRADUATE_STREAK} 次的词本轮不再出现；越生疏的词考得越勤。
+        连续熟练 {QUIZ_GRADUATE_STREAK} 次的词本轮不再出现；答错的词会排到队尾重来，直到答对才放行。
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError('')}>
@@ -362,16 +400,26 @@ export default function QuizPage() {
                   /{senseOf.ipa}/
                 </Typography>
               )}
-              {/* 喇叭（用户 2026-10-14）：出题已自动朗读（遵循 autoSpeak 开关），这里补手动入口 */}
+              {/* 喇叭（用户 2026-10-14）：出题已自动朗读（遵循 autoSpeak 开关），这里补手动入口。
+                  用户 2026-10-15：按义项音标发音，不按词形拼读 */}
               <Tooltip title={loading ? phaseLabel : '发音'}>
                 <span>
                   <IconButton
                     size="small"
                     disabled={loading}
                     aria-label="play quiz word"
-                    onClick={() =>
-                      void speak({ text: current.word.lemma, mode: 'word' }, current.bookWord.wordId)
-                    }
+                    onClick={() => {
+                      const p = displaySenses(current.word)[current.senseIndex];
+                      void speak(
+                        {
+                          text: current.word.lemma,
+                          ...(p?.ipa ? { ipa: p.ipa } : {}),
+                          ...(p?.arpabet ? { arpabet: p.arpabet } : {}),
+                          mode: 'word',
+                        },
+                        current.bookWord.wordId,
+                      );
+                    }}
                   >
                     {loading ? <CircularProgress size={18} /> : <VolumeUpIcon fontSize="small" />}
                   </IconButton>
@@ -391,8 +439,9 @@ export default function QuizPage() {
             </Stack>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, textAlign: 'center' }}>
-            今天还剩 <strong>{todayLeft}</strong> 个词待过关（连续达标 {QUIZ_DAY_PASS_COUNT} 次）·
-            当前档位「{DAY_THRESHOLD_LABEL[quizDayThreshold]}」· 总计划剩 {remaining} 词未毕业
+            今日考查 <strong>{stats.total}</strong> 词（按生疏度从全表挑出，特种训练优先，不是全部词都来）
+            · 答错重排 <strong>{items.length - idx - 1}</strong> 题在后面 ·
+            还剩 {todayLeft} 个待过关（连续达标 {QUIZ_DAY_PASS_COUNT} 次）· 档位「{DAY_THRESHOLD_LABEL[quizDayThreshold]}」
           </Typography>
           <Stack spacing={1.5} sx={{ mt: 3 }}>
             {options.map((o) => {
@@ -415,10 +464,19 @@ export default function QuizPage() {
                 neutral: { bgcolor: '#f5f5f5', color: 'rgba(0,0,0,0.38)' },
               }[state];
               const mark = state === 'correct' ? '✓ ' : state === 'wrong' ? '✗ ' : '';
-              // 判定后点任意选项 = 朗读该选项所属单词（用户 2026-10-15：答完想听哪个就点哪个）
+              // 判定后点任意选项 = 朗读该选项所属单词（用户 2026-10-15：答完想听哪个就点哪个，
+              // 且按该义项的音标发音，不按词形拼读）
               const playOption = (): void => {
                 if (!o.lemma) return;
-                void speak({ text: o.lemma, mode: 'word' }, o.key.split('#')[0]);
+                void speak(
+                  {
+                    text: o.lemma,
+                    ...(o.ipa ? { ipa: o.ipa } : {}),
+                    ...(o.arpabet ? { arpabet: o.arpabet } : {}),
+                    mode: 'word',
+                  },
+                  o.key.split('#')[0],
+                );
               };
               return (
                 <Tooltip

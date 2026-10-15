@@ -35,6 +35,8 @@ export function buildQuestion(item: QuestionInput, pool: DistractorCandidate[]):
     zh: sense.zh,
     pos: sense.pos,
     lemma: item.word.lemma,
+    ipa: sense.ipa,
+    arpabet: sense.arpabet,
     order: item.bookWord.listNo * 1000 + item.bookWord.orderInList,
     key: `${item.bookWord.wordId}#${item.senseIndex}`,
   };

@@ -17,6 +17,10 @@ export interface DistractorCandidate {
   pos: string;
   /** 该释义所属词形（用户 2026-10-15：作答后每个选项都要能看出是哪个词的义项） */
   lemma: string;
+  /** 该义项读音 IPA（用户 2026-10-15：点选项发音按义项音标，不按词形拼读）；未知省略 */
+  ipa?: string;
+  /** 该义项读音 arpabet（espeak 兜底按音素合成）；未知省略 */
+  arpabet?: string;
   /** 词书序（listNo*1000+orderInList 之类的序，用于频带相近判断）；未知传 0 */
   order: number;
   /** 选项下不去重用的标识（senseId 或 wordId#idx） */

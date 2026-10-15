@@ -89,18 +89,33 @@ async function chatWorkBuddy(messages: ChatMessage[], opts: LLMOptions): Promise
   const create = cloud.llm.chat.completions.create.bind(cloud.llm.chat.completions) as unknown as (
     input: Record<string, unknown>,
   ) => AsyncIterable<StreamChunk>;
-  const acc = { content: '', toolCalls: new Map<number, ToolCall>() };
-  let finish: string | null = null;
-  for await (const chunk of create({
-    model: opts.model,
-    messages,
-    stream: true,
-    temperature: opts.temperature,
-    signal: opts.signal,
-  })) {
-    finish = accumulate(chunk, acc) ?? finish;
+  // 2026-10-15 修「问答失败：流式响应中断」：SDK 在流正常结束但未收到 [DONE] 帧时抛错
+  // （网关掐流/服务端不发 DONE）。处置：已收到部分内容 → 直接采用；空内容 → 自动重试一次。
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const acc = { content: '', toolCalls: new Map<number, ToolCall>() };
+    let finish: string | null = null;
+    try {
+      for await (const chunk of create({
+        model: opts.model,
+        messages,
+        stream: true,
+        temperature: opts.temperature,
+        signal: opts.signal,
+      })) {
+        finish = accumulate(chunk, acc) ?? finish;
+      }
+      return finalize(acc, finish);
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      const interrupted = msg.includes('流式响应中断') || /stream.*(interrupt|abort)|interrupt.*stream/i.test(msg);
+      if (!interrupted) throw err;
+      if (acc.content.trim()) return finalize(acc, finish ?? 'interrupted');
+      // 空内容且已重试过 → 抛出（调用方有中文兜底文案）
+    }
   }
-  return finalize(acc, finish);
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 async function chatOpenAICompatible(messages: ChatMessage[], opts: LLMOptions): Promise<LLMTurnResult> {
