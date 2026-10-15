@@ -297,7 +297,7 @@ export default function QuizPage() {
     <Box p={2} pb={4} maxWidth={720} mx="auto">
       <Typography variant="h5">单词考查</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-        看单词选词义：1 秒内选对=熟练，1-3 秒=认识，3-5 秒=不熟，超时或选错=生词。
+        看单词选词义：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。
         连续熟练 {QUIZ_GRADUATE_STREAK} 次的词本轮不再出现；越生疏的词考得越勤。
       </Typography>
       {error && (
@@ -347,6 +347,12 @@ export default function QuizPage() {
                 </IconButton>
               </span>
             </Tooltip>
+            {/* 读取中/合成中只放 Tooltip 等于看不见（自动朗读时无人悬停），明面显示 */}
+            {loading && (
+              <Typography variant="caption" color="text.secondary">
+                {phaseLabel}
+              </Typography>
+            )}
             {multiSense && senseOf.pos && (
               <Typography variant="body2" color="text.secondary">
                 {senseOf.pos}

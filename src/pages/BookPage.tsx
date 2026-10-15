@@ -33,6 +33,9 @@ import {
 
 const TIER_LABEL: Record<Tier, string> = { 1: 'T1 已掌握', 2: 'T2 熟词', 3: 'T3 半熟', 4: 'T4 生词' };
 
+/** 词表浏览分页大小：词条释义按页拉取，避免一次拉全书 8296 条 */
+const PAGE_SIZE = 50;
+
 const STEP_LABEL: Record<SeedProgress['step'], string> = {
   fetching: '下载词库数据…',
   words: '导入词条',
@@ -48,6 +51,7 @@ export default function BookPage() {
 
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
   const [tier, setTier] = useState<Tier>(3);
+  const [page, setPage] = useState(1);
   const [bookWords, setBookWords] = useState<BookWord[]>([]);
   const [wordMap, setWordMap] = useState<Record<string, Word>>({});
   const [loadingWords, setLoadingWords] = useState(false);
@@ -105,13 +109,16 @@ export default function BookPage() {
     if (!selectedBookId && books.length > 0) setSelectedBookId(activeBookId ?? books[0].id);
   }, [books, activeBookId, selectedBookId]);
 
-  const loadTier = useCallback(async (bookId: string, t: Tier) => {
+  const loadTier = useCallback(async (bookId: string, t: Tier, p: number) => {
     setLoadingWords(true);
     setError('');
     try {
       const repos = getRepos();
       const bws = await repos.word.listBookWords(bookId, { tier: t });
-      const words = await repos.word.listWordsByIds(bws.slice(0, 50).map((b) => b.wordId));
+      // 词条按当前页拉取（用户 2026-10-15：要能翻页浏览全部单词，不再截断在前 50）
+      const start = (p - 1) * PAGE_SIZE;
+      const pageBws = bws.slice(start, start + PAGE_SIZE);
+      const words = await repos.word.listWordsByIds(pageBws.map((b) => b.wordId));
       const map: Record<string, Word> = {};
       for (const w of words) map[w.id] = w;
       setBookWords(bws);
@@ -124,8 +131,8 @@ export default function BookPage() {
   }, []);
 
   useEffect(() => {
-    if (selectedBookId) void loadTier(selectedBookId, tier);
-  }, [selectedBookId, tier, loadTier]);
+    if (selectedBookId) void loadTier(selectedBookId, tier, page);
+  }, [selectedBookId, tier, page, loadTier]);
 
   // 各层词量：全书只读一次（listBookWords 无 tier 过滤），切 Tab 不重复拉
   useEffect(() => {
@@ -252,7 +259,10 @@ export default function BookPage() {
                 key={b.id}
                 variant="outlined"
                 sx={{ p: 1.5, borderColor: b.id === selectedBookId ? 'primary.main' : 'divider' }}
-                onClick={() => setSelectedBookId(b.id)}
+                onClick={() => {
+                  setSelectedBookId(b.id);
+                  setPage(1); // 换书回到第一页，避免页码越界
+                }}
               >
                 <Stack direction="row" justifyContent="space-between" alignItems="center">
                   <Box>
@@ -307,7 +317,14 @@ export default function BookPage() {
               <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
                 新导入的词一律记为 T4 生词；层只按你的练习成绩升降（连续秒认升层、答错降层），不按词频猜。
               </Typography>
-              <Tabs value={tier} onChange={(_, v: Tier) => setTier(v)} sx={{ mt: 1 }}>
+              <Tabs
+                value={tier}
+                onChange={(_, v: Tier) => {
+                  setTier(v);
+                  setPage(1); // 换层回到第一页
+                }}
+                sx={{ mt: 1 }}
+              >
                 {TIERS.map((t) => (
                   <Tab
                     key={t}
@@ -327,7 +344,7 @@ export default function BookPage() {
                 </Box>
               ) : (
                 <Stack divider={<Divider flexItem />}>
-                  {bookWords.slice(0, 50).map((bw) => (
+                  {bookWords.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((bw) => (
                     <Stack key={bw.id} direction="row" justifyContent="space-between" py={0.75}>
                       <Box>
                         <Typography variant="body1" component="span">
@@ -349,10 +366,28 @@ export default function BookPage() {
                       该层暂无词。
                     </Typography>
                   )}
-                  {bookWords.length > 50 && (
-                    <Typography variant="caption" color="text.secondary" py={1}>
-                      仅显示前 50 词（共 {bookWords.length}）。
-                    </Typography>
+                  {bookWords.length > PAGE_SIZE && (
+                    <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" py={1}>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        disabled={page <= 1 || loadingWords}
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      >
+                        上一页
+                      </Button>
+                      <Typography variant="caption" color="text.secondary">
+                        第 {page} / {Math.ceil(bookWords.length / PAGE_SIZE)} 页 · 共 {bookWords.length} 词
+                      </Typography>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        disabled={page >= Math.ceil(bookWords.length / PAGE_SIZE) || loadingWords}
+                        onClick={() => setPage((p) => Math.min(Math.ceil(bookWords.length / PAGE_SIZE), p + 1))}
+                      >
+                        下一页
+                      </Button>
+                    </Stack>
                   )}
                 </Stack>
               )}

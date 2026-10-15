@@ -1,11 +1,12 @@
 /**
  * judging.ts —— 考查制判定核心（用户 2026-10-14 定案，摸底已砍）。
  *
- * 判定规则（按答题用时 + 对错，**客观可判**，取代原自评摸底）：
- *   ≤1s  且选对 → 熟练：streak+1；连续熟练 ≥5 次本轮出池（不再出现）
- *   1-3s 且选对 → 认识：连续性中断，streak 清零
- *   3-5s 且选对 → 不熟：streak 清零、failStreak+1
- *   >5s 或选错  → 生词：streak 清零、failStreak+1、层降
+ * 判定规则（按答题用时 + 对错，**客观可判**，取代原自评摸底；
+ * 用户 2026-10-15 放宽：熟练 ≤3s，其余各档 +2s）：
+ *   ≤3s  且选对 → 熟练：streak+1；连续熟练 ≥5 次本轮出池（不再出现）
+ *   3-5s 且选对 → 认识：连续性中断，streak 清零
+ *   5-7s 且选对 → 不熟：streak 清零、failStreak+1
+ *   >7s 或选错  → 生词：streak 清零、failStreak+1、层降
  *   连续不熟/生词 ≥3 次 → 特种训练（无视间隔每天必考，直到毕业）
  *
  * 考查频率（越生疏越频繁）：按层给出应考间隔天数
@@ -21,10 +22,10 @@ import type { Tier } from '../../types/domain';
 export const QUIZ_GRADUATE_STREAK = 5;
 /** 连续多少次不熟/生词进入特种训练 */
 export const QUIZ_SPECIAL_TRAINING_FAILS = 3;
-/** 各用时档位（毫秒） */
-export const QUIZ_MS_INSTANT = 1000;
-export const QUIZ_MS_RECOGNIZED = 3000;
-export const QUIZ_MS_UNFAMILIAR = 5000;
+/** 各用时档位（毫秒；用户 2026-10-15 放宽：熟练 ≤3s，认识 ≤5s，不熟 ≤7s） */
+export const QUIZ_MS_INSTANT = 3000;
+export const QUIZ_MS_RECOGNIZED = 5000;
+export const QUIZ_MS_UNFAMILIAR = 7000;
 
 export type QuizVerdict = 'skilled' | 'recognized' | 'unfamiliar' | 'unknown';
 

@@ -110,6 +110,13 @@ export default function WordCard({
             </IconButton>
           </span>
         </Tooltip>
+        {/* 读取中/合成中必须在明面上可见（用户 2026-10-15：只放 Tooltip 里等于看不见——
+            自动朗读时没人会悬停在喇叭上）。加载中在喇叭旁直接显示阶段文字。 */}
+        {loading && (
+          <Typography variant="caption" color="text.secondary">
+            {phaseLabel}
+          </Typography>
+        )}
         {firstExample && !hideText && (
           <Tooltip title="读例句">
             <span>

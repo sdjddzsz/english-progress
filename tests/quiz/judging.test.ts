@@ -13,22 +13,22 @@ import {
   tierAfterVerdict,
 } from '../../src/features/quiz/judging';
 
-describe('judgeAnswer：用时 + 对错 → 四档', () => {
-  it('1 秒内选对 = 熟练', () => {
+describe('judgeAnswer：用时 + 对错 → 四档（用户 2026-10-15 放宽：熟练 ≤3s，各档 +2s）', () => {
+  it('3 秒内选对 = 熟练', () => {
     expect(judgeAnswer(0, true)).toBe('skilled');
-    expect(judgeAnswer(999, true)).toBe('skilled');
-    expect(judgeAnswer(1000, true)).toBe('skilled');
+    expect(judgeAnswer(2999, true)).toBe('skilled');
+    expect(judgeAnswer(3000, true)).toBe('skilled');
   });
-  it('1-3 秒选对 = 认识', () => {
-    expect(judgeAnswer(1001, true)).toBe('recognized');
-    expect(judgeAnswer(3000, true)).toBe('recognized');
+  it('3-5 秒选对 = 认识', () => {
+    expect(judgeAnswer(3001, true)).toBe('recognized');
+    expect(judgeAnswer(5000, true)).toBe('recognized');
   });
-  it('3-5 秒选对 = 不熟', () => {
-    expect(judgeAnswer(3001, true)).toBe('unfamiliar');
-    expect(judgeAnswer(5000, true)).toBe('unfamiliar');
+  it('5-7 秒选对 = 不熟', () => {
+    expect(judgeAnswer(5001, true)).toBe('unfamiliar');
+    expect(judgeAnswer(7000, true)).toBe('unfamiliar');
   });
-  it('超过 5 秒 = 生词（哪怕选对）', () => {
-    expect(judgeAnswer(5001, true)).toBe('unknown');
+  it('超过 7 秒 = 生词（哪怕选对）', () => {
+    expect(judgeAnswer(7001, true)).toBe('unknown');
   });
   it('选错永远是生词（哪怕 0.1 秒就点）', () => {
     expect(judgeAnswer(100, false)).toBe('unknown');

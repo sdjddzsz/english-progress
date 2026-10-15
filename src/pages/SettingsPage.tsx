@@ -555,6 +555,9 @@ export default function SettingsPage() {
               }}
               size="small"
               sx={{ flex: 1, minWidth: 260 }}
+              // 未选值时 label「模型」与 displayEmpty 的占位「选择模型」会同位重叠（用户 2026-10-15 截图），
+              // 让 label 恒浮到边框线上即可分开。
+              InputLabelProps={{ shrink: true }}
               disabled={modelsLoading && modelOptions.length === 0}
               helperText={
                 modelsErr
