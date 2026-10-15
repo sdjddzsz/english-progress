@@ -32,6 +32,7 @@ import { useAppStore } from '../store/useAppStore';
 import { useFeedback } from '../hooks/useFeedback';
 import { useTTS } from '../hooks/useTTS';
 import { useSfx } from '../hooks/useSfx';
+import { displaySenses } from '../features/senses';
 
 type Mode = 'spell' | 'dictation';
 
@@ -285,6 +286,21 @@ export default function SpellingPage() {
                 {current.ipa ? ` /${current.ipa.replace(/^\/|\/$/g, '')}/` : ''}。
               </Alert>
             )}
+            {/* 该词全部释义（用户 2026-10-15：多义词只显示 senses[0] 会漏义项，
+                出答案时完整亮出，答对答错都一样） */}
+            <Box sx={{ mt: 1.5 }}>
+              <Typography variant="caption" color="text.secondary">
+                {current.lemma} 的全部释义：
+              </Typography>
+              <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                {displaySenses(current).map((sd, i) => (
+                  <Typography key={sd.senseId} variant="body2" color="text.secondary">
+                    {i + 1}. {sd.pos ? `[${sd.pos}] ` : ''}
+                    {sd.zh}
+                  </Typography>
+                ))}
+              </Stack>
+            </Box>
             <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ mt: 1.5 }}>
               {/* 上一词：点错了「下一个」能退回去，不用认栽 */}
               {idx > 0 && (

@@ -37,7 +37,8 @@ export interface SettingsState {
   sfxEnabled: boolean;
   /** 考查答完是否自动进入下一题（用户 2026-10-14：默认关=手动点下一题） */
   quizAutoNext: boolean;
-  /** 当天过关档位（用户 2026-10-14：宽松/适当/严格） */
+  /** 每轮过关挡位（用户 2026-10-14 建制时叫「当天过关档位」，2026-10-15 改名：
+   *  放行机制按轮计算——连续达标 N 次才放行，字段名 quizDayThreshold 保持不变） */
   quizDayThreshold: QuizDayThreshold;
   /**
    * 每轮考查词量上限（用户 2026-10-15 拍板：默认 300，可调 50–1000）。

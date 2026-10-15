@@ -463,7 +463,7 @@ export default function SettingsPage() {
           </Stack>
 
           <Box>
-            <Typography variant="body2" gutterBottom>当天过关档位（考查）</Typography>
+            <Typography variant="body2" gutterBottom>每轮过关挡位（考查）</Typography>
             <ToggleButtonGroup
               size="small"
               exclusive
@@ -477,9 +477,11 @@ export default function SettingsPage() {
               <ToggleButton value="strict">严格</ToggleButton>
             </ToggleButtonGroup>
             <Typography variant="caption" color="text.secondary" display="block">
-              当天计划里，同一个词连续 3 次达到档位线才过关、当天不再出现：
+              同一轮考查里，同一个词连续 3 次达到挡位线才放行、本轮不再出现：
               宽松=至少「不熟」、适当=至少「认识」、严格=至少「熟练」。
-              一次没到线计数清零。总计划（明天起的考查频率）只看当天第一次判定的熟悉度。
+              一次没到线计数清零；跨天重新起算。已晋级/毕业的词立即放行。
+              总计划（明天起的考查频率）只看当天第一次判定的熟悉度。
+              （原名「当天过关挡位」，2026-10-15 随放行机制改为按轮计算一并改名。）
             </Typography>
           </Box>
 

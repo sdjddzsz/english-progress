@@ -5,7 +5,10 @@
  * 判定：按用时+对错四档（features/quiz/judging.ts）
  * 晋级：连续熟练 ≥ 阶段一阈值（默认 3，设置页可改）→ 进入阶段二（features/quiz/stages.ts）
  * 阶段池：该阶段全部词，同日已答不再出现（selectStagePool）；
- *   特种训练优先（连续不熟/生词 ≥3），答错的词排到队尾重来直到答对。
+ *   特种训练优先（连续不熟/生词 ≥3）。
+ * 放行（用户 2026-10-15 改）：未达到「每轮过关挡位」的词排到队尾重来——
+ *   连续达标 QUIZ_DAY_PASS_COUNT 次才放行；晋级/毕业（离开本阶段）立即放行。
+ *   旧规则「答对一次就放行」与设置页挡位不匹配，已废弃。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -32,7 +35,8 @@ import type { BookWord, Word } from '../types/domain';
 import {
   judgeAnswer,
   isSameUtcDay,
-  quizDayStreakAfter,
+  QUIZ_DAY_PASS_COUNT,
+  roundRelease,
   verdictChipSx,
   verdictLabel,
   type QuizVerdict,
@@ -281,9 +285,17 @@ export default function QuizPage() {
     // ★ 四阶段制（用户 2026-10-15）：阶段走向是唯一权威（晋级/特训/层升降都在 stages.ts 引擎里）
     const sp = applyStageChoiceResult(bw, v, graduateStreak, now);
     const graduated = sp.stage !== bw.stage; // 阶段一毕业 → 晋级阶段二
-    // 当天小循环计数保留（词书页「今日已过关」展示用），但不再是出池条件——
-    // 阶段制的出池条件是「今天答过」（lastQuizAt 同日不重复）
-    const nextDayStreak = quizDayStreakAfter(bw.quizDayStreak ?? 0, v, quizDayThreshold);
+    // 每轮过关计数（用户 2026-10-15）：连续达标才放行；跨天重新起算；
+    // 晋级/毕业立即放行。quizDayPassed 只在真正达到过关线时才写 true
+    // （旧实现答过就写 true，「今日已过关」展示名不副实）
+    const { dayStreak: nextDayStreak, release } = roundRelease({
+      verdict: v,
+      prevStreak: bw.quizDayStreak ?? 0,
+      threshold: quizDayThreshold,
+      lastQuizAt: bw.lastQuizAt,
+      leftStage: graduated,
+      now,
+    });
     // 本地行状态同步更新（重现题/同词再次作答时用的不再是 start() 时的旧快照，
     // 否则连续达标计数会算错：错→认识→熟练 应累计 2 次，旧快照会算成 1）
     const nextBw: BookWord = {
@@ -294,7 +306,7 @@ export default function QuizPage() {
       specialTraining: sp.specialTraining,
       lastQuizAt: sp.lastQuizAt,
       quizDayStreak: nextDayStreak,
-      quizDayPassed: true,
+      quizDayPassed: nextDayStreak >= QUIZ_DAY_PASS_COUNT,
       stage: sp.stage,
       stageStreak: sp.stageStreak,
     };
@@ -302,8 +314,9 @@ export default function QuizPage() {
     setItems((its) =>
       its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, verdict: v, pickedKey: key } : it)),
     );
-    // 答错的词排到队尾重来，直到答对才放行（用户 2026-10-15 定案）
-    if (v === 'unknown') {
+    // 未达过关线的词排到队尾重来，直到达到「每轮过关挡位」才放行；
+    // 晋级/毕业的词已离开本阶段池，立即放行不再排回
+    if (!release) {
       const senseIndex = Math.floor(Math.random() * normalizeSenses(current.word).length);
       setItems((its) => [...its, { bookWord: nextBw, word: current.word, senseIndex }]);
     }
@@ -314,7 +327,7 @@ export default function QuizPage() {
       specialTraining: sp.specialTraining,
       lastQuizAt: sp.lastQuizAt,
       quizDayStreak: nextDayStreak,
-      quizDayPassed: true,
+      quizDayPassed: nextDayStreak >= QUIZ_DAY_PASS_COUNT,
       stage: sp.stage,
       stageStreak: sp.stageStreak,
     };
@@ -414,7 +427,8 @@ export default function QuizPage() {
       <Typography variant="h5">{STAGE_META[1].name}</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
         看单词选词义：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。
-        连续熟练 {graduateStreak} 次晋级阶段二；不限每天一轮，完成一轮可立即再来一轮；答错的词会排到队尾重来，直到答对才放行。
+        连续熟练 {graduateStreak} 次晋级阶段二；不限每天一轮，完成一轮可立即再来一轮；
+        没达到「每轮过关挡位」的词会排到队尾重来，连续达标 {QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError('')}>
@@ -577,6 +591,29 @@ export default function QuizPage() {
                     : '这个词标记后会更频繁出现'}
                 </Typography>
               </Stack>
+              {/* 该词全部释义（用户 2026-10-15：多义词每次只抽一个义项考，
+                  出答案时必须完整显示——答对答错都一样，不然永远只看到被考的那个意思） */}
+              <Box sx={{ width: '100%', textAlign: 'left' }}>
+                <Typography variant="caption" color="text.secondary">
+                  {current.word.lemma} 的全部释义（本题考的是第 {current.senseIndex + 1} 个）：
+                </Typography>
+                <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                  {displaySenses(current.word).map((sd, i) => (
+                    <Typography
+                      key={sd.senseId}
+                      variant="body2"
+                      sx={{
+                        color: i === current.senseIndex ? 'text.primary' : 'text.secondary',
+                        fontWeight: i === current.senseIndex ? 600 : 400,
+                      }}
+                    >
+                      {i + 1}. {sd.pos ? `[${sd.pos}] ` : ''}
+                      {sd.zh}
+                      {i === current.senseIndex ? ' ← 本题' : ''}
+                    </Typography>
+                  ))}
+                </Stack>
+              </Box>
               {syncHint && (
                 <Typography variant="caption" color="text.secondary">
                   {syncHint}

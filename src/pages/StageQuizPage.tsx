@@ -27,7 +27,14 @@ import { useSettingsStore } from '../store/useSettingsStore';
 import { useTTS } from '../hooks/useTTS';
 import { useSfx } from '../hooks/useSfx';
 import { displaySenses, normalizeSenses } from '../features/senses';
-import { judgeAnswer, verdictChipSx, verdictLabel, type QuizVerdict } from '../features/quiz/judging';
+import {
+  judgeAnswer,
+  QUIZ_DAY_PASS_COUNT,
+  roundRelease,
+  verdictChipSx,
+  verdictLabel,
+  type QuizVerdict,
+} from '../features/quiz/judging';
 import { applyStageChoiceResult, applyStageSpellingResult, STAGE_META } from '../features/quiz/stages';
 import { checkSpelling, type SpellVerdict } from './SpellingPage';import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
@@ -70,7 +77,7 @@ export default function StageQuizPage() {
     if (stageParam === 1) navigate('/quiz', { replace: true });
   }, [stageParam, navigate]);
   const { activeBookId, userId } = useAppStore();
-  const { autoSpeak, quizDailyLimit, stageGraduate } = useSettingsStore();
+  const { autoSpeak, quizDailyLimit, stageGraduate, quizDayThreshold } = useSettingsStore();
   const { speak, speakAuto } = useTTS();
   const sfx = useSfx();
 
@@ -178,10 +185,24 @@ export default function StageQuizPage() {
     const bw = current.bookWord;
     const sp = applyStageChoiceResult(bw, v, stageGraduate[stageNo === 4 ? 3 : stageNo], new Date());
     const advanced = sp.stage !== bw.stage && sp.stage > (bw.stage as number);
-    const nextBw: BookWord = { ...bw, ...sp };
+    // 每轮过关挡位（用户 2026-10-15）：连续达标才放行；晋级立即放行。
+    // 与阶段一（QuizPage）同一套 roundRelease 规则，挡位不匹配的问题同源修复
+    const { dayStreak, release } = roundRelease({
+      verdict: v,
+      prevStreak: bw.quizDayStreak ?? 0,
+      threshold: quizDayThreshold,
+      lastQuizAt: bw.lastQuizAt,
+      leftStage: advanced,
+    });
+    const nextBw: BookWord = {
+      ...bw,
+      ...sp,
+      quizDayStreak: dayStreak,
+      quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT,
+    };
     setItems((its) => its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, verdict: v, picked: opt } : it)));
-    // 答错/不会 → 排到队尾重来（不会/想不起按钮即判生词）
-    if (v === 'unknown') {
+    // 未达过关线/不会 → 排到队尾重来（不会按钮即判生词）
+    if (!release) {
       setItems((its) => [...its, { ...current, bookWord: nextBw, senseIndex: current.senseIndex }]);
     }
     setStats((s) => ({
@@ -189,7 +210,7 @@ export default function StageQuizPage() {
       advanced: s.advanced + (advanced ? 1 : 0),
       total: s.total,
     }));
-    await persist(bw, { ...sp });
+    await persist(bw, { ...sp, quizDayStreak: dayStreak, quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT });
     if (autoSpeak && correct) {
       speak({ text: current.word.lemma, ipa: current.word.ipa, arpabet: current.word.arpabet, mode: 'word' }, current.word.id);
     }
@@ -205,17 +226,32 @@ export default function StageQuizPage() {
     setSpellVerdict(sv);
     const bw = current.bookWord;
     const sp = applyStageSpellingResult(bw, correct, new Date());
-    const nextBw: BookWord = { ...bw, ...sp };
+    const graduated = sp.stage === 0;
+    // 写对=彻底毕业（离开本阶段）→ 立即放行；写错 → 排到队尾重来。
+    // 过关计数与阶段二/三同口径（写对按「熟练」计，写错按「生词」清零）
+    const { dayStreak, release } = roundRelease({
+      verdict: correct ? 'skilled' : 'unknown',
+      prevStreak: bw.quizDayStreak ?? 0,
+      threshold: quizDayThreshold,
+      lastQuizAt: bw.lastQuizAt,
+      leftStage: graduated,
+    });
+    const nextBw: BookWord = {
+      ...bw,
+      ...sp,
+      quizDayStreak: dayStreak,
+      quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT,
+    };
     setItems((its) => its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, spellVerdict: sv } : it)));
-    if (!correct) {
+    if (!release) {
       setItems((its) => [...its, { ...current, bookWord: nextBw, senseIndex: current.senseIndex }]);
     }
     setStats((s) => ({
       skilled: s.skilled + (correct ? 1 : 0),
-      advanced: s.advanced + (sp.stage === 0 ? 1 : 0),
+      advanced: s.advanced + (graduated ? 1 : 0),
       total: s.total,
     }));
-    await persist(bw, { ...sp });
+    await persist(bw, { ...sp, quizDayStreak: dayStreak, quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT });
   };
 
   const next = (): void => {
@@ -241,6 +277,8 @@ export default function StageQuizPage() {
         {stageNo === 2 && '看词义选单词：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。'}
         {stageNo === 3 && '听发音选单词（可点喇叭重听）：判定同用时四档。'}
         {stageNo === 4 && '听发音拼写单词：写对一次即彻底毕业；写错会排到队尾重来。'}
+        {(stageNo === 2 || stageNo === 3) &&
+          `没达到「每轮过关挡位」的词会排到队尾重来，连续达标 ${QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。`}
         连续熟练 {stageGraduate[stageNo === 4 ? 3 : stageNo]} 次晋级下一阶段
         {stageNo === 4 ? '（本阶段写对一次即毕业）' : ''}；不限每天一轮，完成一轮可立即再来一轮。
       </Typography>
@@ -357,6 +395,20 @@ export default function StageQuizPage() {
                         : '先听发音再拼写'}
                     </Typography>
                   )}
+                  {/* 该词全部释义（用户 2026-10-15：拼写完也要看到完整释义） */}
+                  <Box sx={{ width: '100%', textAlign: 'left' }}>
+                    <Typography variant="caption" color="text.secondary">
+                      {current.word.lemma} 的全部释义：
+                    </Typography>
+                    <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                      {displaySenses(current.word).map((sd, i) => (
+                        <Typography key={sd.senseId} variant="body2" color="text.secondary">
+                          {i + 1}. {sd.pos ? `[${sd.pos}] ` : ''}
+                          {sd.zh}
+                        </Typography>
+                      ))}
+                    </Stack>
+                  </Box>
                   <Button variant="contained" onClick={next}>
                     {idx + 1 >= items.length ? '看总结' : '下一题'}
                   </Button>
@@ -403,6 +455,28 @@ export default function StageQuizPage() {
                       {verdict === 'skilled' ? '继续，连对就晋级' : '这个词标记后会更频繁出现'}
                     </Typography>
                   </Stack>
+                  {/* 该词全部释义（用户 2026-10-15：多义词只考一个义项，出答案必须完整显示） */}
+                  <Box sx={{ width: '100%', textAlign: 'left' }}>
+                    <Typography variant="caption" color="text.secondary">
+                      {current.word.lemma} 的全部释义（本题考的是第 {current.senseIndex + 1} 个）：
+                    </Typography>
+                    <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                      {displaySenses(current.word).map((sd, i) => (
+                        <Typography
+                          key={sd.senseId}
+                          variant="body2"
+                          sx={{
+                            color: i === current.senseIndex ? 'text.primary' : 'text.secondary',
+                            fontWeight: i === current.senseIndex ? 600 : 400,
+                          }}
+                        >
+                          {i + 1}. {sd.pos ? `[${sd.pos}] ` : ''}
+                          {sd.zh}
+                          {i === current.senseIndex ? ' ← 本题' : ''}
+                        </Typography>
+                      ))}
+                    </Stack>
+                  </Box>
                   <Button variant="contained" onClick={next}>
                     {idx + 1 >= items.length ? '看总结' : '下一题'}
                   </Button>
@@ -416,7 +490,7 @@ export default function StageQuizPage() {
             </Stack>
           )}
           <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block', textAlign: 'center' }}>
-            第 {idx + 1} / {items.length} 题 · 答错/不会的词会排到队尾重来
+            第 {idx + 1} / {items.length} 题 · 没到过关线的词会排到队尾重来
           </Typography>
         </Paper>
       )}

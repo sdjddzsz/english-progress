@@ -139,6 +139,7 @@ import {
   isDayPassedToday,
   isSameUtcDay,
   quizDayStreakAfter,
+  roundRelease,
   tierAfterQuiz,
 } from '../../src/features/quiz/judging';
 
@@ -169,6 +170,103 @@ describe('当天过关三档：连续 3 次达线', () => {
     n = quizDayStreakAfter(n, 'unfamiliar', 'lenient');
     n = quizDayStreakAfter(n, 'unfamiliar', 'lenient');
     expect(quizDayStreakAfter(n, 'unfamiliar', 'lenient')).toBe(3);
+  });
+});
+
+// ===== 每轮放行（用户 2026-10-15：放行机制必须匹配设置页「每轮过关挡位」，
+// 旧规则「答对一次就放行」已废弃）=====
+describe('roundRelease：连续达标才放行，晋级/毕业立即放行', () => {
+  const now = new Date('2026-10-15T20:00:00+08:00');
+  const todayIso = now.toISOString();
+  const yestIso = new Date(now.getTime() - 86400000).toISOString();
+
+  it('一次达标远没到线：不放行', () => {
+    const r = roundRelease({
+      verdict: 'skilled',
+      prevStreak: 0,
+      threshold: 'strict',
+      leftStage: false,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r.dayStreak).toBe(1);
+    expect(r.release).toBe(false);
+  });
+
+  it('连续 3 次达标（严格档）→ 第 3 次放行', () => {
+    let streak = 0;
+    let release = false;
+    for (let i = 0; i < 3; i++) {
+      const r = roundRelease({
+        verdict: 'skilled',
+        prevStreak: streak,
+        threshold: 'strict',
+        leftStage: false,
+        lastQuizAt: todayIso,
+        now,
+      });
+      streak = r.dayStreak;
+      release = r.release;
+    }
+    expect(streak).toBe(QUIZ_DAY_PASS_COUNT);
+    expect(release).toBe(true);
+  });
+
+  it('中途一次没到达标线 → 计数清零、继续关着', () => {
+    const r = roundRelease({
+      verdict: 'recognized',
+      prevStreak: 2,
+      threshold: 'strict',
+      leftStage: false,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r.dayStreak).toBe(0);
+    expect(r.release).toBe(false);
+  });
+
+  it('晋级/毕业（离开本阶段）→ 不论计数立即放行', () => {
+    const r = roundRelease({
+      verdict: 'skilled',
+      prevStreak: 0,
+      threshold: 'strict',
+      leftStage: true,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r.dayStreak).toBe(1);
+    expect(r.release).toBe(true);
+  });
+
+  it('跨天：昨天累计的 2 次不作数，今天从 0 重新起算', () => {
+    const r = roundRelease({
+      verdict: 'skilled',
+      prevStreak: 2,
+      threshold: 'strict',
+      leftStage: false,
+      lastQuizAt: yestIso,
+      now,
+    });
+    expect(r.dayStreak).toBe(1);
+    expect(r.release).toBe(false);
+  });
+
+  it('宽松档：3 次「不熟」也放行（挡位低但同样要连续 3 次）', () => {
+    let streak = 0;
+    let release = false;
+    for (let i = 0; i < 3; i++) {
+      const r = roundRelease({
+        verdict: 'unfamiliar',
+        prevStreak: streak,
+        threshold: 'lenient',
+        leftStage: false,
+        lastQuizAt: todayIso,
+        now,
+      });
+      streak = r.dayStreak;
+      release = r.release;
+    }
+    expect(release).toBe(true);
   });
 });
 

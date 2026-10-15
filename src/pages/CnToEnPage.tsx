@@ -6,7 +6,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Alert, Box, Button, Chip, CircularProgress, Paper, Stack, Typography } from '@mui/material';
-import type { L1State } from '../types/domain';
+import type { L1State, WordSense } from '../types/domain';
+import { displaySenses } from '../features/senses';
 import { useAppStore } from '../store/useAppStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useFeedback } from '../hooks/useFeedback';
@@ -20,6 +21,8 @@ interface Item {
   /** CMUdict ARPAbet（发音真源；透传给 TTS 请求） */
   arpabet?: string;
   sense: string;
+  /** 全部义项（用户 2026-10-15：揭晓时完整显示，不能只给 senses[0]） */
+  senses: WordSense[];
 }
 
 export default function CnToEnPage() {
@@ -44,6 +47,7 @@ export default function CnToEnPage() {
         ipa: w?.ipa ?? '',
         ...(w?.arpabet ? { arpabet: w.arpabet } : {}),
         sense: w?.senses[0] ?? '',
+        senses: w ? displaySenses(w) : [],
       });
       if (out.length >= dailyWords) break;
     }
@@ -171,6 +175,20 @@ export default function CnToEnPage() {
                 /{current.ipa.replace(/^\/|\/$/g, '')}/
               </Typography>
             )}
+            {/* 该词全部释义（用户 2026-10-15：多义词只显示第一条会漏义项，答对答错都完整亮出） */}
+            <Box sx={{ mt: 1.5, textAlign: 'left' }}>
+              <Typography variant="caption" color="text.secondary">
+                {current.lemma} 的全部释义：
+              </Typography>
+              <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                {current.senses.map((sd, i) => (
+                  <Typography key={sd.senseId} variant="body2" color="text.secondary">
+                    {i + 1}. {sd.pos ? `[${sd.pos}] ` : ''}
+                    {sd.zh}
+                  </Typography>
+                ))}
+              </Stack>
+            </Box>
             <Button variant="contained" fullWidth sx={{ mt: 2 }} onClick={() => setIdx((i) => i + 1)}>
               下一词
             </Button>

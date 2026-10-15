@@ -122,12 +122,14 @@ export function verdictChipSx(v: QuizVerdict): { bgcolor: string; color: string 
   }
 }
 
-// ===== 当天小循环（用户 2026-10-14：当天计划里不熟的词一直出现，连续熟 N 次才过关）=====
+// ===== 每轮过关（用户 2026-10-14 建制，2026-10-15 改口径：
+// 原按「当天小循环」设计，现放行机制改为按「轮」——同一个词在一轮里连续 N 次达到档位线才放行，
+// 档位名也从「当天过关挡位」改为「每轮过关挡位」（设置页同步改名））=====
 
-/** 当天过关的宽松档（设置页三选一） */
+/** 每轮过关的档位线（设置页三选一，原名「当天过关挡位」，2026-10-15 改名） */
 export type QuizDayThreshold = 'lenient' | 'standard' | 'strict';
 
-/** 连续达标多少次算当天过关 */
+/** 连续达标多少次算一轮内过关（放行） */
 export const QUIZ_DAY_PASS_COUNT = 3;
 
 /** 判定档位线：unknown=0 < unfamiliar=1 < recognized=2 < skilled=3 */
@@ -139,10 +141,10 @@ const VERDICT_RANK: Record<QuizVerdict, number> = {
 };
 
 /**
- * 三档阈值线：
- *   宽松 = 连续 3 次比「生词」好（至少不熟）→ 当天放行
- *   适当 = 连续 3 次比「不熟」好（至少认识）→ 当天放行
- *   严格 = 连续 3 次比「认识」好（至少熟练）→ 当天放行
+ * 三档阈值线（一轮内连续达标次数）：
+ *   宽松 = 连续 3 次比「生词」好（至少不熟）→ 本轮放行
+ *   适当 = 连续 3 次比「不熟」好（至少认识）→ 本轮放行
+ *   严格 = 连续 3 次比「认识」好（至少熟练）→ 本轮放行
  */
 const THRESHOLD_LINE: Record<QuizDayThreshold, number> = {
   lenient: 1,
@@ -155,7 +157,7 @@ export function dayVerdictOk(v: QuizVerdict, threshold: QuizDayThreshold): boole
   return VERDICT_RANK[v] >= THRESHOLD_LINE[threshold];
 }
 
-/** 当天连续计数：达标 +1，不达标清零 */
+/** 连续计数：达标 +1，不达标清零 */
 export function quizDayStreakAfter(
   dayStreak: number,
   v: QuizVerdict,
@@ -184,10 +186,35 @@ export function tierAfterQuiz(
   return firstQuizOfDay ? tierAfterVerdict(currentTier, v) : currentTier;
 }
 
-/** 该词当天是否已过关（quizDayPassed 只对当天有效，隔夜自动失效） */
+/** 该词今天是否已过关（quizDayPassed 只对当天有效，隔夜自动失效；
+ *  2026-10-15 起只在整个词达到过关线时才写 true，不再是「答过就 true」） */
 export function isDayPassedToday(
   word: { quizDayPassed?: boolean; lastQuizAt?: string },
   now: Date = new Date(),
 ): boolean {
   return Boolean(word.quizDayPassed) && isSameUtcDay(word.lastQuizAt, now);
+}
+
+/**
+ * 本轮放行判定（用户 2026-10-15：放行机制必须与设置页「每轮过关挡位」匹配——
+ * 旧实现「答对一次就放行」，档位设置形同虚设）。
+ *
+ * 规则：
+ *  - 连续计数跨天自动重新起算（lastQuizAt 不是今天 ⇒ 已累计次数作废）；
+ *  - 连续 QUIZ_DAY_PASS_COUNT 次达到档位线 ⇒ 放行（该词本轮不再出现）；
+ *  - 本次作答后离开本阶段（晋级/毕业）⇒ 立即放行（它已不属于本阶段的池，
+ *    再排回来只会反复考一个已经晋级的词）。
+ */
+export function roundRelease(args: {
+  verdict: QuizVerdict;
+  prevStreak: number;
+  threshold: QuizDayThreshold;
+  leftStage: boolean;
+  lastQuizAt?: string;
+  now?: Date;
+}): { dayStreak: number; release: boolean } {
+  const now = args.now ?? new Date();
+  const carried = isSameUtcDay(args.lastQuizAt, now) ? args.prevStreak : 0;
+  const dayStreak = quizDayStreakAfter(carried, args.verdict, args.threshold);
+  return { dayStreak, release: args.leftStage || dayStreak >= QUIZ_DAY_PASS_COUNT };
 }
