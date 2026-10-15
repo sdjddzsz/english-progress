@@ -176,14 +176,17 @@ export default function BookPage() {
       }
       // 当天的考查会话快照一并作废（用户 2026-10-15：重置进度后，回到考查页不能
       // 还恢复旧的队列与判定——那批词的进度已清，快照留着就是"保留进度"）。
-      const { userId: uid, activePlan } = useAppStore.getState();
+      const { userId: uid } = useAppStore.getState();
       if (uid) clearSession(uid, selectedBookId);
       // 旧计划制的任务与欠账一并清（用户 2026-10-15 联动：重置进度后欠账必须归零——
       // 欠账来自 hits 表的 pending 记录，不清的话重置完「欠账 N 条」原样还在）。
       // 全局重置清整个计划的未完成 hits；单词级只清该词的。
-      if (activePlan) {
+      // 加固（2026-10-15）：不依赖 store 内存里的 activePlan（可能为 null → 整块被
+      // 静默跳过，欠账 296 残留事故），重置时按 bookId 现查一次。
+      const plan = await repos.plan.getActivePlan(selectedBookId);
+      if (plan) {
         const allHits = await repos.hit.hits.listAll([
-          { column: 'planId', op: 'eq', value: activePlan.id },
+          { column: 'planId', op: 'eq', value: plan.id },
         ]);
         const wordScope = confirmTarget === 'all' ? null : confirmTarget.wordId;
         const stale = allHits.filter(
