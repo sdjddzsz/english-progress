@@ -1,6 +1,6 @@
 /**
  * BookPage.tsx —— 词书页（PRD §5.2.3）：
- * 词书列表 / 设为当前 / 难度层分布视图 / List 内词表浏览。
+ * 词书列表 / 设为当前 / 词库平铺浏览（阶段+四档标注）/ List 内词表浏览。
  * 导入入口在 T05 批次开放；页内无调度逻辑，数据经 getRepos()（src/data 边界内）。
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -22,17 +22,14 @@ import {
   MenuItem,
   Paper,
   Stack,
-  Tab,
-  Tabs,
   TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
-import type { Book, BookWord, Tier, Word } from '../types/domain';
-import { TIERS } from '../scheduler';
+import type { Book, BookWord, Word } from '../types/domain';
 import { clearSession } from '../features/quiz/session';
-import { STAGE_LABEL, STAGE_META, type WordStage } from '../features/quiz/stages';
+import { STAGE_LABEL, STAGE_META, TIER_VERDICT_LABEL, type WordStage } from '../features/quiz/stages';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import {
   getSeedCursor,
@@ -41,8 +38,6 @@ import {
   type SeedCursor,
   type SeedProgress,
 } from '../data/seedBootstrap';
-
-const TIER_LABEL: Record<Tier, string> = { 1: 'T1 已掌握', 2: 'T2 熟词', 3: 'T3 半熟', 4: 'T4 生词' };
 
 /** 词表浏览分页大小：词条释义按页拉取，避免一次拉全书 8296 条 */
 const PAGE_SIZE = 50;
@@ -61,7 +56,6 @@ export default function BookPage() {
   const { books, activeBookId, setActiveBook, bootstrap, loading, error: storeError, userId } = useAppStore();
 
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
-  const [tier, setTier] = useState<Tier>(3);
   const [page, setPage] = useState(1);
   const [bookWords, setBookWords] = useState<BookWord[]>([]);
   const [wordMap, setWordMap] = useState<Record<string, Word>>({});
@@ -71,10 +65,6 @@ export default function BookPage() {
   const [seedError, setSeedError] = useState('');
   /** 重建模式：删旧书再导新种子（幂等初始化不会覆盖已存在的书，必须显式重建） */
   const [rebuild, setRebuild] = useState(false);
-  /** 各层真实词量（用于分层分布展示；与难度层 Tab 独立，切换 Tab 不影响它） */
-  const [tierStats, setTierStats] = useState<{ tier: Tier; count: number }[]>(
-    TIERS.map((t) => ({ tier: t, count: 0 })),
-  );
   // 断点续传游标（本机 localStorage，**按当前登录用户隔离**）：
   // 必须与 seedLibraryToCloud 用同一个 userId 拼 key，否则 UI 提示会与实际续传点不一致。
   const [seedCursor, setSeedCursor] = useState<SeedCursor | null>(() => getSeedCursor(userId));
@@ -124,31 +114,13 @@ export default function BookPage() {
     if (!selectedBookId && books.length > 0) setSelectedBookId(activeBookId ?? books[0].id);
   }, [books, activeBookId, selectedBookId]);
 
-  /** 多选调阶段：批量写 stage（stageStreak 清零，按新阶段重新计连击） */
-  const moveStageSelected = useCallback(async () => {
-    if (stageSel.size === 0) return;
-    setStageMoveBusy(true);
-    setError('');
-    try {
-      await getRepos().word.updateWordStages(
-        [...stageSel].map((id) => ({ bookWordId: id, stage: stageMoveTarget as WordStage })),
-      );
-      setStageSel(new Set());
-      setStageMoveOpen(false);
-      if (selectedBookId) await loadTier(selectedBookId, tier, page);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setStageMoveBusy(false);
-    }
-  }, [stageSel, stageMoveTarget, selectedBookId, tier, page]);
-
-  const loadTier = useCallback(async (bookId: string, t: Tier, p: number) => {
+  const loadWords = useCallback(async (bookId: string, p: number) => {
     setLoadingWords(true);
     setError('');
     try {
       const repos = getRepos();
-      const bws = await repos.word.listBookWords(bookId, { tier: t });
+      // 全词库一次拉齐（8296 行量级，listAll 分页；T1~T4 旧标签已清除，不再按层过滤）
+      const bws = await repos.word.listBookWords(bookId);
       // 词条按当前页拉取（用户 2026-10-15：要能翻页浏览全部单词，不再截断在前 50）
       const start = (p - 1) * PAGE_SIZE;
       const pageBws = bws.slice(start, start + PAGE_SIZE);
@@ -163,29 +135,34 @@ export default function BookPage() {
       setLoadingWords(false);
     }
   }, []);
+  /** 多选调阶段：批量写 stage（stageStreak 清零，按新阶段重新计连击） */
+  const moveStageSelected = useCallback(async () => {
+    if (stageSel.size === 0) return;
+    setStageMoveBusy(true);
+    setError('');
+    try {
+      await getRepos().word.updateWordStages(
+        [...stageSel].map((id) => ({ bookWordId: id, stage: stageMoveTarget as WordStage })),
+      );
+      setStageSel(new Set());
+      setStageMoveOpen(false);
+      if (selectedBookId) await loadWords(selectedBookId, page);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStageMoveBusy(false);
+    }
+  }, [stageSel, stageMoveTarget, selectedBookId, page, loadWords]);
+
 
   useEffect(() => {
-    if (selectedBookId) void loadTier(selectedBookId, tier, page);
-  }, [selectedBookId, tier, page, loadTier]);
+    if (selectedBookId) void loadWords(selectedBookId, page);
+  }, [selectedBookId, page, loadWords]);
 
   // 进度重置（用户 2026-10-15）：单词级 / 全局。confirmTarget=null 关闭弹窗。
   const [confirmTarget, setConfirmTarget] = useState<'all' | BookWord | null>(null);
   const [resetting, setResetting] = useState(false);
   const [resetMsg, setResetMsg] = useState('');
-
-  /** 重置后刷新层分布（全部回 T4 时分布会变） */
-  const refreshTierStats = useCallback((bookId: string) => {
-    void (async () => {
-      try {
-        const all = await getRepos().word.listBookWords(bookId);
-        const counts = new Map<Tier, number>();
-        for (const bw of all) counts.set(bw.tier, (counts.get(bw.tier) ?? 0) + 1);
-        setTierStats(TIERS.map((t) => ({ tier: t, count: counts.get(t) ?? 0 })));
-      } catch {
-        // 层分布刷新失败不阻断
-      }
-    })();
-  }, []);
 
   const doReset = useCallback(async () => {
     if (!confirmTarget || !selectedBookId) return;
@@ -195,7 +172,7 @@ export default function BookPage() {
       const repos = getRepos();
       if (confirmTarget === 'all') {
         const n = await repos.word.resetAllQuizProgress(selectedBookId);
-        setResetMsg(n === 0 ? '没有找到有进度痕迹的词，无需重置。' : `已重置 ${n} 个词的考查进度（全部回 T4）。`);
+        setResetMsg(n === 0 ? '没有找到有进度痕迹的词，无需重置。' : `已重置 ${n} 个词的考查进度（全部回阶段一）。`);
       } else {
         await repos.word.resetQuizProgress(confirmTarget.id);
         setResetMsg(`已重置「${wordMap[confirmTarget.wordId]?.lemma ?? confirmTarget.wordId}」。`);
@@ -226,37 +203,16 @@ export default function BookPage() {
         }
       }
       setConfirmTarget(null);
-      // 重置后刷新当前层数据（层分布可能变化：全部回 T4）
-      if (selectedBookId) void loadTier(selectedBookId, tier, page);
-      refreshTierStats(selectedBookId);
-      // store 立即重算欠账/今日队列，回到 Today 页不再显示旧欠账
+      // 重置后刷新词库（进度痕迹清零、阶段回一）
+      if (selectedBookId) void loadWords(selectedBookId, page);
+      // store 立即重算欠账/今日队列，回到阶段页不再显示旧欠账
       await useAppStore.getState().refreshToday();
     } catch (e) {
       setResetMsg(`重置失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setResetting(false);
     }
-  }, [confirmTarget, selectedBookId, tier, page, wordMap, loadTier, refreshTierStats]);
-
-  // 各层词量：全书只读一次（listBookWords 无 tier 过滤），切 Tab 不重复拉
-  useEffect(() => {
-    if (!selectedBookId) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const all = await getRepos().word.listBookWords(selectedBookId);
-        if (cancelled) return;
-        const counts = new Map<Tier, number>();
-        for (const bw of all) counts.set(bw.tier, (counts.get(bw.tier) ?? 0) + 1);
-        setTierStats(TIERS.map((t) => ({ tier: t, count: counts.get(t) ?? 0 })));
-      } catch {
-        if (!cancelled) setTierStats(TIERS.map((t) => ({ tier: t, count: 0 })));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedBookId]);
+  }, [confirmTarget, selectedBookId, page, loadWords]);
 
   const selectedBook: Book | null = books.find((b) => b.id === selectedBookId) ?? null;
 
@@ -292,7 +248,7 @@ export default function BookPage() {
           <Typography variant="body1">还没有词书</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             首次使用：一键导入 ECDICT 六级词库（8296 词：全部六级词 + 四级/考研/雅思高频词；含音标、多读音、全部词性释义、词形变化），需联网，约 1 分钟。
-            导入后所有词一律记为 T4 生词 —— 掌握程度只由你的练习成绩决定，不再按词频猜。
+            导入后所有词从「生词」档、阶段一开始；四档只随练习成绩升降，不按词频猜。
           </Typography>
           {resumeHint && (
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
@@ -395,11 +351,11 @@ export default function BookPage() {
             ))}
           </Stack>
 
-          {/* 难度层视图 */}
+          {/* 词库（用户 2026-10-15：T1~T4 旧标签随改版失效已清除，改为四档+阶段标注的平铺词表） */}
           {selectedBook && (
             <Paper sx={{ mt: 2, p: 2 }}>
               <Stack direction="row" justifyContent="space-between" alignItems="center">
-                <Typography variant="h6">难度层视图</Typography>
+                <Typography variant="h6">词库</Typography>
                 <Stack direction="row" spacing={1}>
                   <Button size="small" variant="outlined" onClick={() => navigate('/plan-editor')}>
                     计划编辑
@@ -416,39 +372,10 @@ export default function BookPage() {
                   </Button>
                 </Stack>
               </Stack>
-              {/* 各层真实词量：分层是「练习成绩」判定的结果，必须随时可见，
-                  否则用户只能看到"某个 Tab 空了"，看不到整体分布 */}
-              <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-                {tierStats.map((s) => (
-                  <Chip
-                    key={s.tier}
-                    size="small"
-                    variant="outlined"
-                    color={s.tier === 4 ? 'error' : s.tier === 3 ? 'warning' : 'default'}
-                    label={`${TIER_LABEL[s.tier]} ${s.count}`}
-                  />
-                ))}
-                <Chip size="small" label={`共 ${selectedBook.wordCount} 词`} />
-              </Stack>
               <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-                新导入的词一律记为 T4 生词；层只按你的练习成绩升降（连续秒认升层、答错降层），不按词频猜。
+                共 {selectedBook.wordCount} 词。每词标当前阶段与四档（熟练/认识/不熟/生词，按练习成绩升降）；
+                四档只作展示与排序，不搞自测评分。
               </Typography>
-              <Tabs
-                value={tier}
-                onChange={(_, v: Tier) => {
-                  setTier(v);
-                  setPage(1); // 换层回到第一页
-                }}
-                sx={{ mt: 1 }}
-              >
-                {TIERS.map((t) => (
-                  <Tab
-                    key={t}
-                    value={t}
-                    label={`${TIER_LABEL[t]} ${tierStats.find((s) => s.tier === t)?.count ?? 0}`}
-                  />
-                ))}
-              </Tabs>
               {/* 多选调阶段工具条（用户 2026-10-15 四阶段制） */}
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
                 <Button
@@ -481,48 +408,56 @@ export default function BookPage() {
                 </Box>
               ) : (
                 <Stack divider={<Divider flexItem />}>
-                  {bookWords.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((bw) => (
-                    <Stack key={bw.id} direction="row" justifyContent="space-between" alignItems="center" py={0.75}>
-                      <Stack direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0, flex: 1 }}>
-                        <Checkbox
-                          size="small"
-                          checked={stageSel.has(bw.id)}
-                          onChange={() =>
-                            setStageSel((s) => {
-                              const next = new Set(s);
-                              if (next.has(bw.id)) next.delete(bw.id);
-                              else next.add(bw.id);
-                              return next;
-                            })
-                          }
-                        />
-                        <Box sx={{ minWidth: 0 }}>
+                  {bookWords.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((bw) => {
+                    const lemma = wordMap[bw.wordId]?.lemma ?? bw.wordId;
+                    const ipa = wordMap[bw.wordId]?.ipa;
+                    const sense = (wordMap[bw.wordId]?.senses[0] ?? '').replace(/\s+/g, ' ');
+                    return (
+                    <Stack key={bw.id} direction="row" alignItems="center" spacing={0.5} py={0.75}>
+                      <Checkbox
+                        size="small"
+                        checked={stageSel.has(bw.id)}
+                        onChange={() =>
+                          setStageSel((s) => {
+                            const next = new Set(s);
+                            if (next.has(bw.id)) next.delete(bw.id);
+                            else next.add(bw.id);
+                            return next;
+                          })
+                        }
+                      />
+                      {/* 左：词 + 音标（同一行内联，caption 必须 component="span"，否则块级换行） */}
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Box component="span">
                           <Typography variant="body1" component="span">
-                            {wordMap[bw.wordId]?.lemma ?? bw.wordId}
+                            {lemma}
                           </Typography>
-                          {wordMap[bw.wordId]?.ipa && (
-                            <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                              /{wordMap[bw.wordId].ipa}/
+                          {ipa && (
+                            <Typography variant="caption" color="text.secondary" component="span" sx={{ ml: 0.5 }}>
+                              /{ipa}/
                             </Typography>
                           )}
-                          {/* 四阶段制（用户 2026-10-15）：每词标所处阶段 + 阶段内连击 + 特训 */}
-                          <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                        </Box>
+                        <Box component="span" sx={{ display: 'block' }}>
+                          <Typography variant="caption" color="text.secondary" component="span">
                             {bw.specialTraining && (
                               <Chip size="small" color="error" variant="outlined" label="特训" sx={{ mr: 0.5 }} />
                             )}
-                            {STAGE_LABEL[bw.stage]} · 连 {bw.stageStreak}
+                            {STAGE_LABEL[bw.stage]} · {TIER_VERDICT_LABEL[bw.tier]} · 连 {bw.stageStreak}
                             {bw.lastQuizAt ? ` · 上次 ${bw.lastQuizAt.slice(0, 10)}` : ' · 未考过'}
                           </Typography>
                         </Box>
-                      </Stack>
+                      </Box>
+                      {/* 右：List 号 + 首义（截断）+ 行内重置 */}
                       <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
-                        <Typography variant="caption" color="text.secondary">
-                          List {bw.listNo + 1} · {wordMap[bw.wordId]?.senses[0]?.slice(0, 18) ?? ''}
+                        <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: 160 }}>
+                          List {bw.listNo + 1}
+                          {sense ? ` · ${sense.slice(0, 14)}` : ''}
                         </Typography>
                         <Tooltip title="重置这个词的考查进度（回阶段一、记录清零）">
                           <IconButton
                             size="small"
-                            aria-label={`reset ${wordMap[bw.wordId]?.lemma ?? bw.wordId}`}
+                            aria-label={`reset ${lemma}`}
                             onClick={() => setConfirmTarget(bw)}
                           >
                             <RestartAltIcon fontSize="small" />
@@ -530,10 +465,11 @@ export default function BookPage() {
                         </Tooltip>
                       </Stack>
                     </Stack>
-                  ))}
+                    );
+                  })}
                   {bookWords.length === 0 && (
                     <Typography variant="body2" color="text.secondary" py={2} textAlign="center">
-                      该层暂无词。
+                      词库里暂无词。
                     </Typography>
                   )}
                   {bookWords.length > PAGE_SIZE && (
@@ -570,8 +506,8 @@ export default function BookPage() {
             <DialogContent>
               <Typography variant="body2">
                 {confirmTarget === 'all'
-                  ? '将把当前词书**全部**有进度记录的词重置：层号回 T4 生词、连续熟练/特种训练/当天过关/上次考查记录全部清零。此操作不可撤销。'
-                  : `将重置「${wordMap[(confirmTarget as BookWord | null)?.wordId ?? '']?.lemma ?? ''}」：层号回 T4、考查记录清零。此操作不可撤销。`}
+                  ? '将把当前词书**全部**有进度记录的词重置：阶段回阶段一、四档回生词、连击/特种训练/上次考查记录全部清零。此操作不可撤销。'
+                  : `将重置「${wordMap[(confirmTarget as BookWord | null)?.wordId ?? '']?.lemma ?? ''}」：阶段回阶段一、考查记录清零。此操作不可撤销。`}
               </Typography>
               {resetMsg && (
                 <Alert severity="info" sx={{ mt: 1.5 }}>

@@ -61,8 +61,14 @@ function shuffle<T>(arr: T[]): T[] {
 
 export default function StageQuizPage() {
   const { stage } = useParams();
-  const stageNo = STAGES.includes(Number(stage) as QuizStage) ? (Number(stage) as QuizStage) : null;
   const navigate = useNavigate();
+  const stageNo = STAGES.includes(Number(stage) as QuizStage) ? (Number(stage) as QuizStage) : null;
+  // 阶段一的题面是原 QuizPage（由词选义，带会话恢复/上一题/AI 助教）——
+  // 任何进 /stage-quiz/1 的入口都重定向过去，别在这里报「未知阶段」（用户 2026-10-15 报错修复）
+  const stageParam = Number(stage);
+  useEffect(() => {
+    if (stageParam === 1) navigate('/quiz', { replace: true });
+  }, [stageParam, navigate]);
   const { activeBookId, userId } = useAppStore();
   const { autoSpeak, quizDailyLimit, stageGraduate } = useSettingsStore();
   const { speak, speakAuto } = useTTS();

@@ -41,6 +41,17 @@ export const STAGE_LABEL: Record<WordStage, string> = {
   4: '阶段四',
 };
 
+/**
+ * 层（tier）→ 现行四档中文标签（用户 2026-10-15：T1~T4 旧标签失效，改用判定四档展示）。
+ * tier 本身仍是内部排序/降频依据（1=最熟 4=最生），对外只显示四档。
+ */
+export const TIER_VERDICT_LABEL: Record<Tier, string> = {
+  1: '熟练',
+  2: '认识',
+  3: '不熟',
+  4: '生词',
+};
+
 /** 各阶段毕业所需连续熟练次数的默认值（设置页可改，阶段四=写对一次即毕业，不可改） */
 export const DEFAULT_STAGE_GRADUATE: Record<1 | 2 | 3, number> = { 1: 3, 2: 3, 3: 3 };
 

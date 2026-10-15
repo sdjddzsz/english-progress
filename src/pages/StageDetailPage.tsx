@@ -21,11 +21,10 @@ import {
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import { getRepos, useAppStore } from '../store/useAppStore';
-import { STAGE_LABEL, STAGE_META, type WordStage } from '../features/quiz/stages';
+import { STAGE_LABEL, STAGE_META, TIER_VERDICT_LABEL, type WordStage } from '../features/quiz/stages';
 import type { BookWord } from '../types/domain';
 
 const PAGE_SIZE = 100;
-const TIER_LABEL: Record<number, string> = { 1: 'T1', 2: 'T2', 3: 'T3', 4: 'T4' };
 
 export default function StageDetailPage() {
   const { stage } = useParams();
@@ -148,7 +147,7 @@ export default function StageDetailPage() {
             variant="contained"
             startIcon={<PlayArrowIcon />}
             disabled={ordered.length === 0}
-            onClick={() => navigate(`/stage-quiz/${stageNo}`)}
+            onClick={() => navigate(stageNo === 1 ? '/quiz' : `/stage-quiz/${stageNo}`)}
           >
             开始刷（{ordered.length}）
           </Button>
@@ -208,7 +207,7 @@ export default function StageDetailPage() {
                     <Chip size="small" color="error" variant="outlined" label="特训" sx={{ ml: 1 }} />
                   )}
                   <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                    {TIER_LABEL[bw.tier]} · 连 {bw.stageStreak}
+                    {TIER_VERDICT_LABEL[bw.tier]} · 连 {bw.stageStreak}
                     {bw.lastQuizAt ? ` · 上次 ${bw.lastQuizAt.slice(0, 10)}` : ' · 未考过'}
                   </Typography>
                 </Box>

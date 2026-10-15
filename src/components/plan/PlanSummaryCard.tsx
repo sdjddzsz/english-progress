@@ -9,7 +9,7 @@
  */
 import { Alert, Box, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Button, LinearProgress, Stack, Typography } from '@mui/material';
 import { useState } from 'react';
-import type { StudyPlan, Tier } from '../../types/domain';
+import type { StudyPlan } from '../../types/domain';
 import type { ValidationResult } from '../../scheduler';
 
 export interface PlanSummaryCardProps {
@@ -41,7 +41,7 @@ type HelpKey = 'mode' | 'status' | 'decay' | 'overdue';
 
 const MODE_HELP: Record<StudyPlan['planMode'], string> = {
   recommended:
-    '推荐档：按"越生疏的层轮次越多"分配（如 T4×3 / T1×2），同样的时间里覆盖更多薄弱词。适合大多数情况。',
+    '推荐档：按"越生疏的词轮次越多"分配（生词比熟词多安排几轮），同样的时间里覆盖更多薄弱词。适合大多数情况。',
   fallback:
     '保底档：所有层统一 2 轮。每天任务量更小、更稳，适合时间紧或想先保完成率的阶段。',
 };
@@ -62,10 +62,6 @@ export default function PlanSummaryCard({ plan, validation, finishDate, overdueC
   }
 
   const minutesRatio = Math.min(100, (validation.dailyMinutes / Math.max(1, plan.dailyBudgetMin)) * 100);
-  const roundsText = ([1, 2, 3, 4] as Tier[])
-    .filter((t) => (plan.tierRounds[t] ?? 0) > 0)
-    .map((t) => `T${t}×${plan.tierRounds[t]}`)
-    .join(' ');
 
   const close = () => setHelp(null);
 
@@ -107,7 +103,7 @@ export default function PlanSummaryCard({ plan, validation, finishDate, overdueC
       </Stack>
 
       <Typography variant="body2" sx={{ mt: 1 }}>
-        轮次：<strong>{roundsText}</strong> ｜ 窗口：{plan.startDate} → {plan.deadlineDate}
+        窗口：{plan.startDate} → {plan.deadlineDate}
       </Typography>
       <Typography variant="body2">
         预计完成日：<strong>{finishDate ?? plan.deadlineDate}</strong> ｜ 距六级考试窗口{' '}

@@ -114,7 +114,7 @@ export default function StagePage() {
             先到「词书」页选择词书；四个阶段随时可以刷（只要阶段词库里有词）。
           </Typography>
           <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
-            <Button variant="contained" onClick={() => navigate('/stage-quiz/1')}>
+            <Button variant="contained" onClick={() => navigate('/quiz')}>
               直接刷阶段一
             </Button>
             <Button variant="outlined" onClick={() => navigate('/book')}>
@@ -161,7 +161,7 @@ export default function StagePage() {
                         variant="contained"
                         startIcon={<PlayArrowIcon />}
                         disabled={disabled}
-                        onClick={() => navigate(`/stage-quiz/${n}`)}
+                        onClick={() => navigate(n === 1 ? '/quiz' : `/stage-quiz/${n}`)}
                       >
                         开始刷（{s?.due ?? 0}）
                       </Button>
