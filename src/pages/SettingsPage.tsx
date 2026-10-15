@@ -485,7 +485,7 @@ export default function SettingsPage() {
 
           <Box>
             <Typography variant="body2" gutterBottom>
-              每日考查词量：{settings.quizDailyLimit} 词
+              每轮考查词量：{settings.quizDailyLimit} 词
             </Typography>
             <Slider
               min={50}

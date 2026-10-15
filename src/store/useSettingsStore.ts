@@ -39,7 +39,7 @@ export interface SettingsState {
   /** 当天过关档位（用户 2026-10-14：宽松/适当/严格） */
   quizDayThreshold: QuizDayThreshold;
   /**
-   * 每日考查词量上限（用户 2026-10-15 拍板：默认 300，可调 50–1000）。
+   * 每轮考查词量上限（用户 2026-10-15 拍板：默认 300，可调 50–1000）。
    * 只限"当天新铺的词"，答错重排不占额。
    */
   quizDailyLimit: number;

@@ -89,7 +89,7 @@ export const NOTE_MAX_LENGTH = 60;
 export const AUDIO_RECALL_TIMEOUT_MS = 3000;
 
 /**
- * 每日考查词量上限（用户 2026-10-15 拍板：默认 300，设置页可调 50–1000）。
+ * 每轮考查词量上限（用户 2026-10-15 拍板：默认 300，设置页可调 50–1000）。
  * 背景：原硬编码 50/天，8296 词铺完一遍要 166 天，距 12-12 考试 58 天根本不够——用户抓出来的。
  */
 export const QUIZ_DAILY_LIMIT_DEFAULT = 300;

@@ -17,6 +17,7 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  Pagination,
   Paper,
   Stack,
   Typography,
@@ -32,6 +33,9 @@ import PlanSummaryCard from '../components/plan/PlanSummaryCard';
 import ReschedulePanel from '../components/plan/ReschedulePanel';
 
 const TIER_LABEL: Record<number, string> = { 1: 'T1', 2: 'T2', 3: 'T3', 4: 'T4' };
+
+/** 待刷词分页（用户 2026-10-15：一次性全渲染几千行卡死首页，每页 100 词） */
+const PAGE_SIZE = 100;
 
 export default function TodayPage() {
   const navigate = useNavigate();
@@ -55,6 +59,7 @@ export default function TodayPage() {
   const [graduated, setGraduated] = useState(0);
   const [lemmaMap, setLemmaMap] = useState<Record<string, string>>({});
   const [poolError, setPoolError] = useState('');
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     void bootstrap();
@@ -71,10 +76,7 @@ export default function TodayPage() {
       setPool(p);
       setTotal(t);
       setGraduated(g);
-      const words = await repos.word.listWordsByIds([...new Set(p.map((bw) => bw.wordId))]);
-      const m: Record<string, string> = {};
-      for (const w of words) m[w.id] = w.lemma;
-      setLemmaMap(m);
+      setPage(1);
       setPoolError('');
     } catch (e) {
       setPoolError(e instanceof Error ? e.message : String(e));
@@ -94,6 +96,39 @@ export default function TodayPage() {
     for (const bw of pool) g[bw.tier].push(bw);
     return g;
   }, [pool]);
+
+  // 展示顺序 T4→T1 拉平后分页（用户 2026-10-15：一次全渲染几千行卡死，每页 100 词）
+  const ordered = useMemo(() => [...grouped[4], ...grouped[3], ...grouped[2], ...grouped[1]], [grouped]);
+  const pageCount = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pageRows = useMemo(
+    () => ordered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [ordered, safePage],
+  );
+
+  // 词义映射只取当前页的词（整池可达数千，一次全拉拖慢首屏）
+  useEffect(() => {
+    if (pageRows.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const ids = [...new Set(pageRows.map((bw) => bw.wordId))].filter((id) => !(id in lemmaMap));
+        if (ids.length === 0) return;
+        const words = await getRepos().word.listWordsByIds(ids);
+        if (cancelled) return;
+        setLemmaMap((m) => {
+          const next = { ...m };
+          for (const w of words) next[w.id] = w.lemma;
+          return next;
+        });
+      } catch {
+        // 词义拉取失败不阻断列表（行内回退显示 wordId）
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pageRows, lemmaMap]);
 
   // ===== 引导态 =====
   if (!cloudReady && error) {
@@ -189,35 +224,56 @@ export default function TodayPage() {
             )}
           </Paper>
 
-          {/* 该考的词按层分组（T4 最上；特种训练有标记） */}
-          {([4, 3, 2, 1] as const).map((tier) =>
-            grouped[tier].length === 0 ? null : (
-              <Paper key={tier} sx={{ mt: 2, p: 2 }}>
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <Chip size="small" color={tier === 4 ? 'error' : tier === 3 ? 'warning' : 'default'} label={TIER_LABEL[tier]} />
-                  <Typography variant="body2" color="text.secondary">
-                    {grouped[tier].length} 词该考
-                  </Typography>
-                </Stack>
-                <Stack divider={<Divider flexItem />} sx={{ mt: 1 }}>
-                  {grouped[tier].map((bw) => (
-                    <Stack key={bw.id} direction="row" justifyContent="space-between" alignItems="center" py={0.75}>
-                      <Box>
-                        <Typography variant="body1" component="span">
-                          {lemmaMap[bw.wordId] ?? bw.wordId}
+          {/* 该考的词：分页展示（T4 最上；每页 100 词；换层时插层头） */}
+          {ordered.length > 0 && (
+            <Paper sx={{ mt: 2, p: 2 }}>
+              {pageRows.map((bw, i) => {
+                const prev = i > 0 ? pageRows[i - 1].tier : null;
+                const showHeader = bw.tier !== prev;
+                return (
+                  <Box key={bw.id}>
+                    {showHeader && (
+                      <Stack direction="row" spacing={1} alignItems="center" py={1}>
+                        <Chip
+                          size="small"
+                          color={bw.tier === 4 ? 'error' : bw.tier === 3 ? 'warning' : 'default'}
+                          label={TIER_LABEL[bw.tier]}
+                        />
+                        <Typography variant="body2" color="text.secondary">
+                          {grouped[bw.tier].length} 词该考
                         </Typography>
-                        {bw.specialTraining && (
-                          <Chip size="small" color="error" variant="outlined" label="特种训练" sx={{ ml: 1 }} />
-                        )}
-                      </Box>
-                      <Typography variant="caption" color="text.secondary">
-                        {bw.lastQuizAt ? `上次考查 ${bw.lastQuizAt.slice(0, 10)}` : '首次考查'}
-                      </Typography>
+                      </Stack>
+                    )}
+                    <Stack divider={i > 0 && pageRows[i - 1].tier === bw.tier ? <Divider flexItem /> : undefined}>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center" py={0.75}>
+                        <Box>
+                          <Typography variant="body1" component="span">
+                            {lemmaMap[bw.wordId] ?? bw.wordId}
+                          </Typography>
+                          {bw.specialTraining && (
+                            <Chip size="small" color="error" variant="outlined" label="特种训练" sx={{ ml: 1 }} />
+                          )}
+                        </Box>
+                        <Typography variant="caption" color="text.secondary">
+                          {bw.lastQuizAt ? `上次考查 ${bw.lastQuizAt.slice(0, 10)}` : '首次考查'}
+                        </Typography>
+                      </Stack>
                     </Stack>
-                  ))}
+                  </Box>
+                );
+              })}
+              {pageCount > 1 && (
+                <Stack alignItems="center" sx={{ mt: 2 }}>
+                  <Pagination
+                    count={pageCount}
+                    page={safePage}
+                    onChange={(_, v) => setPage(v)}
+                    showFirstButton
+                    showLastButton
+                  />
                 </Stack>
-              </Paper>
-            ),
+              )}
+            </Paper>
           )}
 
           {/* 欠账提示（UI 级；mustReschedule 时路由级拦截已兜底，这里提供主动入口） */}
