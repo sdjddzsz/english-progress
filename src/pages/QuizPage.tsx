@@ -47,10 +47,13 @@ import {
   type QuizDayThreshold,
 } from '../features/quiz/judging';
 import {
-  buildOptions,
+  optionSuffix,
   type DistractorCandidate,
 } from '../features/quiz/distractors';
 import { selectQuizPool } from '../features/quiz/pool';
+import { buildQuestion } from '../features/quiz/question';
+import { runOrQueue } from '../data/queue';
+import { describeWriteError } from '../data/errorText';
 
 /** 单日考查上限（特种训练词不计入此限——必考） */
 const QUIZ_DAILY_LIMIT = 50;
@@ -66,6 +69,12 @@ interface QuizItem {
   bookWord: BookWord;
   word: Word;
   senseIndex: number;
+  /** 已作答缓存（回顾上一题时按原样恢复：选项不重摇、判定不重算） */
+  options?: DistractorCandidate[];
+  correctKey?: string;
+  verdict?: QuizVerdict;
+  pickedKey?: string;
+  askedAt?: number;
 }
 
 type Phase = 'loading' | 'quiz' | 'between' | 'done';
@@ -78,6 +87,8 @@ export default function QuizPage() {
   const sfx = useSfx();
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
+  /** 写入被排入离线队列时的一次性轻提示（不弹红条阻断学习） */
+  const [syncHint, setSyncHint] = useState('');
   const [items, setItems] = useState<QuizItem[]>([]);
   const [idx, setIdx] = useState(0);
   const [options, setOptions] = useState<DistractorCandidate[]>([]);
@@ -129,7 +140,7 @@ export default function QuizPage() {
         const bws = all.filter((bw) => bw.wordId === w.id);
         const order = bws[0] ? bws[0].listNo * 1000 + bws[0].orderInList : 0;
         displaySenses(w).forEach((s, i) => {
-          poolCands.push({ zh: s.zh, pos: s.pos, order, key: `${w.id}#${i}` });
+          poolCands.push({ zh: s.zh, pos: s.pos, lemma: w.lemma, order, key: `${w.id}#${i}` });
         });
       }
       poolRef.current = poolCands;
@@ -151,25 +162,36 @@ export default function QuizPage() {
 
   const current = items[idx] ?? null;
 
-  /** 出题：构建四选项 + 重置计时 */
+  /** 出题：构建四选项 + 重置计时；已答过的题按原样恢复（供「上一题」回顾） */
   useEffect(() => {
     if (phase !== 'quiz' || !current) return;
-    const sense = displaySenses(current.word)[current.senseIndex];
-    const bw = current.bookWord;
-    const correct: DistractorCandidate = {
-      zh: sense.zh,
-      pos: sense.pos,
-      order: bw.listNo * 1000 + bw.orderInList,
-      key: `${bw.wordId}#${current.senseIndex}`,
-    };
-    setOptions(buildOptions(correct, poolRef.current));
-    setCorrectKey(correct.key);
+    if (current.options && current.correctKey) {
+      // 回顾模式：选项不重摇、判定不重算、不重新计时、不自动朗读
+      setSyncHint('');
+      setOptions(current.options);
+      setCorrectKey(current.correctKey);
+      setVerdict(current.verdict ?? null);
+      setPickedKey(current.pickedKey ?? '');
+      showAtRef.current = current.askedAt ?? 0;
+      return;
+    }
+    const built = buildQuestion(current, poolRef.current);
+    if (!built) return;
+    const askedAt = Date.now();
+    setItems((its) =>
+      its.map((it, i) =>
+        i === idx ? { ...it, options: built.options, correctKey: built.correctKey, askedAt } : it,
+      ),
+    );
+    setOptions(built.options);
+    setCorrectKey(built.correctKey);
     setVerdict(null);
     setPickedKey('');
-    showAtRef.current = Date.now();
+    setSyncHint('');
+    showAtRef.current = askedAt;
     // 自动发音（用户 2026-10-14，遵循设置页「自动发音」开关）：出题即朗读单词
     void speakAuto({ text: current.word.lemma, mode: 'word' }, current.bookWord.wordId);
-  }, [phase, current]);
+  }, [phase, current, idx]);
 
   /** 答题 → 判定 → 落库 → 反馈 → 下一题 */
   const answer = async (key: string, forceUnknown = false): Promise<void> => {
@@ -196,16 +218,29 @@ export default function QuizPage() {
     const nextFail = failStreakAfterVerdict(bw.failStreak, v);
     const nextSpecial = specialTrainingAfter(nextFail, nextStreak, bw.specialTraining);
     const graduated = nextStreak >= QUIZ_GRADUATE_STREAK && !bw.specialTraining;
+    // 作答结果先写入本题缓存（「上一题」回顾的原样恢复依赖它）
+    setItems((its) => its.map((it, i) => (i === idx ? { ...it, verdict: v, pickedKey: key } : it)));
+    const quizPatch = {
+      tier: nextTier,
+      streak: nextStreak,
+      failStreak: nextFail,
+      specialTraining: nextSpecial,
+      lastQuizAt: nowIso,
+      quizDayStreak: nextDayStreak,
+      quizDayPassed: nextDayPassed,
+    };
     try {
-      await getRepos().word.updateBookWordQuiz(bw.id, {
-        tier: nextTier,
-        streak: nextStreak,
-        failStreak: nextFail,
-        specialTraining: nextSpecial,
-        lastQuizAt: nowIso,
-        quizDayStreak: nextDayStreak,
-        quizDayPassed: nextDayPassed,
-      });
+      // 走离线队列统一入口：云端缺列（PGRST204）/ 断网时不弹红条阻断学习，
+      // 失败入 pending_ops 等待补传（2026-10-15 排查：线上库缺 quizDayPassed 列，
+      // 直写必失败 ⇒ 进度永不保存 ⇒ 待完成永远不降。详见 docs/交接-2026-10-15.md）。
+      const outcome = await runOrQueue(
+        'bookWord.quiz',
+        { bookWordId: bw.id, patch: quizPatch },
+        async () => {
+          await getRepos().word.updateBookWordQuiz(bw.id, quizPatch);
+        },
+      );
+      if (outcome === 'queued') setSyncHint('本条进度已存本机，联网后自动同步');
       setStats((s) => ({
         skilled: s.skilled + (v === 'skilled' ? 1 : 0),
         graduated: s.graduated + (graduated ? 1 : 0),
@@ -223,7 +258,7 @@ export default function QuizPage() {
         if (hit) await completeHit(hit.id);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeWriteError(e));
     }
     // 自动下一题（设置开关，默认关=手动点「下一题」，用户 2026-10-14：答完要能看清对错与正确答案）
     if (quizAutoNext) {
@@ -397,6 +432,16 @@ export default function QuizPage() {
                   {mark}
                   {o.pos ? `${o.pos} ` : ''}
                   {o.zh}
+                  {/* 判定后显示该释义所属词形（用户 2026-10-15：选错也要知道干扰项是哪个词） */}
+                  {showState && optionSuffix(o, true) && (
+                    <Typography
+                      component="span"
+                      variant="caption"
+                      sx={{ ml: 1, opacity: 0.7, textTransform: 'none' }}
+                    >
+                      {optionSuffix(o, showState)}
+                    </Typography>
+                  )}
                 </Button>
               );
             })}
@@ -409,18 +454,33 @@ export default function QuizPage() {
                   {verdict === 'skilled' ? '继续，连对 5 次就毕业' : '这个词标记后会更频繁出现'}
                 </Typography>
               </Stack>
-              {/* 手动下一题（quizAutoNext 关时显示，默认关——答完可看清对错与正确答案再走） */}
-              {!quizAutoNext && (
-                <Button
-                  variant="contained"
-                  onClick={() => {
-                    if (idx + 1 >= items.length) setPhase('done');
-                    else setIdx((i) => i + 1);
-                  }}
-                >
-                  {idx + 1 >= items.length ? '看总结' : '下一题'}
-                </Button>
+              {syncHint && (
+                <Typography variant="caption" color="text.secondary">
+                  {syncHint}
+                </Typography>
               )}
+              <Stack direction="row" spacing={1} alignItems="center">
+                {/* 上一题（用户 2026-10-15：点错时回看上一词——恢复原选项与判定，不重摇不重判） */}
+                <Button
+                  variant="outlined"
+                  disabled={idx === 0}
+                  onClick={() => setIdx((i) => Math.max(0, i - 1))}
+                >
+                  上一题
+                </Button>
+                {/* 手动下一题（quizAutoNext 关时显示，默认关——答完可看清对错与正确答案再走） */}
+                {!quizAutoNext && (
+                  <Button
+                    variant="contained"
+                    onClick={() => {
+                      if (idx + 1 >= items.length) setPhase('done');
+                      else setIdx((i) => i + 1);
+                    }}
+                  >
+                    {idx + 1 >= items.length ? '看总结' : '下一题'}
+                  </Button>
+                )}
+              </Stack>
             </Stack>
           )}
           {/* 不会/想不起/不确定（用户 2026-10-14 第 2 次反馈：三个合成一个）：

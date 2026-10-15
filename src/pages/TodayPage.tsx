@@ -151,13 +151,15 @@ export default function TodayPage() {
         </Paper>
       ) : (
         <>
-          {/* 计划概览（计划制的输入面板，保留） */}
+          {/* 计划概览（计划制的输入面板，保留；四标签可点，2026-10-15） */}
           <Paper sx={{ mt: 2, p: 2 }}>
             <PlanSummaryCard
               plan={activePlan}
               validation={planValidation}
               finishDate={planFinish}
               overdueCount={overdue?.count ?? 0}
+              onEditPlan={() => navigate('/plan-editor')}
+              onOpenReschedule={() => setGuardOpen(true)}
             />
           </Paper>
 

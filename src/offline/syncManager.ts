@@ -61,6 +61,13 @@ const HANDLERS: Record<PendingOpName, OpHandler> = {
   'pronunciation.log': async (payload, repos) => {
     await repos.feedback.logPronunciation(payload as never);
   },
+  // 考查制单题结果（2026-10-15：直写云端缺列 PGRST204 / 断网时入队，补传重放）
+  'bookWord.quiz': async (payload, repos) => {
+    const bookWordId = s(payload.bookWordId);
+    const patch = (payload.patch ?? {}) as Record<string, unknown>;
+    const updated = await repos.word.updateBookWordQuiz(bookWordId, patch as never);
+    if (!updated) throw new Error(`bookWord.quiz affected 0 rows for ${bookWordId}`);
+  },
 };
 
 export { isOnline };

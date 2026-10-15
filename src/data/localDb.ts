@@ -17,7 +17,8 @@ export type PendingOpName =
   | 'summary.create'
   | 'confusion.upsert'
   | 'issue.create'
-  | 'pronunciation.log';
+  | 'pronunciation.log'
+  | 'bookWord.quiz';
 
 export interface PendingOp {
   /** 幂等键（uuid）；重复补传同 op 无副作用 */

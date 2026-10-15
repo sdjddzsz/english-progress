@@ -8,10 +8,11 @@ import {
   type DistractorCandidate,
 } from '../../src/features/quiz/distractors';
 
-const c = (key: string, zh: string, pos: string, order = 0): DistractorCandidate => ({
+const c = (key: string, zh: string, pos: string, order = 0, lemma = `word-${key}`): DistractorCandidate => ({
   key,
   zh,
   pos,
+  lemma,
   order,
 });
 

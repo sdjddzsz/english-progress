@@ -15,6 +15,8 @@ export interface DistractorCandidate {
   zh: string;
   /** 词性原文（如 "n."）；空串 = 未知 */
   pos: string;
+  /** 该释义所属词形（用户 2026-10-15：作答后每个选项都要能看出是哪个词的义项） */
+  lemma: string;
   /** 词书序（listNo*1000+orderInList 之类的序，用于频带相近判断）；未知传 0 */
   order: number;
   /** 选项下不去重用的标识（senseId 或 wordId#idx） */
@@ -85,4 +87,13 @@ export function buildOptions(
   pool: DistractorCandidate[],
 ): DistractorCandidate[] {
   return shuffle([correct, ...pickDistractors(correct, pool, 3)]);
+}
+
+/**
+ * 选项附注文案：判定后（showState）每个选项都带出**所属词形**——用户 2026-10-15：
+ * 选错也要一眼看出干扰项是哪个词的义项，不然错了不知道错在哪。
+ * 未判定时不显示（避免提前泄题）。
+ */
+export function optionSuffix(o: DistractorCandidate, showState: boolean): string {
+  return showState && o.lemma ? `（${o.lemma}）` : '';
 }
