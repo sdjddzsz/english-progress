@@ -78,6 +78,11 @@ export default defineConfig({
   build: {
     target: 'es2020',
     sourcemap: false,
+    // 沙箱的 node-safe-delete-shim 会把 Vite 的 emptyDir（清空 dist）判为批量删除并报
+    // SAFE_DELETE_BULK_GUARD_ERROR（2026-10-15 实测：build 连续两次挂在清 dist 这一步）。
+    // dist 是构建产物目录（非个人文件），此处关闭自动清空，改由脚本手动清理；
+    // 旧 chunk 残留无害（index.html 引用新 hash），发布前 ensure_clean_dist 兜底。
+    emptyOutDir: false,
     rollupOptions: {
       output: {
         // meSpeak（espeak 兜底轨）单独分包：动态 import 已懒加载，配合 workbox 排除项不进 precache

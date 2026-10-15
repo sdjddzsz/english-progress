@@ -45,7 +45,12 @@ export function pronunciationKeyOf(arpabet: string): string {
   return t === '' ? 'NO_PRONUNCIATION' : t;
 }
 
-/** 判定身份：**同 lemma + 同读音 = 同一个判定单位**；读音不同 ⇒ 不同单位 */
+/**
+ * 判定身份（用户 2026-10-15 重申定案）：**同 lemma + 同读音 = 同一个单词**——
+ * 哪怕词性不同（appointment 的 n.[经]任命 与 n.约会 同读音，就是同一个单词，
+ * 判定进度共享，绝不互为干扰项）；**不同读音对应不同词性才算不同单词**
+ * （record 的 /ˈrekəd/ 与 /rɪˈkɔːd/ 是两个判定单位）。
+ */
 export function isSameWordUnit(a: WordSense, b: WordSense): boolean {
   return a.lemma === b.lemma && pronunciationKeyOf(a.arpabet) === pronunciationKeyOf(b.arpabet);
 }

@@ -350,42 +350,45 @@ export default function QuizPage() {
             value={(idx / Math.max(1, items.length)) * 100}
             sx={{ mb: 3 }}
           />
-          <Stack direction="row" spacing={1} alignItems="baseline" justifyContent="center">
-            <Typography variant="h4">{current.word.lemma}</Typography>
-            {/* ★ 音标 + 词性小灰字（用户 2026-10-14 第 1 条：音标放单词旁边）：
-                同一单词不同义项词性/发音可能不同，出题时必须标注本义项 */}
-            {senseOf.ipa && (
-              <Typography variant="body2" color="text.secondary">
-                /{senseOf.ipa}/
-              </Typography>
-            )}
-            {/* 音标旁喇叭（用户 2026-10-14：考查页也要能手动点发音）：
-                出题已自动朗读（遵循 autoSpeak 开关），这里补手动入口，读当前义项的单词 */}
-            <Tooltip title={loading ? phaseLabel : '发音'}>
-              <span>
-                <IconButton
-                  size="small"
-                  disabled={loading}
-                  aria-label="play quiz word"
-                  onClick={() =>
-                    void speak({ text: current.word.lemma, mode: 'word' }, current.bookWord.wordId)
-                  }
-                >
-                  {loading ? <CircularProgress size={18} /> : <VolumeUpIcon fontSize="small" />}
-                </IconButton>
-              </span>
-            </Tooltip>
-            {/* 读取中/合成中只放 Tooltip 等于看不见（自动朗读时无人悬停），明面显示 */}
-            {loading && (
-              <Typography variant="caption" color="text.secondary">
-                {phaseLabel}
-              </Typography>
-            )}
-            {multiSense && senseOf.pos && (
-              <Typography variant="body2" color="text.secondary">
-                {senseOf.pos}
-              </Typography>
-            )}
+          {/* 单词一行、音标/喇叭/词性一行（用户 2026-10-15：窄屏挤成一团，长内容必须自动换行） */}
+          <Stack spacing={0.5} alignItems="center" sx={{ width: '100%' }}>
+            <Typography variant="h4" sx={{ overflowWrap: 'anywhere', textAlign: 'center', maxWidth: '100%' }}>
+              {current.word.lemma}
+            </Typography>
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" flexWrap="wrap" useFlexGap sx={{ maxWidth: '100%' }}>
+              {/* 音标允许任意断行（音标是一整个无空格 token，必须 anywhere 才能换） */}
+              {senseOf.ipa && (
+                <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                  /{senseOf.ipa}/
+                </Typography>
+              )}
+              {/* 喇叭（用户 2026-10-14）：出题已自动朗读（遵循 autoSpeak 开关），这里补手动入口 */}
+              <Tooltip title={loading ? phaseLabel : '发音'}>
+                <span>
+                  <IconButton
+                    size="small"
+                    disabled={loading}
+                    aria-label="play quiz word"
+                    onClick={() =>
+                      void speak({ text: current.word.lemma, mode: 'word' }, current.bookWord.wordId)
+                    }
+                  >
+                    {loading ? <CircularProgress size={18} /> : <VolumeUpIcon fontSize="small" />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+              {/* 读取中/合成中只放 Tooltip 等于看不见（自动朗读时无人悬停），明面显示 */}
+              {loading && (
+                <Typography variant="caption" color="text.secondary">
+                  {phaseLabel}
+                </Typography>
+              )}
+              {multiSense && senseOf.pos && (
+                <Typography variant="body2" color="text.secondary">
+                  {senseOf.pos}
+                </Typography>
+              )}
+            </Stack>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, textAlign: 'center' }}>
             今天还剩 <strong>{todayLeft}</strong> 个词待过关（连续达标 {QUIZ_DAY_PASS_COUNT} 次）·
@@ -412,37 +415,48 @@ export default function QuizPage() {
                 neutral: { bgcolor: '#f5f5f5', color: 'rgba(0,0,0,0.38)' },
               }[state];
               const mark = state === 'correct' ? '✓ ' : state === 'wrong' ? '✗ ' : '';
+              // 判定后点任意选项 = 朗读该选项所属单词（用户 2026-10-15：答完想听哪个就点哪个）
+              const playOption = (): void => {
+                if (!o.lemma) return;
+                void speak({ text: o.lemma, mode: 'word' }, o.key.split('#')[0]);
+              };
               return (
-                <Button
+                <Tooltip
                   key={o.key}
-                  fullWidth
-                  // 判定后不用 disabled（MUI 的 .Mui-disabled 样式优先级高于 sx，
-                  // 会把自定义绿/红底色盖成灰——2026-10-14 截图色块异常的根源）：
-                  // 保持 outlined + sx 全量接管配色，用 pointerEvents 挡点击。
-                  variant="outlined"
-                  disableElevation
-                  onClick={showState ? undefined : () => void answer(o.key)}
-                  sx={{
-                    justifyContent: 'flex-start',
-                    textTransform: 'none',
-                    py: 1.2,
-                    ...(showState ? { border: '1px solid', pointerEvents: 'none', ...softStyle } : {}),
-                  }}
+                  title={showState ? `朗读 ${o.lemma}` : ''}
+                  placement="left"
                 >
-                  {mark}
-                  {o.pos ? `${o.pos} ` : ''}
-                  {o.zh}
-                  {/* 判定后显示该释义所属词形（用户 2026-10-15：选错也要知道干扰项是哪个词） */}
-                  {showState && optionSuffix(o, true) && (
-                    <Typography
-                      component="span"
-                      variant="caption"
-                      sx={{ ml: 1, opacity: 0.7, textTransform: 'none' }}
-                    >
-                      {optionSuffix(o, showState)}
-                    </Typography>
-                  )}
-                </Button>
+                  <Button
+                    fullWidth
+                    // 判定后不用 disabled（MUI 的 .Mui-disabled 样式优先级高于 sx，
+                    // 会把自定义绿/红底色盖成灰——2026-10-14 截图色块异常的根源）：
+                    // 保持 outlined + sx 全量接管配色。判定后可点（朗读该词），不触发新判定。
+                    variant="outlined"
+                    disableElevation
+                    onClick={showState ? playOption : () => void answer(o.key)}
+                    aria-label={showState ? `朗读 ${o.lemma}` : undefined}
+                    sx={{
+                      justifyContent: 'flex-start',
+                      textTransform: 'none',
+                      py: 1.2,
+                      ...(showState ? { border: '1px solid', ...softStyle } : {}),
+                    }}
+                  >
+                    {mark}
+                    {o.pos ? `${o.pos} ` : ''}
+                    {o.zh}
+                    {/* 判定后显示该释义所属词形（用户 2026-10-15：选错也要知道干扰项是哪个词） */}
+                    {showState && optionSuffix(o, true) && (
+                      <Typography
+                        component="span"
+                        variant="caption"
+                        sx={{ ml: 1, opacity: 0.7, textTransform: 'none' }}
+                      >
+                        {optionSuffix(o, showState)}
+                      </Typography>
+                    )}
+                  </Button>
+                </Tooltip>
               );
             })}
           </Stack>

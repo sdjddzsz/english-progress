@@ -55,7 +55,8 @@ function closenessRank(correct: DistractorCandidate, c: DistractorCandidate): nu
 
 /**
  * 从候选池里挑 n 个干扰项：**相似优先，随机补齐**。
- * - 正确项自身与同词的其它义项不进干扰项（同词义项互相像，会造成无解题）
+ * - 正确项自身与**同词的其它义项**不进干扰项（用户 2026-10-15 定案：同词同读音哪怕不同词性
+ *   也是同一个单词，判定单位是词——同词义项互为干扰会造出"同一个词自己考自己"的无解题）；
  * - 打分并列时随机取（避免每次考同题都出同一组干扰）
  */
 export function pickDistractors(
@@ -64,7 +65,7 @@ export function pickDistractors(
   n = 3,
 ): DistractorCandidate[] {
   const eligible = pool.filter(
-    (c) => c.key !== correct.key && c.zh && c.zh !== correct.zh,
+    (c) => c.key !== correct.key && c.zh && c.zh !== correct.zh && c.lemma !== correct.lemma,
   );
   const ranked = shuffle(eligible)
     .map((c) => ({ c, rank: closenessRank(correct, c) }))

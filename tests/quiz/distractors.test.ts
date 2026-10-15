@@ -56,6 +56,25 @@ describe('pickDistractors', () => {
     expect(pickDistractors(correct, pool, 3)).toHaveLength(1);
   });
 
+  it('同词义项不互为干扰（用户 2026-10-15：同词同读音哪怕不同词性也是同一个单词）', () => {
+    // 正确项 lemma=word-a#0（c() 默认 lemma=`word-${key}`）；同词义项显式同名 lemma
+    const sameWordSense: DistractorCandidate = {
+      ...c('a#3', '约会, 委任的职位', 'n.', 5),
+      lemma: correct.lemma,
+    };
+    const pool = [
+      sameWordSense, // 同词不同义项：必须被排除
+      c('n1', '王后, 女王', 'n.', 4),
+      c('n2', '回顾, 追忆, 反省', 'n.', 6),
+      c('n3', '荣誉, 尊敬', 'n.', 7),
+    ];
+    const picked = pickDistractors(correct, pool, 3);
+    for (const p of picked) {
+      expect(p.lemma).not.toBe(correct.lemma);
+    }
+    expect(picked.map((p) => p.key)).not.toContain('a#3');
+  });
+
   it('buildOptions：正确项 + 3 干扰，共 4 个且互不重复', () => {
     const pool = [
       c('n1', '王后, 女王', 'n.', 4),
