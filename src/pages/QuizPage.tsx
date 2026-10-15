@@ -1,12 +1,11 @@
 /**
- * QuizPage —— 考查制主循环（用户 2026-10-14 定案，摸底已砍）。
+ * QuizPage —— 阶段一「由词选义」考查页（用户 2026-10-15 四阶段制）。
  *
  * 出题：单词（多义项词旁小灰字标词性）→ 4 选 1 词义（干扰项相似优先，见 features/quiz/distractors.ts）
- * 判定：按用时+对错四档（features/quiz/judging.ts）：
- *   ≤1s 选对=熟练（连续 5 次毕业出池）；1-3s=认识；3-5s=不熟；>5s 或选错=生词
- *   连续 3 次不熟/生词 → 特种训练（每天必考直到毕业）
- * 频率：越生疏考得越勤（T4 每天 / T3 隔天 / T2 两天 / T1 三天）
- * 本轮结束条件：全部词连续熟练 ≥5 次。
+ * 判定：按用时+对错四档（features/quiz/judging.ts）
+ * 晋级：连续熟练 ≥ 阶段一阈值（默认 3，设置页可改）→ 进入阶段二（features/quiz/stages.ts）
+ * 阶段池：该阶段全部词，同日已答不再出现（selectStagePool）；
+ *   特种训练优先（连续不熟/生词 ≥3），答错的词排到队尾重来直到答对。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -31,37 +30,21 @@ import { chatTurn } from '../ai/llmClient';
 import { displaySenses, normalizeSenses } from '../features/senses';
 import type { BookWord, Word } from '../types/domain';
 import {
-  QUIZ_GRADUATE_STREAK,
   judgeAnswer,
-  specialTrainingAfter,
-  streakAfterVerdict,
-  failStreakAfterVerdict,
-  tierAfterQuiz,
-  isDayPassedToday,
   isSameUtcDay,
   quizDayStreakAfter,
-  QUIZ_DAY_PASS_COUNT,
   verdictChipSx,
   verdictLabel,
   type QuizVerdict,
-  type QuizDayThreshold,
-} from '../features/quiz/judging';
-import {
+} from '../features/quiz/judging';import {
   optionSuffix,
   type DistractorCandidate,
 } from '../features/quiz/distractors';
-import { selectQuizPool } from '../features/quiz/pool';
+import { applyStageChoiceResult, selectStagePool, STAGE_META } from '../features/quiz/stages';
 import { buildQuestion } from '../features/quiz/question';
 import { clearSession, loadSession, saveSession, toSnapshots } from '../features/quiz/session';
 import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
-
-/** 当天过关档位的中文名（展示用） */
-const DAY_THRESHOLD_LABEL: Record<QuizDayThreshold, string> = {
-  lenient: '宽松',
-  standard: '适当',
-  strict: '严格',
-};
 
 interface QuizItem {
   bookWord: BookWord;
@@ -80,7 +63,9 @@ type Phase = 'loading' | 'quiz' | 'between' | 'done';
 export default function QuizPage() {
   const navigate = useNavigate();
   const { activeBookId, userId, todayHits, completeHit } = useAppStore();
-  const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold, quizDailyLimit } = useSettingsStore();
+  const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold, quizDailyLimit, stageGraduate } =
+    useSettingsStore();
+  const graduateStreak = stageGraduate[1];
   const { speakAuto, speak, loading, phaseLabel } = useTTS();
   const sfx = useSfx();
   const [phase, setPhase] = useState<Phase>('loading');
@@ -115,9 +100,9 @@ export default function QuizPage() {
       if (!bookId) throw new Error('没有生效词书');
       const all = await repos.word.listBookWords(bookId);
       const now = new Date();
-      // 选词池与今日页共用同一套规则（features/quiz/pool.ts）；恢复分支只用 total/graduated
-      const poolResult = selectQuizPool(all, now);
-      setRemaining(Math.max(0, poolResult.total - poolResult.graduated));
+      // 阶段一池：该阶段全部词、同日已答不再出（features/quiz/stages.ts）
+      const stagePool = selectStagePool(all, 1, now);
+      setRemaining(stagePool.length);
 
       // ===== 会话恢复：当天有快照 → 原样续做（顺序/进度/已答缓存都不动） =====
       const snap = loadSession(userId, bookId);
@@ -170,11 +155,11 @@ export default function QuizPage() {
       }
 
       // ===== 新建当天队列 =====
-      if (poolResult.pool.length === 0) {
+      if (stagePool.length === 0) {
         setPhase('done');
         return;
       }
-      const batch = poolResult.pool.slice(0, quizDailyLimit);
+      const batch = stagePool.slice(0, quizDailyLimit);
       const words = await repos.word.listWordsByIds(batch.map((bw) => bw.wordId));
       const wordById = new Map(words.map((w) => [w.id, w]));
       const quizItems: QuizItem[] = batch
@@ -292,28 +277,26 @@ export default function QuizPage() {
     setVerdict(v);
     const bw = current.bookWord;
     const now = new Date();
-    const nowIso = now.toISOString();
-    // 当天小循环：按设置档位（宽松/适当/严格）累计连续达标，3 次当天过关
     const firstQuizOfDay = !isSameUtcDay(bw.lastQuizAt, now);
+    // ★ 四阶段制（用户 2026-10-15）：阶段走向是唯一权威（晋级/特训/层升降都在 stages.ts 引擎里）
+    const sp = applyStageChoiceResult(bw, v, graduateStreak, now);
+    const graduated = sp.stage !== bw.stage; // 阶段一毕业 → 晋级阶段二
+    // 当天小循环计数保留（词书页「今日已过关」展示用），但不再是出池条件——
+    // 阶段制的出池条件是「今天答过」（lastQuizAt 同日不重复）
     const nextDayStreak = quizDayStreakAfter(bw.quizDayStreak ?? 0, v, quizDayThreshold);
-    const nextDayPassed = nextDayStreak >= QUIZ_DAY_PASS_COUNT;
-    // 总计划排次：tier 只在当天第一次判定时更新（不被当天最终熟悉度影响）
-    const nextTier = tierAfterQuiz(bw.tier, v, firstQuizOfDay);
-    const nextStreak = streakAfterVerdict(bw.streak, v);
-    const nextFail = failStreakAfterVerdict(bw.failStreak, v);
-    const nextSpecial = specialTrainingAfter(nextFail, nextStreak, bw.specialTraining);
-    const graduated = nextStreak >= QUIZ_GRADUATE_STREAK && !bw.specialTraining;
     // 本地行状态同步更新（重现题/同词再次作答时用的不再是 start() 时的旧快照，
     // 否则连续达标计数会算错：错→认识→熟练 应累计 2 次，旧快照会算成 1）
     const nextBw: BookWord = {
       ...bw,
-      tier: nextTier,
-      streak: nextStreak,
-      failStreak: nextFail,
-      specialTraining: nextSpecial,
-      lastQuizAt: nowIso,
+      tier: sp.tier,
+      streak: sp.streak,
+      failStreak: sp.failStreak,
+      specialTraining: sp.specialTraining,
+      lastQuizAt: sp.lastQuizAt,
       quizDayStreak: nextDayStreak,
-      quizDayPassed: nextDayPassed,
+      quizDayPassed: true,
+      stage: sp.stage,
+      stageStreak: sp.stageStreak,
     };
     // 作答结果先写入本题缓存（「上一题」回顾的原样恢复依赖它）
     setItems((its) =>
@@ -325,13 +308,15 @@ export default function QuizPage() {
       setItems((its) => [...its, { bookWord: nextBw, word: current.word, senseIndex }]);
     }
     const quizPatch = {
-      tier: nextTier,
-      streak: nextStreak,
-      failStreak: nextFail,
-      specialTraining: nextSpecial,
-      lastQuizAt: nowIso,
+      tier: sp.tier,
+      streak: sp.streak,
+      failStreak: sp.failStreak,
+      specialTraining: sp.specialTraining,
+      lastQuizAt: sp.lastQuizAt,
       quizDayStreak: nextDayStreak,
-      quizDayPassed: nextDayPassed,
+      quizDayPassed: true,
+      stage: sp.stage,
+      stageStreak: sp.stageStreak,
     };
     try {
       // 走离线队列统一入口：云端缺列（PGRST204）/ 断网时不弹红条阻断学习，
@@ -348,16 +333,15 @@ export default function QuizPage() {
       setStats((s) => ({
         skilled: s.skilled + (v === 'skilled' ? 1 : 0),
         graduated: s.graduated + (graduated ? 1 : 0),
-        special: s.special + (nextSpecial && !bw.specialTraining ? 1 : 0),
-        dayPassed: s.dayPassed + (nextDayPassed && !isDayPassedToday(bw) ? 1 : 0),
+        special: s.special + (sp.specialTraining && !bw.specialTraining ? 1 : 0),
+        dayPassed: s.dayPassed + (firstQuizOfDay ? 1 : 0),
         total: s.total,
       }));
-      if (graduated) setRemaining((r) => Math.max(0, r - 1));
-      if (nextDayPassed) setTodayLeft((n) => Math.max(0, n - 1));
-      // 当天过关 → 同步消掉今日队列里该词的任务（用户 2026-10-14：首页「阶段待完成」要跟着真变）。
-      // 之前考查只写词书行、从不标 hit 完成 ⇒ 练了两轮首页数字纹丝不动。
+      if (firstQuizOfDay) setRemaining((r) => Math.max(0, r - 1));
+      if (firstQuizOfDay) setTodayLeft((n) => Math.max(0, n - 1));
+      // 今天答过 → 同步消掉旧计划制今日队列里该词的任务（联动项见 docs/联动清单.md #5）。
       // 完成一条 pending 即可（同词在今日队列里可能被排进多个模态，消掉一条就算当天交代过了）。
-      if (nextDayPassed) {
+      if (firstQuizOfDay) {
         const hit = todayHits.find((h) => h.wordId === bw.wordId && h.status === 'pending');
         if (hit) await completeHit(hit.id);
       }
@@ -427,10 +411,10 @@ export default function QuizPage() {
 
   return (
     <Box p={2} pb={4} maxWidth={720} mx="auto">
-      <Typography variant="h5">单词考查</Typography>
+      <Typography variant="h5">{STAGE_META[1].name}</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
         看单词选词义：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。
-        连续熟练 {QUIZ_GRADUATE_STREAK} 次的词本轮不再出现；答错的词会排到队尾重来，直到答对才放行。
+        连续熟练 {graduateStreak} 次晋级阶段二；不限每天一轮，完成一轮可立即再来一轮；答错的词会排到队尾重来，直到答对才放行。
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError('')}>
@@ -505,9 +489,8 @@ export default function QuizPage() {
             </Stack>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, textAlign: 'center' }}>
-            今日考查 <strong>{stats.total}</strong> 词（按生疏度从全表挑出，特种训练优先，不是全部词都来）
-            · 答错重排 <strong>{items.length - idx - 1}</strong> 题在后面 ·
-            还剩 {todayLeft} 个待过关（连续达标 {QUIZ_DAY_PASS_COUNT} 次）· 档位「{DAY_THRESHOLD_LABEL[quizDayThreshold]}」
+            今日考查 <strong>{stats.total}</strong> 词（按生疏度挑出，特种训练优先）
+            · 答错重排 <strong>{items.length - idx - 1}</strong> 题在后面 · 不限每天一轮
           </Typography>
           <Stack spacing={1.5} sx={{ mt: 3 }}>
             {options.map((o) => {
@@ -589,7 +572,9 @@ export default function QuizPage() {
               <Stack direction="row" spacing={1} alignItems="center">
                 <Chip label={verdictLabel(verdict)} size="small" sx={verdictChipSx(verdict)} />
                 <Typography variant="body2" color="text.secondary">
-                  {verdict === 'skilled' ? '继续，连对 5 次就毕业' : '这个词标记后会更频繁出现'}
+                  {verdict === 'skilled'
+                    ? `继续，连对 ${graduateStreak} 次就进下一阶段`
+                    : '这个词标记后会更频繁出现'}
                 </Typography>
               </Stack>
               {syncHint && (
@@ -685,16 +670,15 @@ export default function QuizPage() {
         <Paper sx={{ mt: 3, p: 3, textAlign: 'center' }}>
           {remaining === 0 && !error ? (
             <Alert severity="success" sx={{ mb: 2 }}>
-              全部词都连续熟练 {QUIZ_GRADUATE_STREAK} 次以上——本轮计划完成！
+              阶段一的词这轮都过了一遍——可以立即再来一轮。
             </Alert>
           ) : (
             <Alert severity="info" sx={{ mb: 2 }}>
-              还剩 <strong>{remaining}</strong> 个词未毕业（连续熟练 {QUIZ_GRADUATE_STREAK} 次）。
-              全部毕业即本轮计划结束。
+              还剩 <strong>{remaining}</strong> 个词在阶段一池里。
             </Alert>
           )}
           <Typography variant="body2" color="text.secondary">
-            本轮：熟练 {stats.skilled} 次 · 毕业 {stats.graduated} 词 · 今天过关 {stats.dayPassed} 词 ·
+            本轮：熟练 {stats.skilled} 次 · 晋级 {stats.graduated} 词 · 答过 {stats.dayPassed} 词 ·
             新进特种训练 {stats.special} 词
           </Typography>
           <Stack direction="row" spacing={1} justifyContent="center" sx={{ mt: 2 }}>

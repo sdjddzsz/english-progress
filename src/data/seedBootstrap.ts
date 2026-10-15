@@ -223,12 +223,15 @@ export function seedToDocs(
       tier: 4 as BookWord['tier'],
       tierUpdatedAt: new Date().toISOString(),
       status: 'normal',
-      // 考查制判定字段（用户 2026-10-14）：全书从生词档起步，连续熟练 5 次毕业
+      // 考查制判定字段（用户 2026-10-14）：全书从生词档起步
       streak: 0,
       failStreak: 0,
       specialTraining: false,
       quizDayStreak: 0,
       quizDayPassed: false,
+      // 四阶段制（用户 2026-10-15）：新词一律从阶段一开始
+      stage: 1,
+      stageStreak: 0,
     });
   });
   return { words, bookWords };

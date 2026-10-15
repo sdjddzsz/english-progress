@@ -6,7 +6,9 @@ import MenuBookIcon from '@mui/icons-material/MenuBook';
 import SettingsIcon from '@mui/icons-material/Settings';
 import SearchIcon from '@mui/icons-material/Search';
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import TodayPage from './pages/TodayPage';
+import StagePage from './pages/StagePage';
+import StageDetailPage from './pages/StageDetailPage';
+import StageQuizPage from './pages/StageQuizPage';
 import StudyPage from './pages/StudyPage';
 import TrainingPage from './pages/TrainingPage';
 import AudioRecallPage from './pages/AudioRecallPage';
@@ -37,7 +39,7 @@ import { useAppStore } from './store/useAppStore';
  */
 
 const TAB_DEFS = [
-  { path: '/', icon: <TodayIcon />, label: 'Today' },
+  { path: '/', icon: <TodayIcon />, label: '阶段' },
   { path: '/training', icon: <SchoolIcon />, label: '训练' },
   { path: '/book', icon: <MenuBookIcon />, label: '词书' },
   { path: '/search', icon: <SearchIcon />, label: '查词' },
@@ -45,7 +47,7 @@ const TAB_DEFS = [
 ] as const;
 
 function activeTabIndex(pathname: string): number {
-  if (pathname.startsWith('/study')) return 0;
+  if (pathname.startsWith('/study') || pathname.startsWith('/stage') || pathname === '/' || pathname.startsWith('/quiz')) return 0;
   if (pathname.startsWith('/training')) return 1;
   if (pathname.startsWith('/book') || pathname.startsWith('/plan-editor')) return 2;
   if (pathname.startsWith('/search')) return 3;
@@ -120,7 +122,12 @@ export default function App() {
           <SyncStatusBanner />
           <Box sx={{ flex: 1 }}>
             <Routes>
-              <Route path="/" element={<OverdueGuardRoute><TodayPage /></OverdueGuardRoute>} />
+              {/* 四阶段制（用户 2026-10-15）：首页=阶段总览；阶段路由不包欠账守卫
+                  （「只要阶段词库里有词就可以刷」，欠账仍以提示条形式呈现） */}
+              <Route path="/" element={<StagePage />} />
+              <Route path="/stage/:stage" element={<StageDetailPage />} />
+              <Route path="/stage-quiz/:stage" element={<StageQuizPage />} />
+              {/* 阶段一「由词选义」考查页（复用原考查主循环） */}
               <Route path="/quiz" element={<QuizPage />} />
               <Route path="/study" element={<OverdueGuardRoute><StudyPage /></OverdueGuardRoute>} />
               <Route path="/training" element={<OverdueGuardRoute><TrainingPage /></OverdueGuardRoute>} />

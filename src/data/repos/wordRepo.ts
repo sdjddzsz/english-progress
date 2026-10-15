@@ -45,6 +45,9 @@ export interface WordRepo {
       lastQuizAt: string;
       quizDayStreak: number;
       quizDayPassed: boolean;
+      /** 四阶段制（用户 2026-10-15）：阶段与阶段内连续熟练次数一并落库 */
+      stage?: BookWord['stage'];
+      stageStreak?: number;
     },
   ): Promise<BookWord | null>;
   updateBookWordStatus(bookWordId: string, status: WordStatus): Promise<BookWord | null>;
@@ -67,6 +70,11 @@ export interface WordRepo {
    * @returns 实际落库的行数（只读回到的那些；id 不存在则不计）
    */
   updateWordTiers(pairs: { bookWordId: string; tier: Tier }[]): Promise<number>;
+  /**
+   * 批量调阶段（用户 2026-10-15 四阶段制：词书页多选手动调整）。
+   * 晋级/调阶时 stageStreak 清零（连续熟练按阶段重新计）。
+   */
+  updateWordStages(pairs: { bookWordId: string; stage: BookWord['stage'] }[]): Promise<number>;
   /** 词书总词量（**只数不读**：不要为了算一个比值把整本 8296 行拉下来） */
   countBookWords(bookId: string): Promise<number>;
   /**
@@ -218,6 +226,8 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
           lastQuizAt: null,
           quizDayStreak: 0,
           quizDayPassed: false,
+          stage: 1,
+          stageStreak: 0,
         } as unknown as Partial<BookWord>,
       ),
     resetAllQuizProgress: async (bookId) => {
@@ -229,7 +239,9 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
           bw.specialTraining ||
           Boolean(bw.lastQuizAt) ||
           (bw.quizDayStreak ?? 0) > 0 ||
-          Boolean(bw.quizDayPassed),
+          Boolean(bw.quizDayPassed) ||
+          (bw.stage ?? 1) !== 1 ||
+          (bw.stageStreak ?? 0) > 0,
       );
       if (dirty.length === 0) return 0;
       const now = new Date().toISOString();
@@ -245,6 +257,8 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
             lastQuizAt: null,
             quizDayStreak: 0,
             quizDayPassed: false,
+            stage: 1,
+            stageStreak: 0,
           }) as unknown as BookWord & Record<string, unknown>,
       );
       await impl.upsertBookWords(patched);
@@ -276,6 +290,34 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
       return patched.length;
     },
     countBookWords: (bookId) => bookWords.count([{ column: 'bookId', op: 'eq', value: bookId }]),
+
+    updateWordStages: async (pairs) => {
+      const wanted = new Map<string, BookWord['stage']>();
+      for (const p of pairs) {
+        if (p && typeof p.bookWordId === 'string' && p.bookWordId) wanted.set(p.bookWordId, p.stage);
+      }
+      const ids = [...wanted.keys()];
+      if (ids.length === 0) return 0;
+      const batches: string[][] = [];
+      for (let i = 0; i < ids.length; i += ID_BATCH) batches.push(ids.slice(i, i + ID_BATCH));
+      const pages = await mapLimit(batches, ID_BATCH_CONCURRENCY, (batch) =>
+        bookWords.list([{ column: 'id', op: 'in', values: batch }], { limit: batch.length }),
+      );
+      const patched = pages
+        .flat()
+        .filter((r) => wanted.has(r.id))
+        .map(
+          (r) =>
+            ({
+              ...r,
+              stage: wanted.get(r.id) as BookWord['stage'],
+              stageStreak: 0, // 调阶后连续熟练按新阶段重新计
+            }) as BookWord & Record<string, unknown>,
+        );
+      if (patched.length === 0) return 0;
+      await bookWords.upsertMany(patched);
+      return patched.length;
+    },
 
     listBookWordsByWordIds: async (bookId, wordIds) => {
       const unique = [...new Set(wordIds.filter((w): w is string => typeof w === 'string' && w.length > 0))];

@@ -17,7 +17,9 @@ const SRC = join(ROOT, 'src');
 
 /** 前台（学习路径）页面：Today/背单词/训练/词书/摸底/计划/设置 */
 const FRONTEND_PAGE_FILES = [
-  'pages/TodayPage.tsx',
+  'pages/StagePage.tsx',
+  'pages/StageDetailPage.tsx',
+  'pages/StageQuizPage.tsx',
   'pages/StudyPage.tsx',
   'pages/TrainingPage.tsx',
   'pages/AudioRecallPage.tsx',
@@ -175,11 +177,16 @@ describe('反自测 §4.8：诊断报告仅白名单路由渲染', () => {
     expect(src).toMatch(/if\s*\(!whitelisted\)\s*\{[\s\S]*?severity="error"/);
   });
 
-  it('学习类路由（/、/study、/training…）包 OverdueGuardRoute，诊断视图不在其中', () => {
+  it('学习类路由（/study、/training…）包 OverdueGuardRoute，诊断视图不在其中', () => {
     const app = readFileSync(join(SRC, 'App.tsx'), 'utf8');
-    for (const p of ['/', '/study', '/training', '/training/audio', '/training/cn2en']) {
+    // 首页（阶段总览）与阶段路由不包守卫（用户 2026-10-15：只要阶段词库里有词就可以刷，
+    // 欠账以提示条呈现、不路由级拦截）；其余学习类路由仍包。
+    for (const p of ['/study', '/training', '/training/audio', '/training/cn2en']) {
       expect(app.includes(`<Route path="${p}" element={<OverdueGuardRoute>`), `路由 ${p} 应包 OverdueGuardRoute`).toBe(true);
       expect(app.includes(`<Route path="${p}" element={<DiagReportView`), `路由 ${p} 不得挂诊断视图`).toBe(false);
+    }
+    for (const p of ['/', '/stage/:stage', '/stage-quiz/:stage']) {
+      expect(app.includes(`<Route path="${p}" element={<OverdueGuardRoute>`), `阶段路由 ${p} 不应被守卫拦截`).toBe(false);
     }
     // 诊断视图唯一挂载点已在上一用例断言为 /dashboard/diag
   });

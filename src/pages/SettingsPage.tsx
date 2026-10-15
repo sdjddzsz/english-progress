@@ -502,6 +502,35 @@ export default function SettingsPage() {
             </Typography>
           </Box>
 
+          <Box>
+            <Typography variant="body2" gutterBottom>
+              阶段毕业条件（连续熟练次数，用户 2026-10-15 四阶段制）
+            </Typography>
+            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+              {([1, 2, 3] as const).map((n) => (
+                <TextField
+                  key={n}
+                  select
+                  size="small"
+                  label={`阶段${['一', '二', '三'][n - 1]}`}
+                  value={settings.stageGraduate[n]}
+                  onChange={(e) => settings.setStageGraduate(n, Number(e.target.value))}
+                  sx={{ minWidth: 110 }}
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((c) => (
+                    <MenuItem key={c} value={c}>
+                      连续熟练 {c} 次
+                    </MenuItem>
+                  ))}
+                </TextField>
+              ))}
+            </Stack>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+              阶段一由词选义 / 阶段二由义选词 / 阶段三听音选词：连续熟练达标即晋级下一阶段（默认各 3 次）。
+              阶段四听词拼写：写对一次即彻底毕业，不可改。
+            </Typography>
+          </Box>
+
           <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Typography variant="body2">见中文联想英文（每日一小段）</Typography>
             <Switch

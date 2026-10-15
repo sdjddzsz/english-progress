@@ -200,6 +200,13 @@ export interface BookWord {
   quizDayStreak: number;
   /** 当天是否已过关（只对当天有效，隔夜失效） */
   quizDayPassed: boolean;
+  /**
+   * ★ 学习阶段（用户 2026-10-15 四阶段制）：1=由词选义 2=由义选词 3=听音选词 4=听词拼写；
+   * 0=阶段四毕业=彻底毕业（不再出现在任何阶段池里）。默认 1。
+   */
+  stage: 0 | 1 | 2 | 3 | 4;
+  /** 当前阶段内连续「熟练」次数（阶段毕业判定用；晋级/降阶时清零；阶段四不使用） */
+  stageStreak: number;
 }
 
 export interface StudyPlan {

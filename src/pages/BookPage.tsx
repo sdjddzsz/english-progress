@@ -19,18 +19,20 @@ import {
   Divider,
   FormControlLabel,
   IconButton,
+  MenuItem,
   Paper,
   Stack,
   Tab,
   Tabs,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import type { Book, BookWord, Tier, Word } from '../types/domain';
 import { TIERS } from '../scheduler';
-import { QUIZ_GRADUATE_STREAK } from '../features/quiz/judging';
 import { clearSession } from '../features/quiz/session';
+import { STAGE_LABEL, STAGE_META, type WordStage } from '../features/quiz/stages';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import {
   getSeedCursor,
@@ -76,6 +78,11 @@ export default function BookPage() {
   // 断点续传游标（本机 localStorage，**按当前登录用户隔离**）：
   // 必须与 seedLibraryToCloud 用同一个 userId 拼 key，否则 UI 提示会与实际续传点不一致。
   const [seedCursor, setSeedCursor] = useState<SeedCursor | null>(() => getSeedCursor(userId));
+  // 多选调阶段（用户 2026-10-15 四阶段制：词库每词标阶段，可多选手动调整）
+  const [stageSel, setStageSel] = useState<Set<string>>(new Set());
+  const [stageMoveOpen, setStageMoveOpen] = useState(false);
+  const [stageMoveTarget, setStageMoveTarget] = useState<number>(1);
+  const [stageMoveBusy, setStageMoveBusy] = useState(false);
   const runSeed = useCallback(async () => {
     const { userId: uid } = useAppStore.getState();
     if (!uid) {
@@ -116,6 +123,25 @@ export default function BookPage() {
   useEffect(() => {
     if (!selectedBookId && books.length > 0) setSelectedBookId(activeBookId ?? books[0].id);
   }, [books, activeBookId, selectedBookId]);
+
+  /** 多选调阶段：批量写 stage（stageStreak 清零，按新阶段重新计连击） */
+  const moveStageSelected = useCallback(async () => {
+    if (stageSel.size === 0) return;
+    setStageMoveBusy(true);
+    setError('');
+    try {
+      await getRepos().word.updateWordStages(
+        [...stageSel].map((id) => ({ bookWordId: id, stage: stageMoveTarget as WordStage })),
+      );
+      setStageSel(new Set());
+      setStageMoveOpen(false);
+      if (selectedBookId) await loadTier(selectedBookId, tier, page);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStageMoveBusy(false);
+    }
+  }, [stageSel, stageMoveTarget, selectedBookId, tier, page]);
 
   const loadTier = useCallback(async (bookId: string, t: Tier, p: number) => {
     setLoadingWords(true);
@@ -423,6 +449,27 @@ export default function BookPage() {
                   />
                 ))}
               </Tabs>
+              {/* 多选调阶段工具条（用户 2026-10-15 四阶段制） */}
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => {
+                    const pageIds = bookWords.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((bw) => bw.id);
+                    setStageSel((s) => (pageIds.every((id) => s.has(id)) ? new Set() : new Set(pageIds)));
+                  }}
+                >
+                  {stageSel.size > 0 ? `已选 ${stageSel.size} 词` : '勾选词条'}
+                </Button>
+                <Button
+                  size="small"
+                  variant="contained"
+                  disabled={stageSel.size === 0}
+                  onClick={() => setStageMoveOpen(true)}
+                >
+                  调整所选词的阶段
+                </Button>
+              </Stack>
               {error && (
                 <Typography variant="body2" color="error" sx={{ mt: 1 }}>
                   {error}
@@ -436,31 +483,43 @@ export default function BookPage() {
                 <Stack divider={<Divider flexItem />}>
                   {bookWords.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((bw) => (
                     <Stack key={bw.id} direction="row" justifyContent="space-between" alignItems="center" py={0.75}>
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography variant="body1" component="span">
-                          {wordMap[bw.wordId]?.lemma ?? bw.wordId}
-                        </Typography>
-                        {wordMap[bw.wordId]?.ipa && (
-                          <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                            /{wordMap[bw.wordId].ipa}/
+                      <Stack direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0, flex: 1 }}>
+                        <Checkbox
+                          size="small"
+                          checked={stageSel.has(bw.id)}
+                          onChange={() =>
+                            setStageSel((s) => {
+                              const next = new Set(s);
+                              if (next.has(bw.id)) next.delete(bw.id);
+                              else next.add(bw.id);
+                              return next;
+                            })
+                          }
+                        />
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="body1" component="span">
+                            {wordMap[bw.wordId]?.lemma ?? bw.wordId}
                           </Typography>
-                        )}
-                        {/* 考查进度（用户 2026-10-15：词书页能看每个单词的进度）：
-                            连续熟练 x/5、特种训练、当天过关、上次考查日期 */}
-                        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                          {bw.specialTraining && (
-                            <Chip size="small" color="error" variant="outlined" label="特训" sx={{ mr: 0.5 }} />
+                          {wordMap[bw.wordId]?.ipa && (
+                            <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                              /{wordMap[bw.wordId].ipa}/
+                            </Typography>
                           )}
-                          熟练连 {bw.streak}/{QUIZ_GRADUATE_STREAK}
-                          {bw.quizDayPassed ? ' · 今日已过关' : ''}
-                          {bw.lastQuizAt ? ` · 上次 ${bw.lastQuizAt.slice(0, 10)}` : ' · 未考过'}
-                        </Typography>
-                      </Box>
+                          {/* 四阶段制（用户 2026-10-15）：每词标所处阶段 + 阶段内连击 + 特训 */}
+                          <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                            {bw.specialTraining && (
+                              <Chip size="small" color="error" variant="outlined" label="特训" sx={{ mr: 0.5 }} />
+                            )}
+                            {STAGE_LABEL[bw.stage]} · 连 {bw.stageStreak}
+                            {bw.lastQuizAt ? ` · 上次 ${bw.lastQuizAt.slice(0, 10)}` : ' · 未考过'}
+                          </Typography>
+                        </Box>
+                      </Stack>
                       <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
                         <Typography variant="caption" color="text.secondary">
                           List {bw.listNo + 1} · {wordMap[bw.wordId]?.senses[0]?.slice(0, 18) ?? ''}
                         </Typography>
-                        <Tooltip title="重置这个词的考查进度（回 T4、记录清零）">
+                        <Tooltip title="重置这个词的考查进度（回阶段一、记录清零）">
                           <IconButton
                             size="small"
                             aria-label={`reset ${wordMap[bw.wordId]?.lemma ?? bw.wordId}`}
@@ -526,6 +585,37 @@ export default function BookPage() {
               </Button>
               <Button disabled={resetting} variant="contained" color="error" onClick={() => void doReset()}>
                 {resetting ? <CircularProgress size={18} /> : '确认重置'}
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          {/* 多选调阶段弹窗（四阶段制：调阶后 stageStreak 清零，按新阶段重新计） */}
+          <Dialog open={stageMoveOpen} onClose={() => (stageMoveBusy ? undefined : setStageMoveOpen(false))} maxWidth="xs" fullWidth>
+            <DialogTitle>调整 {stageSel.size} 个词的阶段</DialogTitle>
+            <DialogContent>
+              <TextField
+                select
+                fullWidth
+                size="small"
+                value={stageMoveTarget}
+                onChange={(e) => setStageMoveTarget(Number(e.target.value))}
+                sx={{ mt: 1 }}
+              >
+                <MenuItem value={1}>{STAGE_META[1].name}</MenuItem>
+                <MenuItem value={2}>{STAGE_META[2].name}</MenuItem>
+                <MenuItem value={3}>{STAGE_META[3].name}</MenuItem>
+                <MenuItem value={4}>{STAGE_META[4].name}</MenuItem>
+              </TextField>
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                调阶后该词的连续熟练清零，按新阶段重新计。
+              </Typography>
+            </DialogContent>
+            <DialogActions>
+              <Button disabled={stageMoveBusy} onClick={() => setStageMoveOpen(false)}>
+                取消
+              </Button>
+              <Button disabled={stageMoveBusy} variant="contained" onClick={() => void moveStageSelected()}>
+                {stageMoveBusy ? <CircularProgress size={18} /> : '确认移动'}
               </Button>
             </DialogActions>
           </Dialog>

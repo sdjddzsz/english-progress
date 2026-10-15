@@ -8,6 +8,7 @@ import type { QuizDayThreshold } from '../features/quiz/judging';
 import type { Device } from '../types/domain';
 import type { LLMChannel } from '../ai/llmClient';
 import { CN_TO_EN_DAILY_WORDS, DASHSCOPE_DEFAULT_MODEL, DEFAULT_TTS_PROVIDER, QUIZ_DAILY_LIMIT_DEFAULT, QUIZ_DAILY_LIMIT_MAX, QUIZ_DAILY_LIMIT_MIN } from '../config/constants';
+import { DEFAULT_STAGE_GRADUATE } from '../features/quiz/stages';
 import type { TTSProviderName } from '../types/domain';
 
 export interface SettingsState {
@@ -43,6 +44,8 @@ export interface SettingsState {
    * 只限"当天新铺的词"，答错重排不占额。
    */
   quizDailyLimit: number;
+  /** 四阶段制（用户 2026-10-15）：阶段一~三毕业所需连续熟练次数（默认各 3，可 1–10）；阶段四写对一次即毕业 */
+  stageGraduate: Record<1 | 2 | 3, number>;
 
   setDevice(device: Device): void;
   setCnToEn(enabled: boolean, dailyWords?: number): void;
@@ -54,6 +57,7 @@ export interface SettingsState {
   setQuizAutoNext(enabled: boolean): void;
   setQuizDayThreshold(threshold: QuizDayThreshold): void;
   setQuizDailyLimit(limit: number): void;
+  setStageGraduate(stage: 1 | 2 | 3, count: number): void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -73,6 +77,7 @@ export const useSettingsStore = create<SettingsState>()(
       quizAutoNext: false,
       quizDayThreshold: 'standard',
       quizDailyLimit: QUIZ_DAILY_LIMIT_DEFAULT,
+      stageGraduate: { 1: DEFAULT_STAGE_GRADUATE[1], 2: DEFAULT_STAGE_GRADUATE[2], 3: DEFAULT_STAGE_GRADUATE[3] },
 
       setDevice: (device) => set({ device }),
       setCnToEn: (cnToEnEnabled, dailyWords) =>
@@ -91,6 +96,13 @@ export const useSettingsStore = create<SettingsState>()(
             Math.max(QUIZ_DAILY_LIMIT_MIN, Math.round(quizDailyLimit)),
           ),
         }),
+      setStageGraduate: (stage, count) =>
+        set((s) => ({
+          stageGraduate: {
+            ...s.stageGraduate,
+            [stage]: Math.min(10, Math.max(1, Math.round(count))),
+          },
+        })),
     }),
     { name: 'ep-settings' },
   ),
