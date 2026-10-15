@@ -354,7 +354,7 @@ export default function QuizPage() {
       }));
       if (graduated) setRemaining((r) => Math.max(0, r - 1));
       if (nextDayPassed) setTodayLeft((n) => Math.max(0, n - 1));
-      // 当天过关 → 同步消掉今日队列里该词的任务（用户 2026-10-14：首页「今日待完成」要跟着真变）。
+      // 当天过关 → 同步消掉今日队列里该词的任务（用户 2026-10-14：首页「阶段待完成」要跟着真变）。
       // 之前考查只写词书行、从不标 hit 完成 ⇒ 练了两轮首页数字纹丝不动。
       // 完成一条 pending 即可（同词在今日队列里可能被排进多个模态，消掉一条就算当天交代过了）。
       if (nextDayPassed) {

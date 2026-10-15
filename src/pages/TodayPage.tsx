@@ -1,6 +1,6 @@
 /**
  * TodayPage.tsx —— 今日页（用户 2026-10-15 拍板 A：清单彻底改成考查制）：
- * 「今日待完成」与考查页（QuizPage）共用 selectQuizPool 同一套规则 ——
+ * 「阶段待完成」与考查页（QuizPage）共用 selectQuizPool 同一套规则 ——
  * 该考的词（层间隔 + 特种训练优先）且当天未过关；考查里过关/毕业，回到本页数字立刻真降。
  * 计划概览卡片与欠账守卫保留（仍是计划制的输入面板）；原计划制 hit 队列不再展示。
  * 页面不含调度逻辑：词书行来自 repos，规则来自 features/quiz。
@@ -202,7 +202,7 @@ export default function TodayPage() {
           <Paper sx={{ mt: 2, p: 2 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
               <Typography variant="body1">
-                今日待完成 <strong>{pool.length}</strong> · 共 {total} 词 · 已毕业 {graduated}
+                阶段待完成 <strong>{pool.length}</strong> · 共 {total} 词 · 已毕业 {graduated}
               </Typography>
               <Button
                 variant="contained"
