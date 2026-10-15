@@ -30,6 +30,7 @@ import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import type { Book, BookWord, Tier, Word } from '../types/domain';
 import { TIERS } from '../scheduler';
 import { QUIZ_GRADUATE_STREAK } from '../features/quiz/judging';
+import { clearSession } from '../features/quiz/session';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import {
   getSeedCursor,
@@ -173,6 +174,10 @@ export default function BookPage() {
         await repos.word.resetQuizProgress(confirmTarget.id);
         setResetMsg(`已重置「${wordMap[confirmTarget.wordId]?.lemma ?? confirmTarget.wordId}」。`);
       }
+      // 当天的考查会话快照一并作废（用户 2026-10-15：重置进度后，回到考查页不能
+      // 还恢复旧的队列与判定——那批词的进度已清，快照留着就是"保留进度"）。
+      const { userId: uid } = useAppStore.getState();
+      if (uid) clearSession(uid, selectedBookId);
       setConfirmTarget(null);
       // 重置后刷新当前层数据（层分布可能变化：全部回 T4）
       if (selectedBookId) void loadTier(selectedBookId, tier, page);
