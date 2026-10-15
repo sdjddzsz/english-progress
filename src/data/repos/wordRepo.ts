@@ -49,6 +49,17 @@ export interface WordRepo {
   ): Promise<BookWord | null>;
   updateBookWordStatus(bookWordId: string, status: WordStatus): Promise<BookWord | null>;
   /**
+   * 重置单个词的考查进度（用户 2026-10-15：词书页行内手动重置）。
+   * 考查 6 字段清零 + tier 回 T4（「清除重来」语义），tierUpdatedAt 记录操作时间。
+   */
+  resetQuizProgress(bookWordId: string): Promise<BookWord | null>;
+  /**
+   * 重置全书考查进度（用户 2026-10-15：进度坏完了清除重来）。
+   * 只重置**有进度痕迹**的行（streak/failStreak/lastQuizAt/quizDayStreak/specialTraining 任一非默认），
+   * 避免对 8296 行无差别 upsert。返回实际重置的行数。
+   */
+  resetAllQuizProgress(bookId: string): Promise<number>;
+  /**
    * **批量**改层 —— 必须成批，不可逐条（2026-10-13 线上「摸底分层 Failed to fetch」的成因之一）：
    * 一次摸底提交 ~300 条 assignments，逐条 `update` 就是 ~300 个串行请求，
    * 网关/连接扛不住就会整个 `Failed to fetch`（且前面写过的已经落库，重试还会重复写）。
@@ -131,7 +142,7 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
   /** 收藏确定性 ID：同一用户同一词永远只有一条（收藏幂等、取消幂等） */
   const bookmarkId = (userId: string, wordId: string): string => `${userId}_${wordId}`;
 
-  return {
+  const impl: WordRepo = {
     books,
     words,
     bookWords,
@@ -195,6 +206,50 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
         tierUpdatedAt: new Date().toISOString(),
       } as Partial<BookWord>),
     updateBookWordStatus: (bookWordId, status) => bookWords.update(bookWordId, { status } as Partial<BookWord>),
+    resetQuizProgress: (bookWordId) =>
+      bookWords.update(
+        bookWordId,
+        {
+          tier: 4,
+          tierUpdatedAt: new Date().toISOString(),
+          streak: 0,
+          failStreak: 0,
+          specialTraining: false,
+          lastQuizAt: null,
+          quizDayStreak: 0,
+          quizDayPassed: false,
+        } as unknown as Partial<BookWord>,
+      ),
+    resetAllQuizProgress: async (bookId) => {
+      const all = await impl.listBookWords(bookId);
+      const dirty = all.filter(
+        (bw) =>
+          bw.streak > 0 ||
+          bw.failStreak > 0 ||
+          bw.specialTraining ||
+          Boolean(bw.lastQuizAt) ||
+          (bw.quizDayStreak ?? 0) > 0 ||
+          Boolean(bw.quizDayPassed),
+      );
+      if (dirty.length === 0) return 0;
+      const now = new Date().toISOString();
+      const patched = dirty.map(
+        (bw) =>
+          ({
+            ...bw,
+            tier: 4,
+            tierUpdatedAt: now,
+            streak: 0,
+            failStreak: 0,
+            specialTraining: false,
+            lastQuizAt: null,
+            quizDayStreak: 0,
+            quizDayPassed: false,
+          }) as unknown as BookWord & Record<string, unknown>,
+      );
+      await impl.upsertBookWords(patched);
+      return patched.length;
+    },
     updateWordTiers: async (pairs) => {
       // 同一 id 多次出现时以最后一条为准（摸底里同 lemma 的多个义项共享一条 book_word）
       const wanted = new Map<string, Tier>();
@@ -286,5 +341,6 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
       );
       return new Set(pages.flat().map((b) => b.wordId));
     },
-  };
+  } satisfies WordRepo;
+  return impl;
 }

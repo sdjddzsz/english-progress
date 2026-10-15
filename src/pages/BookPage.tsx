@@ -12,16 +12,24 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   FormControlLabel,
+  IconButton,
   Paper,
   Stack,
   Tab,
   Tabs,
+  Tooltip,
   Typography,
 } from '@mui/material';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import type { Book, BookWord, Tier, Word } from '../types/domain';
 import { TIERS } from '../scheduler';
+import { QUIZ_GRADUATE_STREAK } from '../features/quiz/judging';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import {
   getSeedCursor,
@@ -67,7 +75,6 @@ export default function BookPage() {
   // 断点续传游标（本机 localStorage，**按当前登录用户隔离**）：
   // 必须与 seedLibraryToCloud 用同一个 userId 拼 key，否则 UI 提示会与实际续传点不一致。
   const [seedCursor, setSeedCursor] = useState<SeedCursor | null>(() => getSeedCursor(userId));
-
   const runSeed = useCallback(async () => {
     const { userId: uid } = useAppStore.getState();
     if (!uid) {
@@ -133,6 +140,49 @@ export default function BookPage() {
   useEffect(() => {
     if (selectedBookId) void loadTier(selectedBookId, tier, page);
   }, [selectedBookId, tier, page, loadTier]);
+
+  // 进度重置（用户 2026-10-15）：单词级 / 全局。confirmTarget=null 关闭弹窗。
+  const [confirmTarget, setConfirmTarget] = useState<'all' | BookWord | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetMsg, setResetMsg] = useState('');
+
+  /** 重置后刷新层分布（全部回 T4 时分布会变） */
+  const refreshTierStats = useCallback((bookId: string) => {
+    void (async () => {
+      try {
+        const all = await getRepos().word.listBookWords(bookId);
+        const counts = new Map<Tier, number>();
+        for (const bw of all) counts.set(bw.tier, (counts.get(bw.tier) ?? 0) + 1);
+        setTierStats(TIERS.map((t) => ({ tier: t, count: counts.get(t) ?? 0 })));
+      } catch {
+        // 层分布刷新失败不阻断
+      }
+    })();
+  }, []);
+
+  const doReset = useCallback(async () => {
+    if (!confirmTarget || !selectedBookId) return;
+    setResetting(true);
+    setResetMsg('');
+    try {
+      const repos = getRepos();
+      if (confirmTarget === 'all') {
+        const n = await repos.word.resetAllQuizProgress(selectedBookId);
+        setResetMsg(n === 0 ? '没有找到有进度痕迹的词，无需重置。' : `已重置 ${n} 个词的考查进度（全部回 T4）。`);
+      } else {
+        await repos.word.resetQuizProgress(confirmTarget.id);
+        setResetMsg(`已重置「${wordMap[confirmTarget.wordId]?.lemma ?? confirmTarget.wordId}」。`);
+      }
+      setConfirmTarget(null);
+      // 重置后刷新当前层数据（层分布可能变化：全部回 T4）
+      if (selectedBookId) void loadTier(selectedBookId, tier, page);
+      refreshTierStats(selectedBookId);
+    } catch (e) {
+      setResetMsg(`重置失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setResetting(false);
+    }
+  }, [confirmTarget, selectedBookId, tier, page, wordMap, loadTier, refreshTierStats]);
 
   // 各层词量：全书只读一次（listBookWords 无 tier 过滤），切 Tab 不重复拉
   useEffect(() => {
@@ -296,9 +346,21 @@ export default function BookPage() {
             <Paper sx={{ mt: 2, p: 2 }}>
               <Stack direction="row" justifyContent="space-between" alignItems="center">
                 <Typography variant="h6">难度层视图</Typography>
-                <Button size="small" variant="outlined" onClick={() => navigate('/plan-editor')}>
-                  计划编辑
-                </Button>
+                <Stack direction="row" spacing={1}>
+                  <Button size="small" variant="outlined" onClick={() => navigate('/plan-editor')}>
+                    计划编辑
+                  </Button>
+                  {/* 全局重置（用户 2026-10-15：进度坏完了清除重来）——带确认 */}
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    startIcon={<RestartAltIcon />}
+                    onClick={() => setConfirmTarget('all')}
+                  >
+                    重置全部进度
+                  </Button>
+                </Stack>
               </Stack>
               {/* 各层真实词量：分层是「练习成绩」判定的结果，必须随时可见，
                   否则用户只能看到"某个 Tab 空了"，看不到整体分布 */}
@@ -345,8 +407,8 @@ export default function BookPage() {
               ) : (
                 <Stack divider={<Divider flexItem />}>
                   {bookWords.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((bw) => (
-                    <Stack key={bw.id} direction="row" justifyContent="space-between" py={0.75}>
-                      <Box>
+                    <Stack key={bw.id} direction="row" justifyContent="space-between" alignItems="center" py={0.75}>
+                      <Box sx={{ minWidth: 0 }}>
                         <Typography variant="body1" component="span">
                           {wordMap[bw.wordId]?.lemma ?? bw.wordId}
                         </Typography>
@@ -355,10 +417,31 @@ export default function BookPage() {
                             /{wordMap[bw.wordId].ipa}/
                           </Typography>
                         )}
+                        {/* 考查进度（用户 2026-10-15：词书页能看每个单词的进度）：
+                            连续熟练 x/5、特种训练、当天过关、上次考查日期 */}
+                        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                          {bw.specialTraining && (
+                            <Chip size="small" color="error" variant="outlined" label="特训" sx={{ mr: 0.5 }} />
+                          )}
+                          熟练连 {bw.streak}/{QUIZ_GRADUATE_STREAK}
+                          {bw.quizDayPassed ? ' · 今日已过关' : ''}
+                          {bw.lastQuizAt ? ` · 上次 ${bw.lastQuizAt.slice(0, 10)}` : ' · 未考过'}
+                        </Typography>
                       </Box>
-                      <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
-                        List {bw.listNo + 1} · {wordMap[bw.wordId]?.senses[0]?.slice(0, 18) ?? ''}
-                      </Typography>
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+                        <Typography variant="caption" color="text.secondary">
+                          List {bw.listNo + 1} · {wordMap[bw.wordId]?.senses[0]?.slice(0, 18) ?? ''}
+                        </Typography>
+                        <Tooltip title="重置这个词的考查进度（回 T4、记录清零）">
+                          <IconButton
+                            size="small"
+                            aria-label={`reset ${wordMap[bw.wordId]?.lemma ?? bw.wordId}`}
+                            onClick={() => setConfirmTarget(bw)}
+                          >
+                            <RestartAltIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      </Stack>
                     </Stack>
                   ))}
                   {bookWords.length === 0 && (
@@ -393,6 +476,31 @@ export default function BookPage() {
               )}
             </Paper>
           )}
+
+          {/* 重置进度确认（危险操作：不可撤销，须显式确认） */}
+          <Dialog open={confirmTarget !== null} onClose={() => (resetting ? undefined : setConfirmTarget(null))} maxWidth="xs" fullWidth>
+            <DialogTitle>重置考查进度？</DialogTitle>
+            <DialogContent>
+              <Typography variant="body2">
+                {confirmTarget === 'all'
+                  ? '将把当前词书**全部**有进度记录的词重置：层号回 T4 生词、连续熟练/特种训练/当天过关/上次考查记录全部清零。此操作不可撤销。'
+                  : `将重置「${wordMap[(confirmTarget as BookWord | null)?.wordId ?? '']?.lemma ?? ''}」：层号回 T4、考查记录清零。此操作不可撤销。`}
+              </Typography>
+              {resetMsg && (
+                <Alert severity="info" sx={{ mt: 1.5 }}>
+                  {resetMsg}
+                </Alert>
+              )}
+            </DialogContent>
+            <DialogActions>
+              <Button disabled={resetting} onClick={() => setConfirmTarget(null)}>
+                取消
+              </Button>
+              <Button disabled={resetting} variant="contained" color="error" onClick={() => void doReset()}>
+                {resetting ? <CircularProgress size={18} /> : '确认重置'}
+              </Button>
+            </DialogActions>
+          </Dialog>
         </>
       )}
     </Box>

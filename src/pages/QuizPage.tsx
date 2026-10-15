@@ -52,6 +52,7 @@ import {
 } from '../features/quiz/distractors';
 import { selectQuizPool } from '../features/quiz/pool';
 import { buildQuestion } from '../features/quiz/question';
+import { clearSession, loadSession, saveSession, toSnapshots } from '../features/quiz/session';
 import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
 
@@ -103,7 +104,7 @@ export default function QuizPage() {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiThread, setAiThread] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
 
-  /** 启动：拉词书行 → 过滤该考的 → 批量拉词条 → 建队列 */
+  /** 启动：优先恢复当天会话快照（用户 2026-10-15：中途退出重进回到原进度）；无快照才新建队列 */
   const start = useCallback(async () => {
     if (!userId) return;
     setPhase('loading');
@@ -114,14 +115,66 @@ export default function QuizPage() {
       if (!bookId) throw new Error('没有生效词书');
       const all = await repos.word.listBookWords(bookId);
       const now = new Date();
-      // 选词池与今日页共用同一套规则（用户 2026-10-15 拍板 A：features/quiz/pool.ts）。
-      const { pool, total, graduated } = selectQuizPool(all, now);
-      setRemaining(Math.max(0, total - graduated));
-      if (pool.length === 0) {
+      // 选词池与今日页共用同一套规则（features/quiz/pool.ts）；恢复分支只用 total/graduated
+      const poolResult = selectQuizPool(all, now);
+      setRemaining(Math.max(0, poolResult.total - poolResult.graduated));
+
+      // ===== 会话恢复：当天有快照 → 原样续做（顺序/进度/已答缓存都不动） =====
+      const snap = loadSession(userId, bookId);
+      if (snap) {
+        const bwById = new Map(all.map((b) => [b.id, b]));
+        const words = await repos.word.listWordsByIds([...new Set(snap.items.map((s) => s.wordId))]);
+        const wordById = new Map(words.map((w) => [w.id, w]));
+        const restored: QuizItem[] = [];
+        for (const s of snap.items) {
+          const bw = bwById.get(s.bookWordId);
+          const word = wordById.get(s.wordId);
+          if (!bw || !word) continue; // 词书重建等场景：该条丢弃
+          restored.push({
+            bookWord: bw,
+            word,
+            senseIndex: s.senseIndex,
+            ...(s.options ? { options: s.options } : {}),
+            ...(s.correctKey ? { correctKey: s.correctKey } : {}),
+            ...(s.verdict ? { verdict: s.verdict } : {}),
+            ...(s.pickedKey ? { pickedKey: s.pickedKey } : {}),
+            ...(s.askedAt ? { askedAt: s.askedAt } : {}),
+          });
+        }
+        if (restored.length > 0) {
+          // 干扰池从本批词条义项重建（与新建时同源：池本来就是本批词的义项全集）
+          const poolCands: DistractorCandidate[] = [];
+          for (const w of words) {
+            const bws = all.filter((bw) => bw.wordId === w.id);
+            const order = bws[0] ? bws[0].listNo * 1000 + bws[0].orderInList : 0;
+            displaySenses(w).forEach((sd, i) => {
+              poolCands.push({
+                zh: sd.zh,
+                pos: sd.pos,
+                lemma: w.lemma,
+                ...(sd.ipa ? { ipa: sd.ipa } : {}),
+                ...(sd.arpabet ? { arpabet: sd.arpabet } : {}),
+                order,
+                key: `${w.id}#${i}`,
+              });
+            });
+          }
+          poolRef.current = poolCands;
+          setItems(restored);
+          setIdx(Math.min(snap.idx, restored.length - 1));
+          setTodayLeft(snap.todayLeft);
+          setStats(snap.stats);
+          setPhase('quiz');
+          return;
+        }
+      }
+
+      // ===== 新建当天队列 =====
+      if (poolResult.pool.length === 0) {
         setPhase('done');
         return;
       }
-      const batch = pool.slice(0, quizDailyLimit);
+      const batch = poolResult.pool.slice(0, quizDailyLimit);
       const words = await repos.word.listWordsByIds(batch.map((bw) => bw.wordId));
       const wordById = new Map(words.map((w) => [w.id, w]));
       const quizItems: QuizItem[] = batch
@@ -164,6 +217,22 @@ export default function QuizPage() {
     void start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 会话快照：items/idx/stats 变化即写（当天有效，隔天作废；答完一轮/隔天自动失效）
+  useEffect(() => {
+    if (phase !== 'quiz' || !userId || !activeBookId || items.length === 0) return;
+    saveSession(userId, activeBookId, {
+      items: toSnapshots(items),
+      idx,
+      stats,
+      todayLeft,
+    });
+  }, [phase, userId, activeBookId, items, idx, stats, todayLeft]);
+
+  // 会话结束（本轮完成）→ 清快照，下次「再来一轮」重新开
+  useEffect(() => {
+    if (phase === 'done' && userId && activeBookId) clearSession(userId, activeBookId);
+  }, [phase, userId, activeBookId]);
 
   const current = items[idx] ?? null;
 
