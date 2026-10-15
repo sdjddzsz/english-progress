@@ -176,12 +176,32 @@ export default function BookPage() {
       }
       // 当天的考查会话快照一并作废（用户 2026-10-15：重置进度后，回到考查页不能
       // 还恢复旧的队列与判定——那批词的进度已清，快照留着就是"保留进度"）。
-      const { userId: uid } = useAppStore.getState();
+      const { userId: uid, activePlan } = useAppStore.getState();
       if (uid) clearSession(uid, selectedBookId);
+      // 旧计划制的任务与欠账一并清（用户 2026-10-15 联动：重置进度后欠账必须归零——
+      // 欠账来自 hits 表的 pending 记录，不清的话重置完「欠账 N 条」原样还在）。
+      // 全局重置清整个计划的未完成 hits；单词级只清该词的。
+      if (activePlan) {
+        const allHits = await repos.hit.hits.listAll([
+          { column: 'planId', op: 'eq', value: activePlan.id },
+        ]);
+        const wordScope = confirmTarget === 'all' ? null : confirmTarget.wordId;
+        const stale = allHits.filter(
+          (h) => h.status !== 'done' && (wordScope ? h.wordId === wordScope : true),
+        );
+        if (stale.length > 0) {
+          const nowIso = new Date().toISOString();
+          await repos.hit.upsertHits(
+            stale.map((h) => ({ ...h, status: 'done', completedAt: nowIso })),
+          );
+        }
+      }
       setConfirmTarget(null);
       // 重置后刷新当前层数据（层分布可能变化：全部回 T4）
       if (selectedBookId) void loadTier(selectedBookId, tier, page);
       refreshTierStats(selectedBookId);
+      // store 立即重算欠账/今日队列，回到 Today 页不再显示旧欠账
+      await useAppStore.getState().refreshToday();
     } catch (e) {
       setResetMsg(`重置失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
