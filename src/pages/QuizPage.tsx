@@ -54,6 +54,8 @@ interface QuizItem {
   bookWord: BookWord;
   word: Word;
   senseIndex: number;
+  /** 本轮内第几次作答该词（1=第一次；用户 2026-10-17：首答即熟练 → 一遍过） */
+  attemptNo: number;
   /** 已作答缓存（回顾上一题时按原样恢复：选项不重摇、判定不重算） */
   options?: DistractorCandidate[];
   correctKey?: string;
@@ -123,6 +125,7 @@ export default function QuizPage() {
             bookWord: bw,
             word,
             senseIndex: s.senseIndex,
+            attemptNo: s.attemptNo ?? 1,
             ...(s.options ? { options: s.options } : {}),
             ...(s.correctKey ? { correctKey: s.correctKey } : {}),
             ...(s.verdict ? { verdict: s.verdict } : {}),
@@ -171,7 +174,7 @@ export default function QuizPage() {
         .map((bw) => {
           const word = wordById.get(bw.wordId) as Word;
           const senseIndex = Math.floor(Math.random() * normalizeSenses(word).length);
-          return { bookWord: bw, word, senseIndex };
+          return { bookWord: bw, word, senseIndex, attemptNo: 1 };
         });
       // 干扰池：本次全部词条的全部义项展开
       const poolCands: DistractorCandidate[] = [];
@@ -294,6 +297,7 @@ export default function QuizPage() {
       threshold: quizDayThreshold,
       lastQuizAt: bw.lastQuizAt,
       leftStage: graduated,
+      attemptNo: current.attemptNo,
       now,
     });
     // 本地行状态同步更新（重现题/同词再次作答时用的不再是 start() 时的旧快照，
@@ -314,11 +318,14 @@ export default function QuizPage() {
     setItems((its) =>
       its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, verdict: v, pickedKey: key } : it)),
     );
-    // 未达过关线的词排到队尾重来，直到达到「每轮过关挡位」才放行；
+    // 未放行的词排到队尾重来，直到达到「每轮过关挡位」才放行；
     // 晋级/毕业的词已离开本阶段池，立即放行不再排回
     if (!release) {
       const senseIndex = Math.floor(Math.random() * normalizeSenses(current.word).length);
-      setItems((its) => [...its, { bookWord: nextBw, word: current.word, senseIndex }]);
+      setItems((its) => [
+        ...its,
+        { bookWord: nextBw, word: current.word, senseIndex, attemptNo: current.attemptNo + 1 },
+      ]);
     }
     const quizPatch = {
       tier: sp.tier,
@@ -428,7 +435,7 @@ export default function QuizPage() {
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
         看单词选词义：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。
         连续熟练 {graduateStreak} 次晋级阶段二；不限每天一轮，完成一轮可立即再来一轮；
-        没达到「每轮过关挡位」的词会排到队尾重来，连续达标 {QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。
+        本轮第一次作答就是「熟练」的词一遍过；其它词没达到「每轮过关挡位」会排到队尾重来，连续达标 {QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError('')}>

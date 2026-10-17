@@ -49,6 +49,8 @@ interface QuizItem {
   word: Word;
   /** 阶段二展示的义项下标（多义词随机取一义） */
   senseIndex: number;
+  /** 本轮内第几次作答该词（1=第一次；用户 2026-10-17：首答即熟练 → 一遍过） */
+  attemptNo: number;
   options?: string[];
   correct?: string;
   verdict?: QuizVerdict;
@@ -119,7 +121,12 @@ export default function StageQuizPage() {
         .filter((bw) => wordById.has(bw.wordId))
         .map((bw) => {
           const word = wordById.get(bw.wordId) as Word;
-          return { bookWord: bw, word, senseIndex: Math.floor(Math.random() * normalizeSenses(word).length) };
+          return {
+            bookWord: bw,
+            word,
+            senseIndex: Math.floor(Math.random() * normalizeSenses(word).length),
+            attemptNo: 1,
+          };
         });
       // 预生成选项（同批内打乱取 3 个干扰词形）
       for (const it of quizItems) {
@@ -193,6 +200,7 @@ export default function StageQuizPage() {
       threshold: quizDayThreshold,
       lastQuizAt: bw.lastQuizAt,
       leftStage: advanced,
+      attemptNo: current.attemptNo,
     });
     const nextBw: BookWord = {
       ...bw,
@@ -201,9 +209,12 @@ export default function StageQuizPage() {
       quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT,
     };
     setItems((its) => its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, verdict: v, picked: opt } : it)));
-    // 未达过关线/不会 → 排到队尾重来（不会按钮即判生词）
+    // 未放行/不会 → 排到队尾重来（不会按钮即判生词）
     if (!release) {
-      setItems((its) => [...its, { ...current, bookWord: nextBw, senseIndex: current.senseIndex }]);
+      setItems((its) => [
+        ...its,
+        { ...current, bookWord: nextBw, senseIndex: current.senseIndex, attemptNo: current.attemptNo + 1 },
+      ]);
     }
     setStats((s) => ({
       skilled: s.skilled + (v === 'skilled' ? 1 : 0),
@@ -235,6 +246,7 @@ export default function StageQuizPage() {
       threshold: quizDayThreshold,
       lastQuizAt: bw.lastQuizAt,
       leftStage: graduated,
+      attemptNo: current.attemptNo,
     });
     const nextBw: BookWord = {
       ...bw,
@@ -244,7 +256,10 @@ export default function StageQuizPage() {
     };
     setItems((its) => its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, spellVerdict: sv } : it)));
     if (!release) {
-      setItems((its) => [...its, { ...current, bookWord: nextBw, senseIndex: current.senseIndex }]);
+      setItems((its) => [
+        ...its,
+        { ...current, bookWord: nextBw, senseIndex: current.senseIndex, attemptNo: current.attemptNo + 1 },
+      ]);
     }
     setStats((s) => ({
       skilled: s.skilled + (correct ? 1 : 0),
@@ -278,7 +293,7 @@ export default function StageQuizPage() {
         {stageNo === 3 && '听发音选单词（可点喇叭重听）：判定同用时四档。'}
         {stageNo === 4 && '听发音拼写单词：写对一次即彻底毕业；写错会排到队尾重来。'}
         {(stageNo === 2 || stageNo === 3) &&
-          `没达到「每轮过关挡位」的词会排到队尾重来，连续达标 ${QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。`}
+          `本轮第一次作答就是「熟练」的词一遍过；其它词没达到「每轮过关挡位」会排到队尾重来，连续达标 ${QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。`}
         连续熟练 {stageGraduate[stageNo === 4 ? 3 : stageNo]} 次晋级下一阶段
         {stageNo === 4 ? '（本阶段写对一次即毕业）' : ''}；不限每天一轮，完成一轮可立即再来一轮。
       </Typography>

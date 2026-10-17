@@ -251,6 +251,57 @@ describe('roundRelease：连续达标才放行，晋级/毕业立即放行', () 
     expect(r.release).toBe(false);
   });
 
+  it('本轮首答即熟练 → 一遍过，立即放行（用户 2026-10-17）', () => {
+    const r = roundRelease({
+      verdict: 'skilled',
+      prevStreak: 0,
+      threshold: 'strict',
+      leftStage: false,
+      attemptNo: 1,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r.release).toBe(true);
+  });
+
+  it('首答但只到「认识」（适当档线）→ 不放行，仍要连续 3 次', () => {
+    const r = roundRelease({
+      verdict: 'recognized',
+      prevStreak: 0,
+      threshold: 'standard',
+      leftStage: false,
+      attemptNo: 1,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r.dayStreak).toBe(1);
+    expect(r.release).toBe(false);
+  });
+
+  it('第 2 次起即使熟练也要按连续 3 次走（首答规则只算第 1 次）', () => {
+    const r = roundRelease({
+      verdict: 'skilled',
+      prevStreak: 1,
+      threshold: 'strict',
+      leftStage: false,
+      attemptNo: 2,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r.dayStreak).toBe(2);
+    expect(r.release).toBe(false);
+    const r2 = roundRelease({
+      verdict: 'skilled',
+      prevStreak: 2,
+      threshold: 'strict',
+      leftStage: false,
+      attemptNo: 3,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r2.release).toBe(true);
+  });
+
   it('宽松档：3 次「不熟」也放行（挡位低但同样要连续 3 次）', () => {
     let streak = 0;
     let release = false;

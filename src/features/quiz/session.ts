@@ -16,6 +16,8 @@ export interface QuizItemSnapshot {
   bookWordId: string;
   wordId: string;
   senseIndex: number;
+  /** 本轮内第几次作答该词（恢复后继续按原计数放行，用户 2026-10-17 首答规则依赖它） */
+  attemptNo?: number;
   options?: DistractorCandidate[];
   correctKey?: string;
   verdict?: QuizVerdict;
@@ -83,6 +85,7 @@ export interface SessionSourceItem {
   bookWord: BookWord;
   word: Word;
   senseIndex: number;
+  attemptNo?: number;
   options?: DistractorCandidate[];
   correctKey?: string;
   verdict?: QuizVerdict;
@@ -95,6 +98,7 @@ export function toSnapshots(items: SessionSourceItem[]): QuizItemSnapshot[] {
     bookWordId: it.bookWord.id,
     wordId: it.bookWord.wordId,
     senseIndex: it.senseIndex,
+    ...(it.attemptNo ? { attemptNo: it.attemptNo } : {}),
     ...(it.options ? { options: it.options } : {}),
     ...(it.correctKey ? { correctKey: it.correctKey } : {}),
     ...(it.verdict ? { verdict: it.verdict } : {}),
