@@ -24,6 +24,7 @@ const SPA_ROUTES = [
   'placement',
   'search',
   'bookmarks',
+  'notes',
   'dashboard',
   'dashboard/diag',
   'mock',

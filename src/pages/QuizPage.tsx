@@ -16,6 +16,9 @@ import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
+import FormControl from '@mui/material/FormControl';
+import MenuItem from '@mui/material/MenuItem';
+import Select from '@mui/material/Select';
 import CircularProgress from '@mui/material/CircularProgress';
 import LinearProgress from '@mui/material/LinearProgress';
 import Paper from '@mui/material/Paper';
@@ -29,7 +32,7 @@ import { getRepos, useAppStore } from '../store/useAppStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useTTS } from '../hooks/useTTS';
 import { useSfx } from '../hooks/useSfx';
-import { chatTurn } from '../ai/llmClient';
+import { chatTurn, listModels, type LLMModelInfo } from '../ai/llmClient';
 import { displaySenses, normalizeSenses } from '../features/senses';
 import type { BookWord, Word } from '../types/domain';
 import {
@@ -49,6 +52,7 @@ import { buildQuestion } from '../features/quiz/question';
 import { clearSession, loadSession, saveSession, toSnapshots } from '../features/quiz/session';
 import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
+import WordNoteButton from '../components/notes/WordNoteButton';
 
 interface QuizItem {
   bookWord: BookWord;
@@ -94,6 +98,12 @@ export default function QuizPage() {
   const [aiInput, setAiInput] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
   const [aiThread, setAiThread] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  // 临时模型（用户 2026-10-17）：只在本轮生效（除非再换），不写回设置——
+  // 防止某个模型宕机时临时切换应急；下次进页面仍从设置页默认模型开始
+  const [sessionModel, setSessionModel] = useState('');
+  const [modelOptions, setModelOptions] = useState<LLMModelInfo[]>([]);
+  const [modelsErr, setModelsErr] = useState('');
+  const effectiveModel = sessionModel || aiModel || 'step-5-preview';
 
   /** 启动：优先恢复当天会话快照（用户 2026-10-15：中途退出重进回到原进度）；无快照才新建队列 */
   const start = useCallback(async () => {
@@ -388,12 +398,31 @@ export default function QuizPage() {
     setAiThread([]);
   }, [idx]);
 
-  /** AI 问答：角色 + 当前屏幕内容自动注入 system，用户只管问 */
-  const askAi = async (): Promise<void> => {
-    if (!current || !senseOf || aiBusy || !aiInput.trim()) return;
-    const q = aiInput.trim();
-    setAiInput('');
-    setAiThread((t) => [...t, { role: 'user', content: q }]);
+  // 模型下拉选项（用户 2026-10-17）：进页面拉一次，拉不到也能用默认模型，只显示原因
+  useEffect(() => {
+    let alive = true;
+    listModels({ channel: aiChannel, ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}) })
+      .then((ms) => {
+        if (alive) setModelOptions(ms);
+      })
+      .catch((e) => {
+        if (alive) setModelsErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [aiChannel, aiBaseUrl]);
+
+  /**
+   * AI 问答：角色 + 当前屏幕内容自动注入 system，用户只管问。
+   * 2026-10-17 增强：模型可下拉临时切换（只本轮有效）；正在思考有明面状态；
+   * 消息支持编辑/从某条重新问（参照主流 AI 应用）。
+   */
+  const askAiWith = async (
+    q: string,
+    history: { role: 'user' | 'assistant'; content: string }[],
+  ): Promise<void> => {
+    if (!current || !senseOf || aiBusy || q.trim() === '') return;
     setAiBusy(true);
     try {
       const allSenses = displaySenses(current.word)
@@ -416,16 +445,65 @@ export default function QuizPage() {
               '不要重复罗列屏幕上已有的信息，除非用户要求。\n\n' +
               screen,
           },
-          ...aiThread.map((m) => ({ role: m.role, content: m.content })),
+          ...history.map((m) => ({ role: m.role, content: m.content })),
           { role: 'user', content: q },
         ],
-        { model: aiModel || 'step-5-preview', channel: aiChannel, ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}) },
+        { model: effectiveModel, channel: aiChannel, ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}) },
       );
-      setAiThread((t) => [...t, { role: 'assistant', content: result.content || '（模型未返回内容）' }]);
+      setAiThread([
+        ...history,
+        { role: 'user', content: q },
+        { role: 'assistant', content: result.content || '（模型未返回内容）' },
+      ]);
     } catch (e) {
-      setAiThread((t) => [...t, { role: 'assistant', content: `问答失败：${e instanceof Error ? e.message : String(e)}` }]);
+      setAiThread([
+        ...history,
+        { role: 'user', content: q },
+        { role: 'assistant', content: `问答失败：${e instanceof Error ? e.message : String(e)}` },
+      ]);
     } finally {
       setAiBusy(false);
+    }
+  };
+
+  const askAi = async (): Promise<void> => {
+    const q = aiInput.trim();
+    if (q === '') return;
+    setAiInput('');
+    await askAiWith(q, aiThread);
+  };
+
+  /** 编辑已发消息：内容回输入框、对话截断到该条之前 */
+  const editMsg = (i: number): void => {
+    const m = aiThread[i];
+    if (!m || m.role !== 'user' || aiBusy) return;
+    setAiInput(m.content);
+    setAiThread(aiThread.slice(0, i));
+  };
+
+  /** 从某条已发消息重新问：丢弃该条之后的全部消息再重发 */
+  const regenFrom = async (i: number): Promise<void> => {
+    const m = aiThread[i];
+    if (!m || m.role !== 'user' || aiBusy) return;
+    const history = aiThread.slice(0, i);
+    setAiThread(history);
+    await askAiWith(m.content, history);
+  };
+
+  /** 重新生成最后一条回答 */
+  const regenLast = async (): Promise<void> => {
+    if (aiBusy || aiThread.length === 0) return;
+    const last = aiThread[aiThread.length - 1];
+    if (last.role === 'user') {
+      await regenFrom(aiThread.length - 1);
+      return;
+    }
+    // 末尾是助手回答：找到它前面最近的一条用户消息重发
+    for (let i = aiThread.length - 2; i >= 0; i--) {
+      if (aiThread[i].role === 'user') {
+        await regenFrom(i);
+        return;
+      }
     }
   };
 
@@ -507,6 +585,13 @@ export default function QuizPage() {
                   {senseOf.pos}
                 </Typography>
               )}
+              {/* 题旁笔记（用户 2026-10-17）：一词一记，点开即编辑 */}
+              <WordNoteButton
+                wordId={current.bookWord.wordId}
+                lemma={current.word.lemma}
+                source="quiz:1"
+                senseIndex={current.senseIndex}
+              />
             </Stack>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, textAlign: 'center' }}>
@@ -662,29 +747,81 @@ export default function QuizPage() {
         </Paper>
       )}
 
-      {/* AI 问答框（用户 2026-10-14 第 5 条）：随当前考查词走，模型自动知道屏幕内容 */}
+      {/* AI 问答框（用户 2026-10-14 第 5 条）：随当前考查词走，模型自动知道屏幕内容。
+          2026-10-17 增强：模型下拉临时切换（只本轮生效）、正在思考明面状态、
+          消息编辑/重新生成（参照主流 AI 应用） */}
       {phase === 'quiz' && current && (
         <Paper sx={{ mt: 2, p: 2 }}>
-          <Typography variant="body2" color="text.secondary" gutterBottom>
-            问 AI（已带上当前单词「{current.word.lemma}」与释义上下文，直接问就行）
-          </Typography>
+          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
+            <Typography variant="body2" color="text.secondary">
+              问 AI（已带上当前单词「{current.word.lemma}」与释义上下文，直接问就行）
+            </Typography>
+            <FormControl size="small" sx={{ minWidth: 180 }}>
+              <Select
+                value={sessionModel}
+                displayEmpty
+                onChange={(e) => setSessionModel(e.target.value)}
+                aria-label="AI 模型（本轮临时选择）"
+              >
+                <MenuItem value="">默认模型（{effectiveModel}）</MenuItem>
+                {modelOptions
+                  .filter((m) => !m.disabled && m.id !== (aiModel || 'step-5-preview'))
+                  .map((m) => (
+                    <MenuItem key={m.id} value={m.id}>
+                      {m.id}
+                    </MenuItem>
+                  ))}
+              </Select>
+            </FormControl>
+          </Stack>
+          {modelsErr && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+              模型列表拉取失败（仍可用默认模型）：{modelsErr}
+            </Typography>
+          )}
+          {/* 正在思考/生成中：明面显示，看得出消息已发出、模型在干活 */}
+          {aiBusy && (
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
+              <CircularProgress size={14} />
+              <Typography variant="caption" color="primary">
+                正在思考 / 生成中…
+              </Typography>
+            </Stack>
+          )}
           {aiThread.length > 0 && (
-            <Stack spacing={1} sx={{ mb: 1.5 }}>
+            <Stack spacing={1} sx={{ mt: 1.5, mb: 1.5 }}>
               {aiThread.map((m, i) => (
-                <Typography
-                  key={i}
-                  variant="body2"
-                  sx={{
-                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                    bgcolor: m.role === 'user' ? 'action.selected' : 'transparent',
-                    px: 1,
-                    py: 0.5,
-                    borderRadius: 1,
-                    whiteSpace: 'pre-wrap',
-                  }}
-                >
-                  {m.role === 'user' ? `你：${m.content}` : m.content}
-                </Typography>
+                <Box key={i} sx={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '95%' }}>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      display: 'inline-block',
+                      bgcolor: m.role === 'user' ? 'action.selected' : 'transparent',
+                      px: 1,
+                      py: 0.5,
+                      borderRadius: 1,
+                      whiteSpace: 'pre-wrap',
+                    }}
+                  >
+                    {m.role === 'user' ? `你：${m.content}` : m.content}
+                  </Typography>
+                  {/* 消息操作（用户 2026-10-17）：已发消息可编辑/重新问，回答可复制/重新生成 */}
+                  {!aiBusy && m.role === 'user' && (
+                    <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                      <Button size="small" sx={{ minWidth: 0, px: 1 }} onClick={() => editMsg(i)}>
+                        编辑
+                      </Button>
+                      <Button size="small" sx={{ minWidth: 0, px: 1 }} onClick={() => void regenFrom(i)}>
+                        重新问
+                      </Button>
+                    </Stack>
+                  )}
+                  {!aiBusy && m.role === 'assistant' && i === aiThread.length - 1 && (
+                    <Button size="small" sx={{ minWidth: 0, px: 1 }} onClick={() => void regenLast()}>
+                      重新生成
+                    </Button>
+                  )}
+                </Box>
               ))}
             </Stack>
           )}

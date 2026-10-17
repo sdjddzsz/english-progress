@@ -5,6 +5,7 @@ import SchoolIcon from '@mui/icons-material/School';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import SettingsIcon from '@mui/icons-material/Settings';
 import SearchIcon from '@mui/icons-material/Search';
+import EditNoteIcon from '@mui/icons-material/EditNote';
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import StagePage from './pages/StagePage';
 import StageDetailPage from './pages/StageDetailPage';
@@ -24,6 +25,7 @@ import QuizPage from './pages/QuizPage';
 import LoginPage from './pages/LoginPage';
 import SearchPage from './pages/SearchPage';
 import BookmarkPage from './pages/BookmarkPage';
+import NotesPage from './pages/NotesPage';
 import SpellingPage from './pages/SpellingPage';
 import OverdueGuardRoute from './components/guards/OverdueGuardRoute';
 import SyncStatusBanner from './components/offline/SyncStatusBanner';
@@ -43,6 +45,7 @@ const TAB_DEFS = [
   { path: '/training', icon: <SchoolIcon />, label: '训练' },
   { path: '/book', icon: <MenuBookIcon />, label: '词书' },
   { path: '/search', icon: <SearchIcon />, label: '查词' },
+  { path: '/notes', icon: <EditNoteIcon />, label: '笔记' },
   { path: '/settings', icon: <SettingsIcon />, label: '设置' },
 ] as const;
 
@@ -51,10 +54,12 @@ function activeTabIndex(pathname: string): number {
   if (pathname.startsWith('/training')) return 1;
   if (pathname.startsWith('/book') || pathname.startsWith('/plan-editor')) return 2;
   if (pathname.startsWith('/search')) return 3;
-  // 生词本归属「查词」Tab：它是查词/收藏这条线的延续，不单开一个底部栏位（5 个已满）
+  // 生词本归属「查词」Tab：它是查词/收藏这条线的延续
   if (pathname.startsWith('/bookmarks')) return 3;
-  if (pathname.startsWith('/dashboard') || pathname.startsWith('/ai-plan') || pathname.startsWith('/mock')) return 4;
-  if (pathname.startsWith('/settings')) return 4;
+  // 笔记独立 Tab（用户 2026-10-17：专门页面查看）
+  if (pathname.startsWith('/notes')) return 4;
+  if (pathname.startsWith('/dashboard') || pathname.startsWith('/ai-plan') || pathname.startsWith('/mock')) return 5;
+  if (pathname.startsWith('/settings')) return 5;
   return 0;
 }
 
@@ -135,6 +140,8 @@ export default function App() {
               <Route path="/training/cn2en" element={<OverdueGuardRoute><CnToEnPage /></OverdueGuardRoute>} />
               <Route path="/training/spelling" element={<OverdueGuardRoute><SpellingPage /></OverdueGuardRoute>} />
               <Route path="/search" element={<SearchPage />} />
+              {/* 笔记页（用户 2026-10-17：题旁笔记按钮 + 专门页面查看） */}
+              <Route path="/notes" element={<NotesPage />} />
               <Route path="/bookmarks" element={<BookmarkPage />} />
               <Route path="/book" element={<BookPage />} />
               <Route path="/plan-editor" element={<PlanEditorPage />} />

@@ -501,6 +501,25 @@ export interface WordBookmark {
   createdAt: string;
 }
 
+/** 单词笔记（用户 2026-10-17：题旁笔记按钮 + 专门页面查看）。
+ *  确定性 id = `{userId}_{wordId}`：一词一记，重复保存 = 覆盖（同 word_bookmarks 的幂等思路）。
+ */
+export interface WordNote {
+  id: string;
+  userId: string;
+  wordId: string;
+  /** 保存时的 lemma 快照（词条变动也不影响笔记可读） */
+  lemma: string;
+  /** 笔记正文（多行） */
+  content: string;
+  /** 来源：quiz:1 / stage-quiz:2 / manual …便于回溯 */
+  source: string;
+  /** 保存时考查的义项下标（可选） */
+  senseIndex?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** AI 方案提案。硬约束 #6：reason 与 changes(diff) 必填，缺则拒绝落地 */
 export interface AIProposal {
   id: string;
@@ -563,6 +582,7 @@ export const COLLECTIONS = [
   'mock_exam_records',
   'mock_unlock_rules',
   'word_bookmarks',
+  'word_notes',
   'ai_proposals',
   'plan_versions',
   'tool_call_logs',
@@ -594,6 +614,7 @@ export interface CollectionDocMap {
   mock_exam_records: MockExamRecord;
   mock_unlock_rules: MockUnlockRule;
   word_bookmarks: WordBookmark;
+  word_notes: WordNote;
   ai_proposals: AIProposal;
   plan_versions: PlanVersion;
   tool_call_logs: ToolCallLog;

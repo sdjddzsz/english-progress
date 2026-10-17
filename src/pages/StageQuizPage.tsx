@@ -38,6 +38,7 @@ import {
 import { applyStageChoiceResult, applyStageSpellingResult, STAGE_META } from '../features/quiz/stages';
 import { checkSpelling, type SpellVerdict } from './SpellingPage';import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
+import WordNoteButton from '../components/notes/WordNoteButton';
 import type { BookWord, Word } from '../types/domain';
 
 type Phase = 'loading' | 'quiz' | 'done';
@@ -504,9 +505,18 @@ export default function StageQuizPage() {
               )}
             </Stack>
           )}
-          <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block', textAlign: 'center' }}>
-            第 {idx + 1} / {items.length} 题 · 没到过关线的词会排到队尾重来
-          </Typography>
+          {/* 题旁笔记（用户 2026-10-17）：一词一记，点开即编辑 */}
+          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="center" sx={{ mt: 2 }}>
+            <Typography variant="caption" color="text.secondary">
+              第 {idx + 1} / {items.length} 题 · 没到过关线的词会排到队尾重来
+            </Typography>
+            <WordNoteButton
+              wordId={current.bookWord.wordId}
+              lemma={current.word.lemma}
+              source={`stage-quiz:${stageNo}`}
+              senseIndex={current.senseIndex}
+            />
+          </Stack>
         </Paper>
       )}
     </Box>
