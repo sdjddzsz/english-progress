@@ -22,6 +22,7 @@ import Typography from '@mui/material/Typography';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
+import AutorenewIcon from '@mui/icons-material/Autorenew';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useTTS } from '../hooks/useTTS';
@@ -81,7 +82,7 @@ export default function StageQuizPage() {
   }, [stageParam, navigate]);
   const { activeBookId, userId } = useAppStore();
   const { autoSpeak, quizDailyLimit, stageGraduate, quizDayThreshold } = useSettingsStore();
-  const { speak, speakAuto } = useTTS();
+  const { speak, speakAuto, resynthesize, loading: ttsLoading } = useTTS();
   const sfx = useSfx();
 
   const [phase, setPhase] = useState<Phase>('loading');
@@ -510,6 +511,28 @@ export default function StageQuizPage() {
             <Typography variant="caption" color="text.secondary">
               第 {idx + 1} / {items.length} 题 · 没到过关线的词会排到队尾重来
             </Typography>
+            <Tooltip title="重新合成（这个读音不对时用；本地与云端一起更新）">
+              <span>
+                <IconButton
+                  size="small"
+                  disabled={ttsLoading}
+                  aria-label={`resynthesize ${current.word.lemma}`}
+                  onClick={() =>
+                    void resynthesize(
+                      {
+                        text: current.word.lemma,
+                        ...(current.word.ipa ? { ipa: current.word.ipa } : {}),
+                        ...(current.word.arpabet ? { arpabet: current.word.arpabet } : {}),
+                        mode: 'word',
+                      },
+                      current.word.id,
+                    )
+                  }
+                >
+                  {ttsLoading ? <CircularProgress size={18} /> : <AutorenewIcon fontSize="small" />}
+                </IconButton>
+              </span>
+            </Tooltip>
             <WordNoteButton
               wordId={current.bookWord.wordId}
               lemma={current.word.lemma}

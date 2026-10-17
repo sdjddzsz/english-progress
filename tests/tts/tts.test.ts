@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mapIpaToAzure, splitSyllables, stripIpaSlashes, ipaToWordTokens } from '../../src/tts/ipaMap';
 import { buildSsml, escapeXml } from '../../src/tts/ssml';
 import { cacheKey, consumeFallbackNotice, createOrchestrator, inMemoryAudioCache, resetFallbackNotice } from '../../src/tts/orchestrator';
+import { cloudAudioPath, inMemoryAudioStore } from '../../src/data/cloudAudioStore';
 import type { OrchestratorDeps, PronunciationLogEntry } from '../../src/tts/orchestrator';
 import type { TTSProviderConfig } from '../../src/types/domain';
 
@@ -173,5 +174,30 @@ describe('编排器：缓存 → 主轨 → 兜底 → 日志 → 轻提示一�
     expect(second.fromCache).toBe(true);
     expect(providers.calls.neural).toBe(1); // 未重复合成
     expect(providers.calls.espeak).toBe(0);
+  });
+
+  it('regenerate：清本地缓存+删云端文件 → 重新合成并回传云端（用户 2026-10-17）', async () => {
+    const remote = inMemoryAudioStore();
+    let cloudRemoved = 0;
+    const origRemove = remote.remove.bind(remote);
+    remote.remove = async (path) => {
+      cloudRemoved += 1;
+      return origRemove(path);
+    };
+    const deps = { ...makeDeps(cfg(), 'key-123'), remote };
+    const orch = createOrchestrator(deps);
+
+    await orch.getAudio(req, 'w1'); // 首次：现场合成 + 回传云端
+    expect(providers.calls.neural).toBe(1);
+    const cloudPath = await cloudAudioPath(req, undefined, undefined);
+    expect(remote.store.has(cloudPath)).toBe(true);
+
+    // regenerate：即使本地缓存/云端都有，也必须重新合成
+    const r = await orch.regenerate(req, 'w1');
+    expect(r.engine).toBe('neural_tts');
+    expect(r.fromCache).toBe(false);
+    expect(providers.calls.neural).toBe(2);
+    expect(cloudRemoved).toBe(1); // 云端旧文件删过一次
+    expect(remote.store.has(cloudPath)).toBe(true); // 新音频已回传云端
   });
 });

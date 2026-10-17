@@ -30,6 +30,8 @@ export interface RemoteAudioStore {
   get(path: string): Promise<ArrayBuffer | null>;
   /** 上传（upsert）；失败静默 —— 下次仍可现场合成 */
   put(path: string, audio: ArrayBuffer, mime: string): Promise<boolean>;
+  /** 删除（用户 2026-10-17「重新合成」：把云端坏音频清掉，下次合成后回传新的）；失败静默 */
+  remove(path: string): Promise<boolean>;
 }
 
 /** 路径里只保留安全字符：音色名可能含空格/斜杠等 */
@@ -117,6 +119,14 @@ export function cloudAudioStore(): RemoteAudioStore {
         return false;
       }
     },
+    async remove(path) {
+      try {
+        const { error } = await bucket().remove([path]);
+        return !error;
+      } catch {
+        return false;
+      }
+    },
   };
 }
 
@@ -137,6 +147,9 @@ export function inMemoryAudioStore(initial: Record<string, ArrayBuffer> = {}): R
       store.set(path, audio);
       puts.push(path);
       return true;
+    },
+    async remove(path) {
+      return store.delete(path);
     },
   };
 }

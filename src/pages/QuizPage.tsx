@@ -28,6 +28,7 @@ import Typography from '@mui/material/Typography';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
+import AutorenewIcon from '@mui/icons-material/Autorenew';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useTTS } from '../hooks/useTTS';
@@ -76,7 +77,7 @@ export default function QuizPage() {
   const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold, quizDailyLimit, stageGraduate } =
     useSettingsStore();
   const graduateStreak = stageGraduate[1];
-  const { speakAuto, speak, loading, phaseLabel } = useTTS();
+  const { speakAuto, speak, resynthesize, loading, phaseLabel } = useTTS();
   const sfx = useSfx();
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
@@ -571,6 +572,31 @@ export default function QuizPage() {
                     }}
                   >
                     {loading ? <CircularProgress size={18} /> : <VolumeUpIcon fontSize="small" />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+              {/* 重新合成（用户 2026-10-17）：个别词缓存读音是错的——删本地+云端缓存后重录，
+                  合成成功自动回传云端，其它设备也拿到新读音 */}
+              <Tooltip title="重新合成（这个读音不对时用；本地与云端一起更新）">
+                <span>
+                  <IconButton
+                    size="small"
+                    disabled={loading}
+                    aria-label={`resynthesize ${current.word.lemma}`}
+                    onClick={() => {
+                      const p = displaySenses(current.word)[current.senseIndex];
+                      void resynthesize(
+                        {
+                          text: current.word.lemma,
+                          ...(p?.ipa ? { ipa: p.ipa } : {}),
+                          ...(p?.arpabet ? { arpabet: p.arpabet } : {}),
+                          mode: 'word',
+                        },
+                        current.bookWord.wordId,
+                      );
+                    }}
+                  >
+                    {loading ? <CircularProgress size={18} /> : <AutorenewIcon fontSize="small" />}
                   </IconButton>
                 </span>
               </Tooltip>

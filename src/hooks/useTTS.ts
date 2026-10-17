@@ -135,6 +135,11 @@ export interface UseTTSApi {
   /** espeak 兜轨首次触发的一次性轻提示（消费一次后复位） */
   fallbackNotice: boolean;
   dismissFallbackNotice(): void;
+  /**
+   * 重新合成（用户 2026-10-17：个别词缓存音频是错的）：
+   * 删本地缓存 + 删云音频库文件 → 现场重新合成 → 合成成功自动回传云端（其它设备也拿到新的）。
+   */
+  resynthesize(req: TTSRequest, wordId?: string): Promise<TTSEngine | null>;
 }
 
 export function useTTS(): UseTTSApi {
@@ -189,6 +194,48 @@ export function useTTS(): UseTTSApi {
   );
 
   const dismissFallbackNotice = useCallback(() => setFallbackNotice(false), []);
+
+  const resynthesize = useCallback(
+    async (req: TTSRequest, wordId?: string): Promise<TTSEngine | null> => {
+      setLoading(true);
+      setPhase('synthesizing');
+      phaseListener = setPhase;
+      try {
+        const res = await getOrchestrator().regenerate(req, wordId);
+        if (res.engine === 'neural_tts' && !res.fromCache) {
+          recordSynthesis(res.usageChars ?? req.text.length);
+        }
+        setLastEngine(res.engine);
+        await playBuffer(res.audio);
+        if (consumeFallbackNotice()) setFallbackNotice(true);
+        return res.engine;
+      } catch (e) {
+        console.error('[tts] resynthesize failed:', e);
+        const text = req.text || (req.ipa ? req.ipa.replace(/\//g, '') : '');
+        const ok = await speakWithWebSpeech(text, { rate: req.mode === 'word' ? 0.85 : 0.95 });
+        if (ok) {
+          setLastEngine('web_speech');
+          return 'web_speech';
+        }
+        return null;
+      } finally {
+        setLoading(false);
+        setPhase('idle');
+      }
+    },
+    [],
+  );
+
   const phaseLabel = phase === 'synthesizing' ? '合成中…' : '读取中…';
-  return { speak, speakAuto, loading, phase, phaseLabel, lastEngine, fallbackNotice, dismissFallbackNotice };
+  return {
+    speak,
+    speakAuto,
+    loading,
+    phase,
+    phaseLabel,
+    lastEngine,
+    fallbackNotice,
+    dismissFallbackNotice,
+    resynthesize,
+  };
 }

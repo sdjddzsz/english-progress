@@ -228,6 +228,25 @@ export function createOrchestrator(deps: OrchestratorDeps) {
       await deps.log({ engine: 'ipa_espeak', success: true, fallbackUsed: true, wordId });
       return fb2;
     },
+
+    /**
+     * 重新合成（用户 2026-10-17：个别词的缓存音频是错的，需要一个「重录」入口）。
+     * 步骤：删本地缓存该 key → 删云音频库该文件 → 走正常 getAudio（必缓存未命中）
+     * → 现场重新合成 → 合成成功自动回传云端（getAudio 的 cloudMiss 上传路径）。
+     * 云端也更新 = 其它设备下次也拿到新音频。
+     */
+    async regenerate(req: TTSRequest, wordId?: string): Promise<TTSResult> {
+      const cfg = await deps.getConfig();
+      const voice = cfg?.config.voice;
+      const model = cfg?.config.model;
+      const key = cfg ? cacheKey(req, voice, model) : cacheKey(req);
+      await deps.cache.remove?.(key);
+      if (remote && cfg) {
+        const p = await cloudAudioPath(req, voice, model);
+        await remote.remove(p);
+      }
+      return this.getAudio(req, wordId);
+    },
   };
 }
 
