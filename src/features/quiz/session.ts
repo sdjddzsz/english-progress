@@ -8,6 +8,7 @@
  * 纯模块、零 React 依赖；QuizPage 在 start（读）与 items/idx 变化（写）时调用。
  */
 import type { BookWord, Word } from '../../types/domain';
+import { clampSenseIndex } from '../senses';
 import type { DistractorCandidate } from './distractors';
 import type { QuizVerdict } from './judging';
 
@@ -35,6 +36,29 @@ export interface QuizSessionSnapshot {
   idx: number;
   stats: { skilled: number; graduated: number; special: number; dayPassed: number; total: number };
   todayLeft: number;
+}
+
+/**
+ * 恢复单条快照前先净化（用户 2026-10-18：「删了正在考的释义后刷新，卡在空白页没法推进」）：
+ * 快照里的 senseIndex 是**删释义之前**存的，词条的义项后来变少 ⇒ 越界 ⇒ 主卡片渲染条件
+ * `senseOf` 为空 ⇒ 题卡消失；而每次刷新都从同一份快照恢复 ⇒ 刷新几次都一样，彻底卡死。
+ *
+ * 净化规则：
+ *  - senseIndex 收敛到有效范围（clampSenseIndex：删当前项顺移下一个、删前面项对齐前移）；
+ *  - **未作答**且锚点被移动过 ⇒ 丢掉旧 options/correctKey，让题目按新义项重出
+ *    （否则 buildQuestion 看到已有选项直接返回 null，考的還是已删掉的那个义项）；
+ *  - 已作答 ⇒ 保留原选项供回看（历史判定不重放）。
+ * 没越界的原样返回（引用稳定）。
+ */
+export function restoreSnapshotItem(s: QuizItemSnapshot, word: Word): QuizItemSnapshot {
+  const clamped = clampSenseIndex(word, s.senseIndex);
+  if (clamped === s.senseIndex) return s;
+  const out: QuizItemSnapshot = { ...s, senseIndex: clamped };
+  if (s.verdict === undefined) {
+    delete out.options;
+    delete out.correctKey;
+  }
+  return out;
 }
 
 const keyOf = (userId: string, bookId: string): string => `ep-quiz-session:${userId}:${bookId}`;

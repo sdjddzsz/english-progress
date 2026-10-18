@@ -51,7 +51,7 @@ import {
 } from '../features/quiz/distractors';
 import { applyStageChoiceResult, enteringRound, selectStagePool, STAGE_META } from '../features/quiz/stages';
 import { buildQuestion } from '../features/quiz/question';
-import { clearSession, loadSession, saveSession, toSnapshots } from '../features/quiz/session';
+import { clearSession, loadSession, restoreSnapshotItem, saveSession, toSnapshots } from '../features/quiz/session';
 import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
 import WordNoteButton from '../components/notes/WordNoteButton';
@@ -137,10 +137,12 @@ export default function QuizPage() {
         const words = await repos.word.listWordsByIds([...new Set(snap.items.map((s) => s.wordId))]);
         const wordById = new Map(words.map((w) => [w.id, w]));
         const restored: QuizItem[] = [];
-        for (const s of snap.items) {
-          const bw = bwById.get(s.bookWordId);
-          const word = wordById.get(s.wordId);
+        for (const raw of snap.items) {
+          const bw = bwById.get(raw.bookWordId);
+          const word = wordById.get(raw.wordId);
           if (!bw || !word) continue; // 词书重建等场景：该条丢弃
+          // 删释义后的坏快照净化（2026-10-18）：越界 senseIndex 收敛 + 未作答的丢旧选项重出
+          const s = restoreSnapshotItem(raw, word);
           restored.push({
             bookWord: bw,
             word,
@@ -236,10 +238,17 @@ export default function QuizPage() {
     }
   }, [activeBookId, userId, quizDailyLimit]);
 
+  // 刷新直接进 /quiz：子组件 effect 先于 App 顶层 bootstrap 执行，userId 还没就位。
+  // 旧实现空依赖只跑一次、start 里 !userId 直接返回 ⇒ phase 永远卡 'loading'（一直转圈，
+  // 去首页把 bootstrap 跑完再进来才好——用户 2026-10-18 实测）。改为就绪后再起，
+  // startedRef 保证每次挂载只起一次（store 就绪前反复重跑没有意义）。
+  const startedRef = useRef(false);
   useEffect(() => {
+    if (startedRef.current) return;
+    if (!userId || !activeBookId) return;
+    startedRef.current = true;
     void start();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [userId, activeBookId, start]);
 
   // 会话快照：items/idx/stats 变化即写（当天有效，隔天作废；答完一轮/隔天自动失效）
   useEffect(() => {
