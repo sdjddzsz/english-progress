@@ -544,8 +544,9 @@ export default function QuizPage() {
       <Typography variant="h5">{STAGE_META[1].name}</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
         看单词选词义：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。
-        每轮首次遇见且熟练 {graduateStreak} 轮晋级阶段二；不限每天一轮，完成一轮可立即再来一轮；
-        本轮第一次作答就是「熟练」的词一遍过；其它词没达到「每轮过关挡位」会排到队尾重来，连续达标 {QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。
+        每轮首次遇见即达到「{thresholdLineLabel(quizDayThreshold)}」算首过，连续 {graduateStreak} 轮首过晋级阶段二；
+        不限每天一轮，完成一轮可立即再来一轮；本轮第一次作答就达到「{thresholdLineLabel(quizDayThreshold)}」的词一遍过；
+        没达到的词即使答对也排到队尾重来（重刷不算首过），连续达标 {QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError('')}>

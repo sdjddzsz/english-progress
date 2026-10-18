@@ -317,8 +317,8 @@ export default function StageQuizPage() {
         {stageNo === 3 && '听发音选单词（可点喇叭重听）：判定同用时四档。'}
         {stageNo === 4 && '听发音拼写单词：写对一次即彻底毕业；写错会排到队尾重来。'}
         {(stageNo === 2 || stageNo === 3) &&
-          `本轮第一次作答就是「熟练」的词一遍过；其它词没达到「每轮过关挡位」会排到队尾重来，连续达标 ${QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。`}
-        每轮首次遇见且熟练 {stageGraduate[stageNo === 4 ? 3 : stageNo]} 轮晋级下一阶段
+          `本轮第一次作答就达到「${thresholdLineLabel(quizDayThreshold)}」的词一遍过；没达到的即使答对也排到队尾重来（重刷不算首过），连续达标 ${QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。`}
+        每轮首次遇见即达到「{thresholdLineLabel(quizDayThreshold)}」算首过，连续 {stageGraduate[stageNo === 4 ? 3 : stageNo]} 轮首过晋级下一阶段
         {stageNo === 4 ? '（本阶段写对一次即毕业）' : ''}；不限每天一轮，完成一轮可立即再来一轮。
       </Typography>
       {error && (
