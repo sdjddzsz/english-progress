@@ -16,7 +16,7 @@
  * 纯函数、零 IO、零 React 依赖。
  */
 import type { BookWord, Tier } from '../../types/domain';
-import { dayVerdictOk, type QuizDayThreshold, type QuizVerdict } from './judging';
+import type { QuizVerdict } from './judging';
 
 export type WordStage = 0 | 1 | 2 | 3 | 4;
 
@@ -120,15 +120,27 @@ export interface StageResultPatch {
 }
 
 /**
+ * ★★ 两条线、两个挡位，永远不许混（用户 2026-10-18 发火定案）：
+ *  - **轮标线（放行线）**用「每轮过关挡位」（设置页 quizDayThreshold：宽松/适当/严格），
+ *    归 judging.ts 的 roundRelease 管，本函数一概不碰；
+ *  - **毕业线（晋级线）**用设置页「阶段毕业条件」——连续**熟练** N 次，判定写死「熟练」，
+ *    只有次数（graduateStreak）可配。**绝不允许把每轮挡位传进来**（2026-10-18 事故：
+ *    传了 quizDayThreshold，用户设「适当」时毕业线按「认识」计数，认识就晋级）。
+ */
+/** 毕业线首过判定：固定「熟练」（设置页只开放次数，不开放判定档位） */
+export const STAGE_GRADUATE_VERDICT: QuizVerdict = 'skilled';
+/** 毕业线档位显示名（固定，不随每轮挡位变） */
+export const STAGE_GRADUATE_LABEL = '熟练';
+
+/**
  * 阶段一~三（4 选 1）：判定 → 状态走向 →（可能）晋级。
- * graduateStreak = 该阶段毕业阈值（设置页可配，默认 3）。
+ * graduateStreak = 该阶段毕业所需连续熟练次数（设置页可配，默认 3）。
  *
  * ★ 每轮首过规则（用户 2026-10-18 定案）：
- *  - **首见即达标**：本轮第一次作答（attemptNo===1）就要达到当前挡位线
- *    （threshold：首熟=熟练 / 首认识=认识 / 首不熟=不熟）才算这一轮「首过」；
- *  - 首见达标 ⇒ stageStreak +1；首见没达标 ⇒ stageStreak 清零（「连续」从此轮断）；
+ *  - **首见即熟练**：本轮第一次作答（attemptNo===1）就是「熟练」才算这一轮「首过」；
+ *  - 首见熟练 ⇒ stageStreak +1；首见不是熟练 ⇒ stageStreak 清零（「连续」从此轮断）；
  *  - **同轮重排后的作答（attemptNo>1）一律不动 stageStreak**——既不加也不清零：
- *    哪怕这个词今天已经被重排刷过好几轮、答对了 N 次，没凑够连续 N 轮首见达标
+ *    哪怕这个词今天已经被重排刷过好几轮、答熟练了 N 次，没凑够连续 N 轮首见熟练
  *    就坚决不毕业（毕业线只认首见）；
  *  - tier / failStreak / 特训标记仍然每次作答都更新（它们管频率，不管毕业）。
  */
@@ -136,7 +148,6 @@ export function applyStageChoiceResult(
   bw: BookWord,
   verdict: QuizVerdict,
   graduateStreak: number,
-  threshold: QuizDayThreshold,
   now: Date = new Date(),
   attemptNo?: number,
 ): StageResultPatch {
@@ -158,10 +169,10 @@ export function applyStageChoiceResult(
   let failStreak = bw.failStreak;
   let special = bw.specialTraining;
 
-  // 毕业线（stageStreak）只由「本轮首见作答」写：达标 +1，没达标清零；
+  // 毕业线（stageStreak）只由「本轮首见作答」写：首见熟练 +1，否则清零；
   // 重排后的作答（attemptNo>1）不碰它——刷再多次也不算首过（用户 2026-10-18）
   if (attemptNo === undefined || attemptNo === 1) {
-    stageStreak = dayVerdictOk(verdict, threshold) ? stageStreak + 1 : 0;
+    stageStreak = verdict === STAGE_GRADUATE_VERDICT ? stageStreak + 1 : 0;
   }
   if (verdict === 'skilled') {
     tier = Math.max(1, tier - 1) as Tier;
@@ -171,7 +182,7 @@ export function applyStageChoiceResult(
   }
   if (failStreak >= STAGE_SPECIAL_FAILS) special = true;
 
-  // 毕业晋级：连续熟练达标 → 下一阶段，特训解除，连击清零
+  // 毕业晋级：连续熟练达标 → 下一阶段，特训解除，连击清零（档位固定熟练，见上）
   if (stageStreak >= graduateStreak) {
     stage = (stage + 1) as 1 | 2 | 3;
     stageStreak = 0;

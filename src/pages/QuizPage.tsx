@@ -49,7 +49,7 @@ import {
   optionSuffix,
   type DistractorCandidate,
 } from '../features/quiz/distractors';
-import { applyStageChoiceResult, enteringRound, selectStagePool, STAGE_META } from '../features/quiz/stages';
+import { applyStageChoiceResult, enteringRound, selectStagePool, STAGE_GRADUATE_LABEL, STAGE_META } from '../features/quiz/stages';
 import { buildQuestion } from '../features/quiz/question';
 import { clearSession, loadSession, restoreSnapshotItem, saveSession, toSnapshots } from '../features/quiz/session';
 import { runOrQueue } from '../data/queue';
@@ -326,7 +326,8 @@ export default function QuizPage() {
     const now = new Date();
     const firstQuizOfDay = !isSameUtcDay(bw.lastQuizAt, now);
     // ★ 四阶段制（用户 2026-10-15）：阶段走向是唯一权威（晋级/特训/层升降都在 stages.ts 引擎里）
-    const sp = applyStageChoiceResult(bw, v, graduateStreak, quizDayThreshold, now, current.attemptNo);
+    // 毕业线判定固定「熟练」（阶段毕业设置只配次数）——绝不传每轮挡位（2026-10-18 事故）
+    const sp = applyStageChoiceResult(bw, v, graduateStreak, now, current.attemptNo);
     const graduated = sp.stage !== bw.stage; // 阶段一毕业 → 晋级阶段二
     // 每轮过关计数（用户 2026-10-15）：连续达标才放行；跨天重新起算；
     // 晋级/毕业立即放行。quizDayPassed 只在真正达到过关线时才写 true
@@ -544,9 +545,11 @@ export default function QuizPage() {
       <Typography variant="h5">{STAGE_META[1].name}</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
         看单词选词义：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。
-        每轮首次遇见即达到「{thresholdLineLabel(quizDayThreshold)}」算首过，连续 {graduateStreak} 轮首过晋级阶段二；
-        不限每天一轮，完成一轮可立即再来一轮；本轮第一次作答就达到「{thresholdLineLabel(quizDayThreshold)}」的词一遍过；
-        没达到的词即使答对也排到队尾重来（重刷不算首过），连续达标 {QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。
+        【轮标线】（放行线，档位取设置页「每轮过关挡位」=首见{thresholdLineLabel(quizDayThreshold)}）：
+        本轮第一次作答就达到挡位的词一遍过；没达到的即使答对也排到队尾重来（重刷不算首过），
+        连续达标 {QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。
+        【毕业线】（晋级线，取设置页「阶段毕业条件」=首见{STAGE_GRADUATE_LABEL}，次数可配、判定固定）：
+        每轮第一次作答就是「{STAGE_GRADUATE_LABEL}」算一次首过，连续 {graduateStreak} 轮首过晋级阶段二；不限每天一轮，完成一轮可立即再来一轮。
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError('')}>
@@ -753,7 +756,7 @@ export default function QuizPage() {
                   variant="body2"
                   sx={{ color: current.promoted ? 'success.main' : 'text.secondary' }}
                 >
-                  毕业线：{current.promoted ? graduateStreak : current.bookWord.stageStreak}/{graduateStreak}（首见{thresholdLineLabel(quizDayThreshold)}）
+                  毕业线：{current.promoted ? graduateStreak : current.bookWord.stageStreak}/{graduateStreak}（首见{STAGE_GRADUATE_LABEL}）
                   {current.promoted ? ' · 已晋级，进入下一阶段（打满即毕业，新阶段从 0 起计）' : ''}
                 </Typography>
               </Stack>

@@ -37,7 +37,7 @@ import {
   verdictLabel,
   type QuizVerdict,
 } from '../features/quiz/judging';
-import { applyStageChoiceResult, applyStageSpellingResult, enteringRound, STAGE_META } from '../features/quiz/stages';
+import { applyStageChoiceResult, applyStageSpellingResult, enteringRound, STAGE_GRADUATE_LABEL, STAGE_META } from '../features/quiz/stages';
 import { checkSpelling, type SpellVerdict } from './SpellingPage';import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
 import WordNoteButton from '../components/notes/WordNoteButton';
@@ -208,7 +208,8 @@ export default function StageQuizPage() {
     setPicked(opt);
     setVerdict(v);
     const bw = current.bookWord;
-    const sp = applyStageChoiceResult(bw, v, stageGraduate[stageNo === 4 ? 3 : stageNo], quizDayThreshold, new Date(), current.attemptNo);
+    // 毕业线判定固定「熟练」（阶段毕业设置只配次数）——绝不传每轮挡位（2026-10-18 事故）
+    const sp = applyStageChoiceResult(bw, v, stageGraduate[stageNo === 4 ? 3 : stageNo], new Date(), current.attemptNo);
     const advanced = sp.stage !== bw.stage && sp.stage > (bw.stage as number);
     // 每轮过关挡位（用户 2026-10-15）：连续达标才放行；晋级立即放行。
     // 与阶段一（QuizPage）同一套 roundRelease 规则，挡位不匹配的问题同源修复
@@ -317,8 +318,9 @@ export default function StageQuizPage() {
         {stageNo === 3 && '听发音选单词（可点喇叭重听）：判定同用时四档。'}
         {stageNo === 4 && '听发音拼写单词：写对一次即彻底毕业；写错会排到队尾重来。'}
         {(stageNo === 2 || stageNo === 3) &&
-          `本轮第一次作答就达到「${thresholdLineLabel(quizDayThreshold)}」的词一遍过；没达到的即使答对也排到队尾重来（重刷不算首过），连续达标 ${QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。`}
-        每轮首次遇见即达到「{thresholdLineLabel(quizDayThreshold)}」算首过，连续 {stageGraduate[stageNo === 4 ? 3 : stageNo]} 轮首过晋级下一阶段
+          `【轮标线】（放行线，档位取设置页「每轮过关挡位」=首见${thresholdLineLabel(quizDayThreshold)}）：本轮第一次作答就达到挡位的词一遍过；没达到的即使答对也排到队尾重来（重刷不算首过），连续达标 ${QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。`}
+        【毕业线】（晋级线，取设置页「阶段毕业条件」=首见{STAGE_GRADUATE_LABEL}，次数可配、判定固定）：
+        每轮第一次作答就是「{STAGE_GRADUATE_LABEL}」算一次首过，连续 {stageGraduate[stageNo === 4 ? 3 : stageNo]} 轮首过晋级下一阶段
         {stageNo === 4 ? '（本阶段写对一次即毕业）' : ''}；不限每天一轮，完成一轮可立即再来一轮。
       </Typography>
       {error && (
@@ -515,7 +517,7 @@ export default function StageQuizPage() {
                       variant="body2"
                       sx={{ color: current.promoted ? 'success.main' : 'text.secondary' }}
                     >
-                      毕业线：{current.bookWord.stageStreak}/{stageGraduate[stageNo]}（首见{thresholdLineLabel(quizDayThreshold)}）
+                      毕业线：{current.bookWord.stageStreak}/{stageGraduate[stageNo]}（首见{STAGE_GRADUATE_LABEL}）
                       {current.promoted ? ' · 已晋级，进入下一阶段（打满即毕业，新阶段从 0 起计）' : ''}
                     </Typography>
                   </Stack>
