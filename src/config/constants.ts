@@ -138,8 +138,18 @@ export const DASHSCOPE_LANGUAGE_HINTS: readonly string[] = ['en'];
  * 默认 false = 保留数字（CMUdict 原值 "S AY1 N"）。实测不兼容则翻转本常量重新构建。
  */
 export const DASHSCOPE_PHONEME_STRIP_STRESS = false;
-/** P1-1 成本卡资费口径：cosyvoice-v3-flash 官方价 1.0 元/万字符（已核实） */
+/** P1-1 成本卡资费口径：cosyvoice-v3-flash 官方价 1.0 元/万字符（已核实：help.aliyun.com 模型页） */
 export const DASHSCOPE_PRICE_PER_10K_CHARS = 1.0;
+/**
+ * 分模型资费（元/万字符口径，成本卡估算用）。
+ * - qwen-audio-3.1-tts-flash：官方自 2026-09-22 起按 token 计费（输入 1.5 / 输出 12 元每百万 token），
+ *   不再按字符计价——此处为第三方逐单实测折算 ≈0.155 元/万字符（约 cosyvoice 的 1/6.4），仅作估算。
+ * - cosyvoice-v2 / v3-plus 单价未核实，按 cosyvoice 系 1.0 兜底估算；查到官方价后回填。
+ */
+export const TTS_PRICE_PER_10K_CHARS: Record<string, number> = {
+  'cosyvoice-v3-flash': 1.0,
+  'qwen-audio-3.1-tts-flash': 0.155,
+};
 /** 新用户开通百炼 90 天内 TTS 免费额度（字符） */
 export const DASHSCOPE_FREE_QUOTA_CHARS = 10000;
 /**

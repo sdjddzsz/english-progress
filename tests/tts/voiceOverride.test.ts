@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { cacheKey, createOrchestrator, inMemoryAudioCache, type OrchestratorDeps } from '../../src/tts/orchestrator';
 import { cloudAudioPath, inMemoryAudioStore } from '../../src/data/cloudAudioStore';
 import { defaultVoiceForModel, voiceLabelOf, voicesForModel, ALL_MODELS } from '../../src/tts/voiceOptions';
+import { TTS_PRICE_PER_10K_CHARS } from '../../src/config/constants';
 import type { TTSContext, TTSProvider, TTSResult, VoiceOverride } from '../../src/tts/types';
 import type { TTSProviderConfig } from '../../src/types/domain';
 
@@ -83,6 +84,12 @@ describe('voiceOptions：音色按模型分组（官方约束：不能跨模型�
     expect(q).toContain('Emily_v3.1');
     expect(q).not.toContain('loongmary'); // 3.0 英语音色 SSML 不支持，禁止入表
     expect(defaultVoiceForModel('qwen-audio-3.1-tts-flash')).toBe('Brian_v3.1');
+  });
+
+  it('成本卡分模型计价：qwen 系实测折算价必须低于 cosyvoice（2026-09-22 起 token 计费，约 1/6.4）', () => {
+    expect(TTS_PRICE_PER_10K_CHARS['qwen-audio-3.1-tts-flash']).toBeLessThan(
+      TTS_PRICE_PER_10K_CHARS['cosyvoice-v3-flash'],
+    );
   });
 
   it('cacheKey 含 voice+model：换任何一个都是新 key（v2 口径）', () => {

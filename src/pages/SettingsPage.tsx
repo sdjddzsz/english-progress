@@ -42,6 +42,7 @@ import {
   DASHSCOPE_FREE_QUOTA_CHARS,
   DASHSCOPE_MODEL_OPTIONS,
   DASHSCOPE_PRICE_PER_10K_CHARS,
+  TTS_PRICE_PER_10K_CHARS,
   DASHSCOPE_VOICE_OPTIONS_BY_MODEL,
 } from '../config/constants';
 import { cacheHitRate, readUsageStats, resetUsageStats, type UsageStats } from '../tts/usageStats';
@@ -166,6 +167,8 @@ export default function SettingsPage() {
 
   // 音色按模型联动（官方音色不能跨模型混用）：当前模型的可用音色列表
   const dashscopeVoiceOptions = DASHSCOPE_VOICE_OPTIONS_BY_MODEL[ttsModel] ?? [];
+  // 成本卡资费按当前模型取价（qwen 系为实测折算值；未列出的模型按 cosyvoice 系兜底）
+  const ttsPricePer10k = TTS_PRICE_PER_10K_CHARS[ttsModel] ?? DASHSCOPE_PRICE_PER_10K_CHARS;
   // 当前选择必须属于当前模型列表，否则回落到列表第一项（再退 DASHSCOPE_DEFAULT_VOICE）
   const effectiveVoice = dashscopeVoiceOptions.some((o) => o.voice === voice)
     ? voice
@@ -820,13 +823,17 @@ export default function SettingsPage() {
           {cloudUsage && (
             <Typography variant="body2" sx={{ mt: 0.5 }}>
               云端实测（跨设备一致，来自每次真实合成日志）：本月主轨成功 {cloudUsage.requests} 次 ·{' '}
-              {cloudUsage.chars} 字符 ≈ ¥{((cloudUsage.chars / 10000) * DASHSCOPE_PRICE_PER_10K_CHARS).toFixed(2)}
+              {cloudUsage.chars} 字符 ≈ ¥{((cloudUsage.chars / 10000) * ttsPricePer10k).toFixed(2)}
             </Typography>
           )}
           <Typography variant="caption" color="text.secondary">
             阿里云控制台官网用量没有公开查询 API（需要控制台登录态），无法在此直读；上行为本应用自己的合成日志聚合，口径与官网账单一致。
-            资费：{DASHSCOPE_PRICE_PER_10K_CHARS} 元/万字符；新用户开通百炼 90 天内 {DASHSCOPE_FREE_QUOTA_CHARS} 字符免费。
-            （免费额度未计入；缓存命中不产生新字符）
+            资费：{ttsPricePer10k} 元/万字符（按当前模型「{ttsModel || 'cosyvoice-v3-flash'}」取价；
+            {ttsModel.startsWith('qwen-audio')
+              ? ' qwen 系官方按 token 计费，此为第三方逐单实测折算值'
+              : ' cosyvoice 系官方价'}
+            ；新用户开通百炼 90 天内 {DASHSCOPE_FREE_QUOTA_CHARS} 字符免费。
+            （免费额度未计入；缓存命中不产生新字符；按字符折算为估算值，token 计费模型以官网账单为准）
           </Typography>
           <Stack direction="row" justifyContent="flex-end">
             <Button
