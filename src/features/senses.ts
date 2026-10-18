@@ -130,3 +130,48 @@ export function displaySenses(word: Word): WordSense[] {
   }
   return out;
 }
+
+// ===== 用户长按编辑/删除义项（用户 2026-10-18：有些词的释义极其刁钻，要能改/删） =====
+// 纯函数：改哪个字段、删第几个、词级字段（senses 扁平串 / pos）怎么同步，都在这一个文件里定死，
+// 前端弹窗与测试共用；云端写入走 wordRepo.updateWordSenses（整行 upsert，lemma 冲突即更新）。
+
+/** 词级字段随义项列表同步：扁平 senses=各义项 zh、pos=首义项词性 */
+function syncWordSenses(word: Word, detail: WordSense[]): Word {
+  return {
+    ...word,
+    sensesDetail: detail,
+    senses: detail.map((s) => s.zh),
+    ...(detail[0] ? { pos: detail[0].pos } : {}),
+  };
+}
+
+/** 编辑第 senseIndex 个义项的 词性/释义；不改读音字段（读音即判定身份，不能顺手改） */
+export function applySenseEdit(
+  word: Word,
+  senseIndex: number,
+  patch: { pos?: string; zh?: string },
+): Word {
+  const detail = normalizeSenses(word).map((s, i) =>
+    i === senseIndex
+      ? {
+          ...s,
+          ...(patch.pos !== undefined ? { pos: patch.pos } : {}),
+          ...(patch.zh !== undefined ? { zh: patch.zh } : {}),
+        }
+      : s,
+  );
+  return syncWordSenses(word, detail);
+}
+
+/**
+ * 删除第 senseIndex 个义项。**只剩一个义项时返回 null**（拒绝删除）：
+ * 词不能没有释义，否则 normalizeSenses 降级出的单义项 zh 为空，考据面板全空。
+ */
+export function applySenseDelete(word: Word, senseIndex: number): Word | null {
+  const detail = normalizeSenses(word);
+  if (detail.length <= 1) return null;
+  return syncWordSenses(
+    word,
+    detail.filter((_, i) => i !== senseIndex),
+  );
+}

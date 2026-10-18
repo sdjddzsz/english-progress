@@ -17,6 +17,12 @@ export interface WordRepo {
   listBooks(userId: string): Promise<Book[]>;
 
   upsertWords(words: (Word & Record<string, unknown>)[]): Promise<void>;
+  /**
+   * 用户长按编辑/删除义项后的写回（用户 2026-10-18）。
+   * 整行 upsert（lemma 冲突即更新）——words 表 RLS 只放行 insert 通道，
+   * 单独 PATCH 会被拒；词级 senses/pos 已由 applySenseEdit/applySenseDelete 同步好，这里只负责落库。
+   */
+  updateWordSenses(word: Word): Promise<void>;
   getWordByLemma(lemma: string): Promise<Word | null>;
   /** 前缀搜索（词形开头匹配）；传空串返回前 limit 个（词书/生词本列表用） */
   searchWordsByPrefix(prefix: string, limit?: number): Promise<Word[]>;
@@ -161,6 +167,8 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
     listBooks: (userId) => books.listAll([{ column: 'userId', op: 'eq', value: userId }], { orderBy: 'createdAt' }),
 
     upsertWords: (rows) => words.upsertMany(rows),
+    updateWordSenses: (word) =>
+      words.upsertMany([word as Word & Record<string, unknown>]),
     getWordByLemma: async (lemma) => {
       const rows = await words.list([{ column: 'lemma', op: 'eq', value: lemma }], { limit: 1 });
       return rows[0] ?? null;

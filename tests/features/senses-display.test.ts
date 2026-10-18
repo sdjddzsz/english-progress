@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Word, WordSense } from '../../src/types/domain';
-import { displaySenses, isDomainTag, normalizeSenses } from '../../src/features/senses';
+import { applySenseDelete, applySenseEdit, displaySenses, isDomainTag, normalizeSenses } from '../../src/features/senses';
 
 function word(overrides: Partial<Word>, senses: Partial<WordSense>[]): Word {
   const base: Word = {
@@ -105,5 +105,45 @@ describe('displaySenses：词性始终都有', () => {
     expect(ds.map((s) => s.senseId)).toEqual(raw.map((s) => s.senseId));
     expect(ds.map((s) => s.arpabet)).toEqual(raw.map((s) => s.arpabet));
     expect(ds.map((s) => s.pronunciationKey)).toEqual(raw.map((s) => s.pronunciationKey));
+  });
+});
+
+describe('义项长按编辑/删除（用户 2026-10-18）', () => {
+  const word: Word = {
+    id: 'w1',
+    lemma: 'record',
+    ipa: '/ˈrekɔːd/',
+    arpabet: 'R IH1 K AO2 D',
+    pos: 'n.',
+    frequency: 0,
+    tags: [],
+    senses: ['记录', '录制'],
+    sensesDetail: [
+      { senseId: 'record#0', lemma: 'record', pos: 'n.', zh: '记录', pronunciationKey: 'R IH1 K AO2 D', arpabet: 'R IH1 K AO2 D', ipa: '/ˈrekɔːd/' },
+      { senseId: 'record#1', lemma: 'record', pos: 'v.', zh: '录制', pronunciationKey: 'R IH1 K AO2 D', arpabet: 'R IH1 K AO2 D', ipa: '/ˈrekɔːd/' },
+    ],
+    examples: [],
+  };
+
+  it('编辑某个义项：只改该义项，词级 senses/pos 同步，读音字段原样不动', () => {
+    const next = applySenseEdit(word, 1, { zh: '录下来' });
+    expect(next.sensesDetail?.[1].zh).toBe('录下来');
+    expect(next.sensesDetail?.[0].zh).toBe('记录'); // 另一个义项不受影响
+    expect(next.senses[1]).toBe('录下来'); // 扁平串同步
+    expect(next.sensesDetail?.[1].arpabet).toBe('R IH1 K AO2 D'); // 读音不动
+  });
+
+  it('删除某个义项：列表变短、扁平串同步；只剩一个时拒绝（返回 null）', () => {
+    const next = applySenseDelete(word, 0);
+    expect(next?.sensesDetail).toHaveLength(1);
+    expect(next?.senses).toEqual(['录制']);
+    expect(next?.pos).toBe('v.'); // 首义项词性同步
+    expect(applySenseDelete(next!, 0)).toBeNull(); // 只剩一个 ⇒ 拒绝删空
+  });
+
+  it('编辑不改原对象（调用方凭引用相等判断要不要刷新）', () => {
+    const next = applySenseEdit(word, 0, { zh: '记载' });
+    expect(next).not.toBe(word);
+    expect(word.sensesDetail?.[0].zh).toBe('记录');
   });
 });

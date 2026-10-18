@@ -154,10 +154,32 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </Box>
+          {/* 底部导航（用户 2026-10-18）：手机窄屏 6 个 tab 放不下 ⇒ 横向可滑 + 标签/图标自动缩小。
+              滚动条隐藏（各浏览器内核都要），滑动用触摸/触控板惯性。 */}
           <BottomNavigation
             value={activeTabIndex(pathname)}
             onChange={(_, newValue: number) => navigate(TAB_DEFS[newValue].path)}
-            sx={{ position: 'sticky', bottom: 0 }}
+            sx={{
+              position: 'sticky',
+              bottom: 0,
+              overflowX: 'auto',
+              overflowY: 'hidden',
+              scrollbarWidth: 'none', // Firefox
+              '&::-webkit-scrollbar': { display: 'none' }, // Chrome / Edge / Safari
+              '& .MuiBottomNavigationAction-root': {
+                minWidth: 0,
+                flex: '1 0 auto', // 不压缩：放不下就横向滑，绝不挤成半截字
+                px: { xs: 0.5, sm: 1.5 },
+              },
+              '& .MuiBottomNavigationAction-label': {
+                fontSize: { xs: '0.62rem', sm: '0.75rem' },
+                whiteSpace: 'nowrap',
+                '&.Mui-selected': { fontSize: { xs: '0.66rem', sm: '0.75rem' } },
+              },
+              '& .MuiBottomNavigationAction-root .MuiSvgIcon-root': {
+                fontSize: { xs: 20, sm: 24 },
+              },
+            }}
           >
             {TAB_DEFS.map((t) => (
               <BottomNavigationAction key={t.path} label={t.label} icon={t.icon} />

@@ -55,6 +55,8 @@ import { clearSession, loadSession, saveSession, toSnapshots } from '../features
 import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
 import WordNoteButton from '../components/notes/WordNoteButton';
+import LongPressSenseRow from '../components/word/LongPressSenseRow';
+import SenseEditDialog from '../components/word/SenseEditDialog';
 
 interface QuizItem {
   bookWord: BookWord;
@@ -88,6 +90,8 @@ export default function QuizPage() {
   const [error, setError] = useState('');
   /** 写入被排入离线队列时的一次性轻提示（不弹红条阻断学习） */
   const [syncHint, setSyncHint] = useState('');
+  // 长按释义编辑（用户 2026-10-18）：当前在编辑第几个义项
+  const [senseEditIdx, setSenseEditIdx] = useState<number | null>(null);
   const [items, setItems] = useState<QuizItem[]>([]);
   const [idx, setIdx] = useState(0);
   const [options, setOptions] = useState<DistractorCandidate[]>([]);
@@ -742,20 +746,18 @@ export default function QuizPage() {
                 </Typography>
                 <Stack spacing={0.25} sx={{ mt: 0.5 }}>
                   {displaySenses(current.word).map((sd, i) => (
-                    <Typography
+                    <LongPressSenseRow
                       key={sd.senseId}
-                      variant="body2"
-                      sx={{
-                        color: i === current.senseIndex ? 'text.primary' : 'text.secondary',
-                        fontWeight: i === current.senseIndex ? 600 : 400,
-                      }}
-                    >
-                      {i + 1}. {sd.pos ? `[${sd.pos}] ` : ''}
-                      {sd.zh}
-                      {i === current.senseIndex ? ' ← 本题' : ''}
-                    </Typography>
+                      sense={sd}
+                      index={i}
+                      isCurrent={i === current.senseIndex}
+                      onLongPress={setSenseEditIdx}
+                    />
                   ))}
                 </Stack>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                  长按任一释义可编辑 / 删除（改动直接写回词书）
+                </Typography>
               </Box>
               {syncHint && (
                 <Typography variant="caption" color="text.secondary">
@@ -923,6 +925,16 @@ export default function QuizPage() {
           </Stack>
         </Paper>
       )}
+
+      {/* 长按释义 → 编辑/删除（写回词书；保存后换掉内存里的旧 Word，界面立即刷新） */}
+      <SenseEditDialog
+        word={current?.word ?? null}
+        senseIndex={senseEditIdx}
+        onClose={() => setSenseEditIdx(null)}
+        onSaved={(w) =>
+          setItems((prev) => prev.map((it) => (it.word.id === w.id ? { ...it, word: w } : it)))
+        }
+      />
     </Box>
   );
 }
