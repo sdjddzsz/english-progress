@@ -32,6 +32,7 @@ import {
   judgeAnswer,
   QUIZ_DAY_PASS_COUNT,
   roundRelease,
+  thresholdLineLabel,
   verdictChipSx,
   verdictLabel,
   type QuizVerdict,
@@ -53,6 +54,9 @@ interface QuizItem {
   senseIndex: number;
   /** 本轮内第几次作答该词（1=第一次；用户 2026-10-17：首答即熟练 → 一遍过） */
   attemptNo: number;
+  /** 本次作答后是否已放行 / 已晋级（进度显示用） */
+  released?: boolean;
+  promoted?: boolean;
   options?: string[];
   correct?: string;
   verdict?: QuizVerdict;
@@ -192,7 +196,7 @@ export default function StageQuizPage() {
     setPicked(opt);
     setVerdict(v);
     const bw = current.bookWord;
-    const sp = applyStageChoiceResult(bw, v, stageGraduate[stageNo === 4 ? 3 : stageNo], new Date());
+    const sp = applyStageChoiceResult(bw, v, stageGraduate[stageNo === 4 ? 3 : stageNo], new Date(), current.attemptNo);
     const advanced = sp.stage !== bw.stage && sp.stage > (bw.stage as number);
     // 每轮过关挡位（用户 2026-10-15）：连续达标才放行；晋级立即放行。
     // 与阶段一（QuizPage）同一套 roundRelease 规则，挡位不匹配的问题同源修复
@@ -210,7 +214,11 @@ export default function StageQuizPage() {
       quizDayStreak: dayStreak,
       quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT,
     };
-    setItems((its) => its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, verdict: v, picked: opt } : it)));
+    setItems((its) =>
+      its.map((it, i) =>
+        i === idx ? { ...it, bookWord: nextBw, verdict: v, picked: opt, released: release, promoted: advanced } : it,
+      ),
+    );
     // 未放行/不会 → 排到队尾重来（不会按钮即判生词）
     if (!release) {
       setItems((its) => [
@@ -256,7 +264,9 @@ export default function StageQuizPage() {
       quizDayStreak: dayStreak,
       quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT,
     };
-    setItems((its) => its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, spellVerdict: sv } : it)));
+    setItems((its) =>
+      its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, spellVerdict: sv, released: release, promoted: graduated } : it)),
+    );
     if (!release) {
       setItems((its) => [
         ...its,
@@ -296,7 +306,7 @@ export default function StageQuizPage() {
         {stageNo === 4 && '听发音拼写单词：写对一次即彻底毕业；写错会排到队尾重来。'}
         {(stageNo === 2 || stageNo === 3) &&
           `本轮第一次作答就是「熟练」的词一遍过；其它词没达到「每轮过关挡位」会排到队尾重来，连续达标 ${QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。`}
-        连续熟练 {stageGraduate[stageNo === 4 ? 3 : stageNo]} 次晋级下一阶段
+        每轮首次遇见且熟练 {stageGraduate[stageNo === 4 ? 3 : stageNo]} 轮晋级下一阶段
         {stageNo === 4 ? '（本阶段写对一次即毕业）' : ''}；不限每天一轮，完成一轮可立即再来一轮。
       </Typography>
       {error && (
@@ -472,6 +482,25 @@ export default function StageQuizPage() {
                       {verdict === 'skilled' ? '继续，连对就晋级' : '这个词标记后会更频繁出现'}
                     </Typography>
                   </Stack>
+                  {/* 进度显示（用户 2026-10-18）：距本轮过关 / 距毕业（首熟口径） */}
+                  <Box sx={{ width: '100%' }}>
+                    {current.released ? (
+                      <Typography variant="body2" color="success.main" sx={{ textAlign: 'center' }}>
+                        {current.promoted ? '已晋级，进入下一阶段！' : '本轮已过关（一遍过 / 连续达标），不再出现'}
+                      </Typography>
+                    ) : (
+                      <Stack spacing={0.25} alignItems="center">
+                        <Typography variant="body2" color="text.secondary">
+                          距本轮过关还差 {Math.max(0, QUIZ_DAY_PASS_COUNT - (current.bookWord.quizDayStreak ?? 0))} 次连续达标
+                          （挡位线：{thresholdLineLabel(quizDayThreshold)}，一次没到线清零）
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          距阶段毕业还差 {Math.max(0, stageGraduate[stageNo] - current.bookWord.stageStreak)} 轮首熟
+                          （每轮首次遇见且熟练；已连 {current.bookWord.stageStreak} 轮）
+                        </Typography>
+                      </Stack>
+                    )}
+                  </Box>
                   {/* 该词全部释义（用户 2026-10-15：多义词只考一个义项，出答案必须完整显示） */}
                   <Box sx={{ width: '100%', textAlign: 'left' }}>
                     <Typography variant="caption" color="text.secondary">

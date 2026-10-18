@@ -107,6 +107,40 @@ describe('applyStageChoiceResult（阶段一~三）', () => {
     const yes = applyStageChoiceResult(bw({ stage: 1, stageStreak: 4 }), 'skilled', 5, NOW);
     expect(yes.stage).toBe(2);
   });
+
+  // ===== 首熟口径（用户 2026-10-18：毕业只数「每轮首次遇见且熟练」）=====
+  it('本轮首答即熟练（attemptNo=1）→ stageStreak +1', () => {
+    const p = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, NOW, 1);
+    expect(p.stageStreak).toBe(2);
+  });
+
+  it('同轮重排后再答熟练（attemptNo≥2）→ stageStreak 不动（首熟才计数）', () => {
+    const p = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, NOW, 2);
+    expect(p.stageStreak).toBe(1);
+    const p3 = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, NOW, 3);
+    expect(p3.stageStreak).toBe(1);
+  });
+
+  it('重排后熟练不影响毕业，但首答不熟练会清零', () => {
+    const base = bw({ stage: 1, stageStreak: 2 });
+    const reset = applyStageChoiceResult(base, 'unfamiliar', 3, NOW, 1);
+    expect(reset.stageStreak).toBe(0);
+  });
+
+  it('连续三轮首熟 → 晋级（3 轮 × attemptNo=1）', () => {
+    let cur = bw({ stage: 1, stageStreak: 0 });
+    for (let i = 0; i < 3; i++) {
+      const p = applyStageChoiceResult(cur, 'skilled', 3, NOW, 1);
+      cur = { ...cur, ...p };
+    }
+    expect(cur.stage).toBe(2);
+    expect(cur.stageStreak).toBe(0);
+  });
+
+  it('不传 attemptNo = 旧行为（每次熟练都计数，兼容既有调用）', () => {
+    const p = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, NOW);
+    expect(p.stageStreak).toBe(2);
+  });
 });
 
 describe('applyStageSpellingResult（阶段四）', () => {

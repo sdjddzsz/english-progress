@@ -152,6 +152,18 @@ const THRESHOLD_LINE: Record<QuizDayThreshold, number> = {
   strict: 3,
 };
 
+/** 挡位线显示名（用户 2026-10-18：题旁要显示「距本轮过关还差几次达标」） */
+export function thresholdLineLabel(t: QuizDayThreshold): string {
+  switch (t) {
+    case 'lenient':
+      return '不熟';
+    case 'standard':
+      return '认识';
+    case 'strict':
+      return '熟练';
+  }
+}
+
 /** 本次判定是否达到当前档位线 */
 export function dayVerdictOk(v: QuizVerdict, threshold: QuizDayThreshold): boolean {
   return VERDICT_RANK[v] >= THRESHOLD_LINE[threshold];

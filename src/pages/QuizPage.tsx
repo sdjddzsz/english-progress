@@ -3,7 +3,7 @@
  *
  * 出题：单词（多义项词旁小灰字标词性）→ 4 选 1 词义（干扰项相似优先，见 features/quiz/distractors.ts）
  * 判定：按用时+对错四档（features/quiz/judging.ts）
- * 晋级：连续熟练 ≥ 阶段一阈值（默认 3，设置页可改）→ 进入阶段二（features/quiz/stages.ts）
+ * 晋级：每轮首次遇见且熟练（首熟）累计 ≥ 阶段一阈值（默认 3，设置页可改）→ 进入阶段二（features/quiz/stages.ts）
  * 阶段池：该阶段全部词，同日已答不再出现（selectStagePool）；
  *   特种训练优先（连续不熟/生词 ≥3）。
  * 放行（用户 2026-10-15 改）：未达到「每轮过关挡位」的词排到队尾重来——
@@ -41,6 +41,7 @@ import {
   isSameUtcDay,
   QUIZ_DAY_PASS_COUNT,
   roundRelease,
+  thresholdLineLabel,
   verdictChipSx,
   verdictLabel,
   type QuizVerdict,
@@ -61,6 +62,10 @@ interface QuizItem {
   senseIndex: number;
   /** 本轮内第几次作答该词（1=第一次；用户 2026-10-17：首答即熟练 → 一遍过） */
   attemptNo: number;
+  /** 本次作答后该词是否已放行（一遍过/连续达标/晋级）——进度显示用 */
+  released?: boolean;
+  /** 本次作答是否晋级（阶段毕业）——进度显示用 */
+  promoted?: boolean;
   /** 已作答缓存（回顾上一题时按原样恢复：选项不重摇、判定不重算） */
   options?: DistractorCandidate[];
   correctKey?: string;
@@ -137,6 +142,8 @@ export default function QuizPage() {
             word,
             senseIndex: s.senseIndex,
             attemptNo: s.attemptNo ?? 1,
+            ...(s.released !== undefined ? { released: s.released } : {}),
+            ...(s.promoted !== undefined ? { promoted: s.promoted } : {}),
             ...(s.options ? { options: s.options } : {}),
             ...(s.correctKey ? { correctKey: s.correctKey } : {}),
             ...(s.verdict ? { verdict: s.verdict } : {}),
@@ -297,7 +304,7 @@ export default function QuizPage() {
     const now = new Date();
     const firstQuizOfDay = !isSameUtcDay(bw.lastQuizAt, now);
     // ★ 四阶段制（用户 2026-10-15）：阶段走向是唯一权威（晋级/特训/层升降都在 stages.ts 引擎里）
-    const sp = applyStageChoiceResult(bw, v, graduateStreak, now);
+    const sp = applyStageChoiceResult(bw, v, graduateStreak, now, current.attemptNo);
     const graduated = sp.stage !== bw.stage; // 阶段一毕业 → 晋级阶段二
     // 每轮过关计数（用户 2026-10-15）：连续达标才放行；跨天重新起算；
     // 晋级/毕业立即放行。quizDayPassed 只在真正达到过关线时才写 true
@@ -325,9 +332,11 @@ export default function QuizPage() {
       stage: sp.stage,
       stageStreak: sp.stageStreak,
     };
-    // 作答结果先写入本题缓存（「上一题」回顾的原样恢复依赖它）
+    // 作答结果先写入本题缓存（「上一题」回顾的原样恢复依赖它）；released 供进度显示
     setItems((its) =>
-      its.map((it, i) => (i === idx ? { ...it, bookWord: nextBw, verdict: v, pickedKey: key } : it)),
+      its.map((it, i) =>
+        i === idx ? { ...it, bookWord: nextBw, verdict: v, pickedKey: key, released: release, promoted: graduated } : it,
+      ),
     );
     // 未放行的词排到队尾重来，直到达到「每轮过关挡位」才放行；
     // 晋级/毕业的词已离开本阶段池，立即放行不再排回
@@ -513,7 +522,7 @@ export default function QuizPage() {
       <Typography variant="h5">{STAGE_META[1].name}</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
         看单词选词义：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。
-        连续熟练 {graduateStreak} 次晋级阶段二；不限每天一轮，完成一轮可立即再来一轮；
+        每轮首次遇见且熟练 {graduateStreak} 轮晋级阶段二；不限每天一轮，完成一轮可立即再来一轮；
         本轮第一次作答就是「熟练」的词一遍过；其它词没达到「每轮过关挡位」会排到队尾重来，连续达标 {QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。
       </Typography>
       {error && (
@@ -703,12 +712,26 @@ export default function QuizPage() {
             <Stack spacing={1.5} alignItems="center" sx={{ mt: 2 }}>
               <Stack direction="row" spacing={1} alignItems="center">
                 <Chip label={verdictLabel(verdict)} size="small" sx={verdictChipSx(verdict)} />
-                <Typography variant="body2" color="text.secondary">
-                  {verdict === 'skilled'
-                    ? `继续，连对 ${graduateStreak} 次就进下一阶段`
-                    : '这个词标记后会更频繁出现'}
-                </Typography>
               </Stack>
+              {/* 进度显示（用户 2026-10-18）：距本轮过关还差几次达标 / 距毕业还差几轮首熟 */}
+              <Box sx={{ width: '100%' }}>
+                {current.released ? (
+                  <Typography variant="body2" color="success.main" sx={{ textAlign: 'center' }}>
+                    {current.promoted ? '已晋级，进入下一阶段！' : '本轮已过关（一遍过 / 连续达标），不再出现'}
+                  </Typography>
+                ) : (
+                  <Stack spacing={0.25} alignItems="center">
+                    <Typography variant="body2" color="text.secondary">
+                      距本轮过关还差 {Math.max(0, QUIZ_DAY_PASS_COUNT - (current.bookWord.quizDayStreak ?? 0))} 次连续达标
+                      （挡位线：{thresholdLineLabel(quizDayThreshold)}，一次没到线清零）
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      距阶段毕业还差 {Math.max(0, graduateStreak - current.bookWord.stageStreak)} 轮首熟
+                      （每轮首次遇见且熟练；已连 {current.bookWord.stageStreak} 轮）
+                    </Typography>
+                  </Stack>
+                )}
+              </Box>
               {/* 该词全部释义（用户 2026-10-15：多义词每次只抽一个义项考，
                   出答案时必须完整显示——答对答错都一样，不然永远只看到被考的那个意思） */}
               <Box sx={{ width: '100%', textAlign: 'left' }}>

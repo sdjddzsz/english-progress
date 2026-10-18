@@ -108,12 +108,16 @@ export interface StageResultPatch {
 /**
  * 阶段一~三（4 选 1）：判定 → 状态走向 →（可能）晋级。
  * graduateStreak = 该阶段毕业阈值（设置页可配）。
+ * attemptNo = 本轮内第几次作答该词（用户 2026-10-18：毕业只数「首熟」——
+ * 每轮首次遇见且熟练才 +1；同轮重排后的熟练不再累加，否则一个词在一轮里
+ * 被 3 连问就能毕业，和「差几轮首熟」的口径矛盾。不传按首答处理=旧行为）。
  */
 export function applyStageChoiceResult(
   bw: BookWord,
   verdict: QuizVerdict,
   graduateStreak: number,
   now: Date = new Date(),
+  attemptNo?: number,
 ): StageResultPatch {
   const base: StageResultPatch = {
     tier: bw.tier,
@@ -134,7 +138,8 @@ export function applyStageChoiceResult(
   let special = bw.specialTraining;
 
   if (verdict === 'skilled') {
-    stageStreak += 1;
+    // 只有「首熟」（本轮第一次作答就熟练）才累计毕业轮次；重排后的熟练不动计数
+    if (attemptNo === undefined || attemptNo === 1) stageStreak += 1;
     tier = Math.max(1, tier - 1) as Tier;
   } else {
     stageStreak = 0;
