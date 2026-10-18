@@ -23,6 +23,12 @@ export interface WordRepo {
    * 单独 PATCH 会被拒；词级 senses/pos 已由 applySenseEdit/applySenseDelete 同步好，这里只负责落库。
    */
   updateWordSenses(word: Word): Promise<void>;
+  /**
+   * 新一轮开局：轮标线批量归零（用户 2026-10-18）。走 upsert 通道
+   * （book_words RLS 同 words：只放行 insert 语义的 upsert，单 PATCH 会被拒）。
+   * 行内已是 0 的原样带回（引用相等），由调用方决定是否还值得写。
+   */
+  resetRoundStreaks(rows: BookWord[]): Promise<void>;
   getWordByLemma(lemma: string): Promise<Word | null>;
   /** 前缀搜索（词形开头匹配）；传空串返回前 limit 个（词书/生词本列表用） */
   searchWordsByPrefix(prefix: string, limit?: number): Promise<Word[]>;
@@ -169,6 +175,12 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
     upsertWords: (rows) => words.upsertMany(rows),
     updateWordSenses: (word) =>
       words.upsertMany([word as Word & Record<string, unknown>]),
+    resetRoundStreaks: (rows) =>
+      bookWords.upsertMany(
+        rows
+          .filter((r) => r.quizDayStreak !== 0 || r.quizDayPassed)
+          .map((r) => ({ ...r, quizDayStreak: 0, quizDayPassed: false } as BookWord & Record<string, unknown>)),
+      ),
     getWordByLemma: async (lemma) => {
       const rows = await words.list([{ column: 'lemma', op: 'eq', value: lemma }], { limit: 1 });
       return rows[0] ?? null;

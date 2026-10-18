@@ -49,7 +49,7 @@ import {
   optionSuffix,
   type DistractorCandidate,
 } from '../features/quiz/distractors';
-import { applyStageChoiceResult, selectStagePool, STAGE_META } from '../features/quiz/stages';
+import { applyStageChoiceResult, enteringRound, selectStagePool, STAGE_META } from '../features/quiz/stages';
 import { buildQuestion } from '../features/quiz/question';
 import { clearSession, loadSession, saveSession, toSnapshots } from '../features/quiz/session';
 import { runOrQueue } from '../data/queue';
@@ -189,9 +189,18 @@ export default function QuizPage() {
         return;
       }
       const batch = stagePool.slice(0, quizDailyLimit);
-      const words = await repos.word.listWordsByIds(batch.map((bw) => bw.wordId));
+      // 新一轮开局：轮标线归零（用户 2026-10-18「进入新一轮的单词得从零开始计数」）。
+      // 本地先换成 0（题旁立刻显示 0/3），再落库；落库失败不阻断开局——
+      // 本轮判定以本地值为准，下次成功写回会带上正确值。
+      const roundBatch = batch.map(enteringRound);
+      try {
+        await repos.word.resetRoundStreaks(roundBatch);
+      } catch {
+        // 归零落库失败（断网/云端缺列）不阻断考查
+      }
+      const words = await repos.word.listWordsByIds(roundBatch.map((bw) => bw.wordId));
       const wordById = new Map(words.map((w) => [w.id, w]));
-      const quizItems: QuizItem[] = batch
+      const quizItems: QuizItem[] = roundBatch
         .filter((bw) => wordById.has(bw.wordId))
         .map((bw) => {
           const word = wordById.get(bw.wordId) as Word;
@@ -735,7 +744,7 @@ export default function QuizPage() {
                   sx={{ color: current.promoted ? 'success.main' : 'text.secondary' }}
                 >
                   毕业线：{current.bookWord.stageStreak}/{graduateStreak}（首见{thresholdLineLabel(quizDayThreshold)}）
-                  {current.promoted ? ' · 已晋级，进入下一阶段' : ''}
+                  {current.promoted ? ' · 已晋级，进入下一阶段（打满即毕业，新阶段从 0 起计）' : ''}
                 </Typography>
               </Stack>
               {/* 该词全部释义（用户 2026-10-15：多义词每次只抽一个义项考，

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { BookWord } from '../../src/types/domain';
 import {
   applyStageChoiceResult,
+  enteringRound,
   applyStageSpellingResult,
   selectStagePool,
   stageStats,
@@ -185,5 +186,20 @@ describe('stageStats', () => {
     expect(s[2].total).toBe(1);
     expect(s[3].total).toBe(0);
     expect(s[4].total).toBe(0);
+  });
+});
+
+describe('enteringRound：进入新一轮轮标线归零（用户 2026-10-18）', () => {
+  it('带着旧计数（如 6/3 已过关）进新一轮 ⇒ 归零；毕业线 stageStreak 不动', () => {
+    const row = bw({ stage: 1, stageStreak: 2, quizDayStreak: 6, quizDayPassed: true });
+    const next = enteringRound(row);
+    expect(next.quizDayStreak).toBe(0);
+    expect(next.quizDayPassed).toBe(false);
+    expect(next.stageStreak).toBe(2); // 毕业线跨轮累计，不归零
+  });
+
+  it('已是 0 的词原样返回（引用相等，调用方可跳过写库）', () => {
+    const row = bw({ stage: 1, quizDayStreak: 0, quizDayPassed: false });
+    expect(enteringRound(row)).toBe(row);
   });
 });

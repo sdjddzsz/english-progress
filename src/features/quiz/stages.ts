@@ -92,6 +92,20 @@ export function stageStats(
   return out;
 }
 
+/**
+ * 进入新一轮：轮标线计数归零（用户 2026-10-18：「进入新一轮的单词得从零开始计数」——
+ * 旧实现不归零，上一轮刷到 6/3 的数字带进新一轮，「连续 3 次达标才放行」形同虚设；
+ * 实测截图：authentic 轮标线 6/3 已过关仍带着 6 这个数）。
+ *
+ * ⚠ 毕业线（stageStreak）是**跨轮累计**（连续 N 轮首见达标才毕业），**不归零**；
+ * 这里只归零轮标线（quizDayStreak / quizDayPassed）。
+ * 已经是 0 的词原样返回（引用稳定，调用方可按引用相等跳过写库）。
+ */
+export function enteringRound(bw: BookWord): BookWord {
+  if (bw.quizDayStreak === 0 && !bw.quizDayPassed) return bw;
+  return { ...bw, quizDayStreak: 0, quizDayPassed: false };
+}
+
 /** 单题判定结果（含阶段走向），由考查页写回 repo */
 export interface StageResultPatch {
   tier: Tier;

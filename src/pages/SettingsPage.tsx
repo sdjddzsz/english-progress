@@ -45,6 +45,7 @@ import {
   DASHSCOPE_VOICE_OPTIONS_BY_MODEL,
 } from '../config/constants';
 import { cacheHitRate, readUsageStats, resetUsageStats, type UsageStats } from '../tts/usageStats';
+import { thresholdLineLabel } from '../features/quiz/judging';
 import { backfillArpabetFromSeed, type BackfillProgress } from '../data/backfillArpabet';
 
 /** 模型下拉里「自定义…」这一项的哨兵值 —— 不是真实模型 id，仅用于触发手填兜底 */
@@ -477,6 +478,9 @@ export default function SettingsPage() {
               <ToggleButton value="strict">严格</ToggleButton>
             </ToggleButtonGroup>
             <Typography variant="caption" color="text.secondary" display="block">
+              <strong>当前生效：首见即「{thresholdLineLabel(settings.quizDayThreshold)}」</strong>
+              （下方选中项；改完立即生效，考查页题旁两行会跟着变）。
+              <br />
               <strong>每轮首过 = 首见即达标</strong>（2026-10-18 定案）：一词在本轮第一次露面
               就要达到挡位线才算这一轮「首过」——宽松=至少「不熟」、适当=至少「认识」、
               严格=至少「熟练」。没达标即使答对也排到队尾重刷，重刷答对不算首过。
