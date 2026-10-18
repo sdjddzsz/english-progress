@@ -2,6 +2,10 @@
  * useLongPress.ts —— 长按手势（用户 2026-10-18：手机上没有右键，长按=编辑入口）。
  * 500ms 按住触发；抬手/移出/取消即撤销。桌面端顺手支持右键（contextmenu）。
  * ⚠ 只挂在该行释义上，别挂整页——长按滚动中的列表会误触。
+ *
+ * consumeFired（用户 2026-10-18 追加）：长按触发后，同一次手势的 click 还会照发——
+ * 按钮同时挂 onClick 时会长按开完面板又触发一次单击动作。onClick 里先问一句
+ * 「上一次手势是不是长按」，是则吞掉这次 click。
  */
 import { useCallback, useEffect, useRef } from 'react';
 
@@ -31,6 +35,13 @@ export function useLongPress(onLongPress: () => void, ms = 500) {
     [ms, onLongPress, clear],
   );
 
+  /** 消费「已触发长按」标记：返回 true 表示这次 click 应被抑制（并自动复位） */
+  const consumeFired = useCallback(() => {
+    const fired = firedRef.current;
+    firedRef.current = false;
+    return fired;
+  }, []);
+
   useEffect(() => clear, [clear]);
 
   return {
@@ -42,5 +53,6 @@ export function useLongPress(onLongPress: () => void, ms = 500) {
       e.preventDefault();
       onLongPress();
     },
+    consumeFired,
   };
 }

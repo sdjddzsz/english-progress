@@ -7,7 +7,7 @@ import type { TTSEngine, TTSProviderConfig } from '../types/domain';
 import { espeakProvider } from './espeakProvider';
 import { neuralProvider } from './neuralProvider';
 import { sniffAudioMime } from './mime';
-import type { PhonemeSource, TTSProvider, TTSRequest, TTSResult } from './types';
+import type { PhonemeSource, TTSProvider, TTSRequest, TTSResult, VoiceOverride } from './types';
 import type { RemoteAudioStore } from '../data/cloudAudioStore';
 import { cloudAudioPath, cloudAudioStore } from '../data/cloudAudioStore';
 import { isCloudConfigured } from '../data/cloud';
@@ -105,6 +105,20 @@ export function resetFallbackNotice(): void {
 }
 
 /**
+ * 把模型/音色临时覆盖合并进配置——**生效配置的唯一派生点**（用户 2026-10-18）。
+ * 无配置或无覆盖时原样返回。合并点必须早于 cacheKey / cloudAudioPath 的派生：
+ * 两者都从同一份生效 cfg 取 voice/model，本地缓存 lane 与云端 lane 才能按同一
+ * 生效音色+模型对齐；换音色=新 key+新路径，旧 lane 原样保留，绝不串音。
+ */
+function applyVoiceOverride(
+  cfg: { config: TTSProviderConfig; apiKey?: string } | null,
+  ov?: VoiceOverride,
+): { config: TTSProviderConfig; apiKey?: string } | null {
+  if (!cfg || !ov) return cfg;
+  return { ...cfg, config: { ...cfg.config, voice: ov.voice, model: ov.model } };
+}
+
+/**
  * 合成成功后的云端回传（用户 2026-10-14：云音频库缺词 → 现场合成 → 回传，免下次再合成）。
  *
  * C2（用户 2026-10-18 点名修）：旧实现 `void remote?.put(...)` 即发即忘——
@@ -190,11 +204,13 @@ export function createOrchestrator(deps: OrchestratorDeps) {
     async getAudio(
       req: TTSRequest,
       wordId?: string,
-      opts?: { skipCloudRead?: boolean; regenerate?: boolean },
+      opts?: { skipCloudRead?: boolean; regenerate?: boolean; voiceOverride?: VoiceOverride },
     ): Promise<TTSResult> {
       // 先读配置：缓存 key 必须含 voice/model（v2），否则换音色不换 key、命中旧音频。
       // 多一次云端读仍在 <800ms 体验路径内，且只有未命中时才付这个代价。
-      const cfg = await deps.getConfig();
+      // 模型/音色临时覆盖在**这里**合并（见 applyVoiceOverride）：晚于这个点读 voice/model
+      // 的任何代码都会拿到覆盖值，缓存/云端/合成三处自然对齐。
+      const cfg = applyVoiceOverride(await deps.getConfig(), opts?.voiceOverride);
       const voice = cfg?.config.voice;
       const model = cfg?.config.model;
       const key = cfg ? cacheKey(req, voice, model) : cacheKey(req);
@@ -286,9 +302,11 @@ export function createOrchestrator(deps: OrchestratorDeps) {
      * 步骤：删本地缓存该 key → 删云音频库该文件 → 走正常 getAudio（必缓存未命中）
      * → 现场重新合成 → 合成成功自动回传云端（getAudio 的 cloudMiss 上传路径）。
      * 云端也更新 = 其它设备下次也拿到新音频。
+     * opts.voiceOverride（用户 2026-10-18 长按临时换模型/音色）：删除与合成都按
+     * **生效配置**算——删错 lane 等于旧音色音频还躺在缓存/云端里。
      */
-    async regenerate(req: TTSRequest, wordId?: string): Promise<TTSResult> {
-      const cfg = await deps.getConfig();
+    async regenerate(req: TTSRequest, wordId?: string, opts?: { voiceOverride?: VoiceOverride }): Promise<TTSResult> {
+      const cfg = applyVoiceOverride(await deps.getConfig(), opts?.voiceOverride);
       const voice = cfg?.config.voice;
       const model = cfg?.config.model;
       const key = cfg ? cacheKey(req, voice, model) : cacheKey(req);
@@ -300,7 +318,11 @@ export function createOrchestrator(deps: OrchestratorDeps) {
       }
       // skipCloudRead：就算云删因网络抖动失败、旧文件还在，也绝不取回旧音频——
       // 重新合成后 upsert（覆盖写）把云端换掉；regenerate 标记进日志便于核对
-      return this.getAudio(req, wordId, { skipCloudRead: true, regenerate: true });
+      return this.getAudio(req, wordId, {
+        skipCloudRead: true,
+        regenerate: true,
+        ...(opts?.voiceOverride ? { voiceOverride: opts.voiceOverride } : {}),
+      });
     },
   };
 }

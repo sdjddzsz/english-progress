@@ -44,6 +44,16 @@ export interface TTSContext {
   signal?: AbortSignal;
 }
 
+/**
+ * 模型/音色临时覆盖（用户 2026-10-18：长按「重新合成」按钮临选，临时固定本轮）。
+ * 只进编排器 opts、不落任何存储——本轮结束（页卸载/新一轮）即失效。
+ * ⚠ 音色不能跨模型混用（官方约束）：换模型时音色必须落到新模型的音色表内。
+ */
+export interface VoiceOverride {
+  model: string;
+  voice: string;
+}
+
 export interface TTSProvider {
   readonly id: string;
   /** ctx 可省略：espeak 兜底轨不依赖云端配置 */

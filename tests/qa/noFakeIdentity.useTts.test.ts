@@ -17,10 +17,13 @@ const h = vi.hoisted(() => ({
   deps: null as null | { getConfig(): Promise<unknown> },
 }));
 
-// 最小 react 替身：让 useTTS() 可在无渲染器环境下被调用
+// 最小 react 替身：让 useTTS() 可在无渲染器环境下被调用。
+// ⚠ useTTS 用到哪个 hook，这里必须同步补哪个（2026-10-18：新增 voiceOverride 的 useRef
+// 就一次性挂掉本文件 3 条回归锚点——mock 不忠实=假红）。
 vi.mock('react', () => ({
   useState: (init: unknown) => [typeof init === 'function' ? (init as () => unknown)() : init, () => {}],
   useCallback: (fn: unknown) => fn,
+  useRef: (init: unknown) => ({ current: init }),
 }));
 
 // 捕获传给编排器的依赖；其余导出给出与真实签名兼容的轻量替身

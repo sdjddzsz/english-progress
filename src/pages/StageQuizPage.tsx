@@ -40,9 +40,12 @@ import {
 import { applyStageChoiceResult, applyStageSpellingResult, enteringRound, STAGE_GRADUATE_LABEL, STAGE_META } from '../features/quiz/stages';
 import { checkSpelling, type SpellVerdict } from './SpellingPage';import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
+import { useLongPress } from '../hooks/useLongPress';
 import WordNoteButton from '../components/notes/WordNoteButton';
 import LongPressSenseRow from '../components/word/LongPressSenseRow';
 import SenseEditDialog from '../components/word/SenseEditDialog';
+import VoiceOverrideDialog from '../components/tts/VoiceOverrideDialog';
+import { voiceLabelOf } from '../tts/voiceOptions';
 import type { BookWord, Word } from '../types/domain';
 
 type Phase = 'loading' | 'quiz' | 'done';
@@ -88,13 +91,16 @@ export default function StageQuizPage() {
   }, [stageParam, navigate]);
   const { activeBookId, userId } = useAppStore();
   const { autoSpeak, quizDailyLimit, stageGraduate, quizDayThreshold } = useSettingsStore();
-  const { speak, speakAuto, resynthesize, loading: ttsLoading } = useTTS();
+  const { speak, speakAuto, resynthesize, loading: ttsLoading, voiceOverride, setVoiceOverride, getEffectiveVoiceModel } = useTTS();
   const sfx = useSfx();
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
   // 长按释义编辑（用户 2026-10-18）：当前在编辑第几个义项
   const [senseEditIdx, setSenseEditIdx] = useState<number | null>(null);
+  // 长按「重新合成」→ 模型/音色临换面板（用户 2026-10-18）
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
+  const resynthLongPress = useLongPress(() => setVoicePickerOpen(true));
   const [syncHint, setSyncHint] = useState('');
   const [items, setItems] = useState<QuizItem[]>([]);
   const [idx, setIdx] = useState(0);
@@ -106,6 +112,8 @@ export default function StageQuizPage() {
 
   const start = useCallback(async () => {
     if (!userId || !stageNo) return;
+    // 新一轮开局：临时模型/音色覆盖复位（「临时固定本轮」——新 round 回到设置页配置）
+    setVoiceOverride(null);
     setPhase('loading');
     setError('');
     try {
@@ -563,13 +571,23 @@ export default function StageQuizPage() {
             <Typography variant="caption" color="text.secondary">
               第 {idx + 1} / {items.length} 题 · 没到过关线的词会排到队尾重来
             </Typography>
-            <Tooltip title="重新合成（这个读音不对时用；本地与云端一起更新）">
+            {/* 重新合成（用户 2026-10-17 + 长按临换 2026-10-18）：
+                单击=删本地+云端缓存后重录；长按=临时换模型/音色（只固定本轮） */}
+            <Tooltip
+              title={
+                voiceOverride
+                  ? `重新合成（本轮临时：${voiceLabelOf(voiceOverride.model, voiceOverride.voice)} · ${voiceOverride.model}；长按可改）`
+                  : '重新合成（这个读音不对时用；长按可临时换模型/音色）'
+              }
+            >
               <span>
                 <IconButton
                   size="small"
                   disabled={ttsLoading}
                   aria-label={`resynthesize ${current.word.lemma}`}
-                  onClick={() =>
+                  onClick={() => {
+                    // 长按已开临换面板——同一次手势的 click 不再触发重录
+                    if (resynthLongPress.consumeFired()) return;
                     void resynthesize(
                       {
                         text: current.word.lemma,
@@ -578,13 +596,25 @@ export default function StageQuizPage() {
                         mode: 'word',
                       },
                       current.word.id,
-                    )
-                  }
+                    );
+                  }}
+                  {...resynthLongPress}
                 >
                   {ttsLoading ? <CircularProgress size={18} /> : <AutorenewIcon fontSize="small" />}
                 </IconButton>
               </span>
             </Tooltip>
+            {/* 本轮临时模型/音色徽标（用户 2026-10-18）：点了也能再开面板改 */}
+            {voiceOverride && (
+              <Chip
+                size="small"
+                color="secondary"
+                variant="outlined"
+                clickable
+                label={`本轮临时：${voiceLabelOf(voiceOverride.model, voiceOverride.voice)}`}
+                onClick={() => setVoicePickerOpen(true)}
+              />
+            )}
             <WordNoteButton
               wordId={current.bookWord.wordId}
               lemma={current.word.lemma}
@@ -609,6 +639,29 @@ export default function StageQuizPage() {
             ),
           )
         }
+      />
+      {/* 模型/音色临换面板（用户 2026-10-18：长按重新合成按钮打开）。
+          确定后立即用新设定重录当前词——setVoiceOverride 先写 ref，
+          resynthesize 读 ref 不走旧闭包，当场就能听到新音色 */}
+      <VoiceOverrideDialog
+        open={voicePickerOpen}
+        current={voiceOverride}
+        getDefaults={getEffectiveVoiceModel}
+        onClose={() => setVoicePickerOpen(false)}
+        onApply={(v) => {
+          setVoiceOverride(v);
+          setVoicePickerOpen(false);
+          if (!v || !current) return;
+          void resynthesize(
+            {
+              text: current.word.lemma,
+              ...(current.word.ipa ? { ipa: current.word.ipa } : {}),
+              ...(current.word.arpabet ? { arpabet: current.word.arpabet } : {}),
+              mode: 'word',
+            },
+            current.word.id,
+          );
+        }}
       />
     </Box>
   );
