@@ -76,14 +76,6 @@ export default function DiagReportView() {
         </Alert>
       )}
 
-      {/* 隐式评估：欠账与阈值（诊断口径） */}
-      <Paper sx={{ mt: 2, p: 2 }}>
-        <Typography variant="h6" gutterBottom>
-          学习状态诊断
-        </Typography>
-        <OverdueDiagnostic />
-      </Paper>
-
       {/* 模考记录（diag_report 原文渲染） */}
       <Paper sx={{ mt: 2, p: 2 }}>
         <Typography variant="h6" gutterBottom>
@@ -123,31 +115,3 @@ export default function DiagReportView() {
   );
 }
 
-/** 欠账诊断（挂载于白名单内才渲染的子块） */
-function OverdueDiagnostic() {
-  const { overdue } = useAppStore();
-  if (!overdue) {
-    return (
-      <Typography variant="body2" color="text.secondary">
-        无生效计划，暂无可诊断数据。
-      </Typography>
-    );
-  }
-  return (
-    <>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-        <Chip size="small" variant="outlined" label={`欠账 ${overdue.count} / 阈值 ${overdue.threshold}`} />
-        <Chip
-          size="small"
-          color={overdue.mustReschedule ? 'warning' : 'default'}
-          variant="outlined"
-          label={overdue.mustReschedule ? '需重排' : '在阈值内'}
-        />
-        <Chip size="small" variant="outlined" label={`距上次学习 ${overdue.idleDays} 天`} />
-      </Stack>
-      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-        诊断口径：欠账与轮次覆盖；前台三类记录类型物理不含评分字段（硬约束 #1）。
-      </Typography>
-    </>
-  );
-}

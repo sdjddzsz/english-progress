@@ -740,20 +740,20 @@ export default function QuizPage() {
                   轮线达标只改轮线那句、不挤掉毕业线） */}
               <Stack spacing={0.25} alignItems="center" sx={{ width: '100%' }}>
                 <Typography variant="body2" color="text.secondary">
-                  轮标线：{current.bookWord.quizDayStreak ?? 0}/{QUIZ_DAY_PASS_COUNT}（{thresholdLineLabel(quizDayThreshold)}）
+                  轮标线：{Math.min(current.bookWord.quizDayStreak ?? 0, QUIZ_DAY_PASS_COUNT)}/{QUIZ_DAY_PASS_COUNT}（{thresholdLineLabel(quizDayThreshold)}）
                   {current.released
                     ? current.promoted
                       ? ' · 已晋级'
                       : (current.bookWord.quizDayStreak ?? 0) >= QUIZ_DAY_PASS_COUNT
                         ? ' · 已过关，不再出现'
-                        : ' · 首答即熟练一遍过'
+                        : ' · 首答即达标一遍过'
                     : ''}
                 </Typography>
                 <Typography
                   variant="body2"
                   sx={{ color: current.promoted ? 'success.main' : 'text.secondary' }}
                 >
-                  毕业线：{current.bookWord.stageStreak}/{graduateStreak}（首见{thresholdLineLabel(quizDayThreshold)}）
+                  毕业线：{current.promoted ? graduateStreak : current.bookWord.stageStreak}/{graduateStreak}（首见{thresholdLineLabel(quizDayThreshold)}）
                   {current.promoted ? ' · 已晋级，进入下一阶段（打满即毕业，新阶段从 0 起计）' : ''}
                 </Typography>
               </Stack>

@@ -177,16 +177,14 @@ describe('反自测 §4.8：诊断报告仅白名单路由渲染', () => {
     expect(src).toMatch(/if\s*\(!whitelisted\)\s*\{[\s\S]*?severity="error"/);
   });
 
-  it('学习类路由（/study、/training…）包 OverdueGuardRoute，诊断视图不在其中', () => {
+  it('学习类路由不再包任何守卫，诊断视图不在其中（欠账系统 2026-10-18 整体删除）', () => {
     const app = readFileSync(join(SRC, 'App.tsx'), 'utf8');
-    // 首页（阶段总览）与阶段路由不包守卫（用户 2026-10-15：只要阶段词库里有词就可以刷，
-    // 欠账以提示条呈现、不路由级拦截）；其余学习类路由仍包。
-    for (const p of ['/study', '/training', '/training/audio', '/training/cn2en']) {
-      expect(app.includes(`<Route path="${p}" element={<OverdueGuardRoute>`), `路由 ${p} 应包 OverdueGuardRoute`).toBe(true);
+    // 欠账守卫/重排面板已删（四阶段制无 deadline，陈旧欠账无意义）；
+    // 全部路由裸挂页面，任何 Guard 包裹都不允许再出现。
+    for (const p of ['/study', '/training', '/training/audio', '/training/cn2en', '/training/spelling']) {
+      expect(app.includes(`<Route path="${p}" element={<`), `路由 ${p} 应裸挂页面`).toBe(true);
+      expect(app.includes('<OverdueGuardRoute>'), '不得再出现欠账守卫').toBe(false);
       expect(app.includes(`<Route path="${p}" element={<DiagReportView`), `路由 ${p} 不得挂诊断视图`).toBe(false);
-    }
-    for (const p of ['/', '/stage/:stage', '/stage-quiz/:stage']) {
-      expect(app.includes(`<Route path="${p}" element={<OverdueGuardRoute>`), `阶段路由 ${p} 不应被守卫拦截`).toBe(false);
     }
     // 诊断视图唯一挂载点已在上一用例断言为 /dashboard/diag
   });

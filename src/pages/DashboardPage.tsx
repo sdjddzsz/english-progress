@@ -1,6 +1,6 @@
 /**
  * DashboardPage.tsx —— 后台（PRD §5.2.4，诊断口径）：
- * 各层各轮覆盖进度（窗口 × done hits）/ 欠账概况 / 视觉-听觉差距曲线（recharts）
+ * 各层各轮覆盖进度（窗口 × done hits）/ 视觉-听觉差距曲线（recharts）
  * / 最新能力画像快照（词级状态计数与逐层贯通率，无总分）。
  * 后台允许呈现诊断信息；硬约束 #1 禁用词仍不出现（模考报告仅 T05 DiagReportView）。
  */
@@ -40,7 +40,7 @@ interface CurvePoint {
 
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const { userId, activePlan, overdue, bootstrap } = useAppStore();
+  const { userId, activePlan, bootstrap } = useAppStore();
 
   const [windows, setWindows] = useState<PlanRoundWindow[]>([]);
   const [covered, setCovered] = useState<Record<string, number>>({});
@@ -190,19 +190,6 @@ export default function DashboardPage() {
           </Box>
         ))}
       </Paper>
-
-      {/* 欠账概况 */}
-      {overdue && (
-        <Paper sx={{ mt: 2, p: 2 }}>
-          <Typography variant="h6" gutterBottom>
-            欠账
-          </Typography>
-          <Typography variant="body2">
-            当前欠账 <strong>{overdue.count}</strong> 条（阈值 {overdue.threshold}）
-            {overdue.mustReschedule ? '——已超阈值，需重排（Today 页处理）。' : '。'}
-          </Typography>
-        </Paper>
-      )}
 
       {/* 视觉-听觉差距曲线（v1.0 核心观察项） */}
       <Paper sx={{ mt: 2, p: 2 }}>

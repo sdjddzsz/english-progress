@@ -1,19 +1,16 @@
 /**
  * useAppStore.ts —— 全局应用状态（zustand）：
- * 登录态 / 词书 / 生效计划 / 今日队列（expandDayForWords 真实词表路径）/ 欠账守卫数据。
- * 边界：云 SDK 只在 src/data 内被触碰；调度编排（展开当日、校验、欠账预览）全部收敛在此，
+ * 登录态 / 词书 / 生效计划 / 今日队列（expandDayForWords 真实词表路径）。
+ * 边界：云 SDK 只在 src/data 内被触碰；调度编排（展开当日、校验）全部收敛在此，
  * 页面与组件只读 store / hooks，不含调度逻辑（架构文档边界铁律）。
  */
 import { create } from 'zustand';
 import type { Book, Hit, StudyPlan, Tier, Word } from '../types/domain';
 import {
-  computeOverdue,
   expandDayForWords,
   planFinishDate,
-  previewStrategy,
   validatePlan,
   type PlanParams,
-  type RescheduleStrategy,
   type TierWordCounts,
   type ValidationResult,
   type WordSteadiness,
@@ -27,7 +24,7 @@ import { createFeedbackRepo, type FeedbackRepo } from '../data/repos/feedbackRep
 import { createConfigRepo, type ConfigRepo } from '../data/repos/configRepo';
 import { createTrainingRepo, type TrainingRepo } from '../data/repos/trainingRepo';
 import { createNoteRepo, type NoteRepo } from '../data/repos/noteRepo';
-import { decideProposal, executeTool } from '../ai/authz';
+import { decideProposal } from '../ai/authz';
 import type { ToolContext } from '../ai/tools/readTools';
 
 // ===== 仓库与工具上下文（懒初始化，云未配置时由调用方捕获错误）=====
@@ -95,16 +92,6 @@ function planToParams(plan: StudyPlan, listSize: number): PlanParams {
 
 // ===== 状态 =====
 
-/** 欠账四策略预览（面板大白话逐条展示，Q4 决策） */
-export interface OverduePreviewItem {
-  strategy: RescheduleStrategy;
-  plainWords: string;
-  newDailyHits: number;
-  newFinishDate: string;
-  /** extend 突破 deadline 时不可选（硬约束 #5） */
-  deadlineExceeded: boolean;
-  available: boolean;
-}
 
 export interface AppState {
   userId: string | null;
@@ -125,8 +112,6 @@ export interface AppState {
   /** 今日队列词卡数据（wordId → Word） */
   wordMap: Record<string, Word>;
 
-  overdue: ReturnType<typeof computeOverdue> | null;
-  overduePreviews: OverduePreviewItem[];
 
   /**
    * 是否已完成一次「首次」bootstrap（未配置云 / 未登录 / 成功 三个正常终止分支都置 true）。
@@ -143,8 +128,6 @@ export interface AppState {
   setActiveBook(bookId: string): Promise<void>;
   refreshToday(today?: string): Promise<void>;
   completeHit(hitId: string): Promise<void>;
-  /** 欠账守卫执行：reschedule（require 级）→ 弹确认后由用户批准放行 */
-  rescheduleNow(strategy: RescheduleStrategy): Promise<{ ok: boolean; message: string }>;
   /** AI 方案页：对提案批准/驳回 */
   decideProposalAction(proposalId: string, approve: boolean): Promise<{ ok: boolean; message: string }>;
 }
@@ -167,8 +150,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   todayPendingCount: 0,
   wordMap: {},
 
-  overdue: null,
-  overduePreviews: [],
 
   bootstrap: async (opts) => {
     if (get().loading) return;
@@ -218,7 +199,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   setActiveBook: async (bookId) => {
-    set({ activeBookId: bookId, activePlan: null, planValidation: null, planFinish: null, todayHits: [], todayPendingCount: 0, wordMap: {}, overdue: null, overduePreviews: [] });
+    set({ activeBookId: bookId, activePlan: null, planValidation: null, planFinish: null, todayHits: [], todayPendingCount: 0, wordMap: {} });
     const { userId } = get();
     if (!userId) return;
     try {
@@ -283,22 +264,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
       const validation = validatePlan({ params, tierCounts, steadyWords });
       const finish = planFinishDate(params, tierCounts);
-      const overdueHits = await repos.hit.getOverdueHits(activePlan.id, today);
-      const overdue = computeOverdue(overdueHits, today, validation.dailyHits);
-
-      const droppable = Object.values(activePlan.tierRounds).some((r) => r > 2);
-      const previews: OverduePreviewItem[] = (['extend', 'compress', 'drop_round', 'freeze'] as const).map((s) => {
-        const p = previewStrategy(s, { params, tierCounts, steadyWords }, overdueHits, today);
-        return {
-          strategy: s,
-          plainWords: p.plainWords,
-          newDailyHits: p.newDailyHits,
-          newFinishDate: p.newFinishDate,
-          deadlineExceeded: p.deadlineExceeded,
-          available: s === 'drop_round' ? droppable && !p.deadlineExceeded : !p.deadlineExceeded,
-        };
-      });
-
       // 今日词卡数据
       const wordIds = [...new Set(entries.map((e) => e.wordId))];
       const words = await repos.word.listWordsByIds(wordIds);
@@ -309,8 +274,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
         todayHits,
         todayPendingCount: todayHits.filter((h) => h.status === 'pending').length,
         wordMap,
-        overdue,
-        overduePreviews: previews,
         planValidation: validation,
         planFinish: finish,
         error: null,
@@ -332,24 +295,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
-  rescheduleNow: async (strategy) => {
-    const { userId, activePlan, overduePreviews } = get();
-    if (!userId || !activePlan) return { ok: false, message: 'no active plan' };
-    try {
-      const ctx = getToolCtx(userId, activePlan.id);
-      const reason =
-        overduePreviews.find((p) => p.strategy === strategy)?.plainWords ?? `用户选择重排策略 ${strategy}`;
-      const decision = await executeTool({ ctx }, { toolName: 'reschedule', input: { strategy, today: todayISO() }, reason, actor: 'user' });
-      if (decision.kind !== 'require') return { ok: false, message: `unexpected decision: ${decision.kind}` };
-      // 用户已在守卫面板显式选择策略并确认（Require 级唯一放行通道）
-      const approved = await decideProposal({ ctx }, decision.proposalId, true);
-      if (approved.kind !== 'auto') return { ok: false, message: 'proposal was not applied' };
-      await get().refreshToday();
-      return { ok: true, message: 'reschedule applied' };
-    } catch (e) {
-      return { ok: false, message: errMsg(e) };
-    }
-  },
 
   decideProposalAction: async (proposalId, approve) => {
     const { userId, activePlan } = get();

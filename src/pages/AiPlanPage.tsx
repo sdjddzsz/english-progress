@@ -86,15 +86,12 @@ export default function AiPlanPage() {
     setError('');
     try {
       const repos = getRepos();
-      const today = new Date().toISOString().slice(0, 10);
-      const overdueHits = await repos.hit.getOverdueHits(activePlan.id, today);
       const since = new Date(Date.now() - 30 * 86400000).toISOString();
       const feedbacks = await repos.feedback.listFeedbacksRange(since, new Date().toISOString());
       const l1Count: Record<string, number> = {};
       for (const f of feedbacks) l1Count[f.l1State] = (l1Count[f.l1State] ?? 0) + 1;
       const confusions = await repos.feedback.listTopConfusionPairs(userId, 5);
       const summary = [
-        `- 欠账：${overdueHits.length} 条（阈值 2× 日均）`,
         `- 近 30 天反馈：${feedbacks.length} 条；L1 分布 ${JSON.stringify(l1Count)}`,
         `- Top 混淆对：${confusions.map((c) => `${c.wordA}↔${c.wordB}(×${c.count})`).join('、') || '无'}`,
         `- 计划：${activePlan.planMode === 'recommended' ? '推荐档' : '保底档'} · 预算 ${activePlan.dailyBudgetMin} 分钟`,

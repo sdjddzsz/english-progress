@@ -16,12 +16,8 @@ export interface PlanSummaryCardProps {
   plan: StudyPlan | null;
   validation: ValidationResult | null;
   finishDate?: string | null;
-  /** 剩余欠账数（>0 时提示去处理） */
-  overdueCount?: number;
   /** 档位/参数调整入口（如跳计划编辑页） */
   onEditPlan?: () => void;
-  /** 欠账处理入口（如打开重排弹窗） */
-  onOpenReschedule?: () => void;
 }
 
 const MODE_LABEL: Record<StudyPlan['planMode'], string> = {
@@ -37,7 +33,7 @@ const STATUS_LABEL: Record<StudyPlan['status'], string> = {
 };
 
 /** 各标签的说明弹窗 key */
-type HelpKey = 'mode' | 'status' | 'decay' | 'overdue';
+type HelpKey = 'mode' | 'status' | 'decay';
 
 const MODE_HELP: Record<StudyPlan['planMode'], string> = {
   recommended:
@@ -53,7 +49,7 @@ const STATUS_HELP: Record<StudyPlan['status'], string> = {
   finished: '已完成：全部词都已过完，不会再排新任务。',
 };
 
-export default function PlanSummaryCard({ plan, validation, finishDate, overdueCount = 0, onEditPlan, onOpenReschedule }: PlanSummaryCardProps) {
+export default function PlanSummaryCard({ plan, validation, finishDate, onEditPlan }: PlanSummaryCardProps) {
   const [help, setHelp] = useState<HelpKey | null>(null);
   if (!plan || !validation) {
     return (
@@ -88,15 +84,6 @@ export default function PlanSummaryCard({ plan, validation, finishDate, overdueC
             size="small"
             variant="outlined"
             onClick={() => setHelp('decay')}
-            sx={{ cursor: 'pointer' }}
-          />
-        )}
-        {overdueCount > 0 && (
-          <Chip
-            label={`欠账 ${overdueCount}`}
-            color="warning"
-            size="small"
-            onClick={() => setHelp('overdue')}
             sx={{ cursor: 'pointer' }}
           />
         )}
@@ -150,7 +137,7 @@ export default function PlanSummaryCard({ plan, validation, finishDate, overdueC
               ? `计划状态：${STATUS_LABEL[plan.status]}`
               : help === 'decay'
                 ? '降频开启'
-                : `欠账 ${overdueCount} 条`}
+                : ''}
         </DialogTitle>
         <DialogContent>
           <Typography variant="body2">
@@ -160,7 +147,7 @@ export default function PlanSummaryCard({ plan, validation, finishDate, overdueC
                 ? STATUS_HELP[plan.status]
                 : help === 'decay'
                   ? '已经练熟（近 30 天反复表现稳固）的词会自动降低出现频率，把每天的份额让给还生的词。不需要你操作，练就是了。'
-                  : '有到期的任务没做完。欠账会累积，超过阈值就需要先重排（把旧账并进新计划）再继续，否则队列会越拖越长。'}
+                  : ''}
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -174,17 +161,6 @@ export default function PlanSummaryCard({ plan, validation, finishDate, overdueC
               }}
             >
               去调整参数
-            </Button>
-          )}
-          {help === 'overdue' && onOpenReschedule && (
-            <Button
-              variant="contained"
-              onClick={() => {
-                close();
-                onOpenReschedule();
-              }}
-            >
-              去处理欠账
             </Button>
           )}
           {help === 'decay' && onEditPlan && (

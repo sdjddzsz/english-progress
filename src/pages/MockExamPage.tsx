@@ -161,7 +161,7 @@ export default function MockExamPage() {
         <Paper sx={{ mt: 2, p: 3, textAlign: 'center' }}>
           <Typography variant="body1">暂无解锁规则</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            学习数据积累一段时间后，AI 会基于欠账/稳固信号给出规则草案；也可现在就请求一份。
+            学习数据积累一段时间后，AI 会基于稳固信号给出规则草案；也可现在就请求一份。
           </Typography>
           <Button variant="contained" sx={{ mt: 2 }} disabled={busy} onClick={() => void requestRule()}>
             {busy ? <CircularProgress size={20} /> : '请求 AI 制定解锁规则'}

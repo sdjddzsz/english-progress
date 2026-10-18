@@ -27,7 +27,6 @@ import SearchPage from './pages/SearchPage';
 import BookmarkPage from './pages/BookmarkPage';
 import NotesPage from './pages/NotesPage';
 import SpellingPage from './pages/SpellingPage';
-import OverdueGuardRoute from './components/guards/OverdueGuardRoute';
 import SyncStatusBanner from './components/offline/SyncStatusBanner';
 import { useAppStore } from './store/useAppStore';
 
@@ -35,7 +34,6 @@ import { useAppStore } from './store/useAppStore';
  * 应用外壳（T05 集成完毕）：
  * - 顶层先跑一次 bootstrap（内含 OAuth 落地兑换 → 登录态判断）；
  * - 顶部 SyncStatusBanner：离线排队 / 联网自动补传状态；
- * - 学习类路由包 OverdueGuardRoute：mustReschedule 时路由级拦截到重排面板；
  * - /placement 摸底、/mock 模考、/dashboard/diag 诊断报告（白名单路由）；
  * - 云未配置 → 全站引导态（CloudGate）；未登录 → LoginPage。
  */
@@ -127,18 +125,19 @@ export default function App() {
           <SyncStatusBanner />
           <Box sx={{ flex: 1 }}>
             <Routes>
-              {/* 四阶段制（用户 2026-10-15）：首页=阶段总览；阶段路由不包欠账守卫
-                  （「只要阶段词库里有词就可以刷」，欠账仍以提示条形式呈现） */}
+              {/* 四阶段制（用户 2026-10-15）：首页=阶段总览。
+                  注（2026-10-18）：欠账守卫/重排面板已整体删除——四阶段制「不限每天一轮、
+                  无 deadline」与「计划到期旧账」范式冲突，1899 条陈旧欠账对学习无意义。 */}
               <Route path="/" element={<StagePage />} />
               <Route path="/stage/:stage" element={<StageDetailPage />} />
               <Route path="/stage-quiz/:stage" element={<StageQuizPage />} />
               {/* 阶段一「由词选义」考查页（复用原考查主循环） */}
               <Route path="/quiz" element={<QuizPage />} />
-              <Route path="/study" element={<OverdueGuardRoute><StudyPage /></OverdueGuardRoute>} />
-              <Route path="/training" element={<OverdueGuardRoute><TrainingPage /></OverdueGuardRoute>} />
-              <Route path="/training/audio" element={<OverdueGuardRoute><AudioRecallPage /></OverdueGuardRoute>} />
-              <Route path="/training/cn2en" element={<OverdueGuardRoute><CnToEnPage /></OverdueGuardRoute>} />
-              <Route path="/training/spelling" element={<OverdueGuardRoute><SpellingPage /></OverdueGuardRoute>} />
+              <Route path="/study" element={<StudyPage />} />
+              <Route path="/training" element={<TrainingPage />} />
+              <Route path="/training/audio" element={<AudioRecallPage />} />
+              <Route path="/training/cn2en" element={<CnToEnPage />} />
+              <Route path="/training/spelling" element={<SpellingPage />} />
               <Route path="/search" element={<SearchPage />} />
               {/* 笔记页（用户 2026-10-17：题旁笔记按钮 + 专门页面查看） */}
               <Route path="/notes" element={<NotesPage />} />

@@ -169,13 +169,14 @@ export function dayVerdictOk(v: QuizVerdict, threshold: QuizDayThreshold): boole
   return VERDICT_RANK[v] >= THRESHOLD_LINE[threshold];
 }
 
-/** 连续计数：达标 +1，不达标清零 */
+/** 连续计数：达标 +1，不达标清零；达到放行线后封顶（不再累加——用户 2026-10-18：6/3 计数记上天） */
 export function quizDayStreakAfter(
   dayStreak: number,
   v: QuizVerdict,
   threshold: QuizDayThreshold,
 ): number {
-  return dayVerdictOk(v, threshold) ? dayStreak + 1 : 0;
+  if (!dayVerdictOk(v, threshold)) return 0;
+  return Math.min(dayStreak + 1, QUIZ_DAY_PASS_COUNT);
 }
 
 /** 自然日同天判断（UTC 日差=0）。lastQuizAt 为 undefined/脏值时视为不同天 */

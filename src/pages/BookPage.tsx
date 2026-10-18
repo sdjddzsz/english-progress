@@ -205,7 +205,7 @@ export default function BookPage() {
       setConfirmTarget(null);
       // 重置后刷新词库（进度痕迹清零、阶段回一）
       if (selectedBookId) void loadWords(selectedBookId, page);
-      // store 立即重算欠账/今日队列，回到阶段页不再显示旧欠账
+      // store 立即重算今日队列，回到阶段页不再显示旧数据
       await useAppStore.getState().refreshToday();
     } catch (e) {
       setResetMsg(`重置失败：${e instanceof Error ? e.message : String(e)}`);

@@ -1,7 +1,7 @@
 /**
  * StagePage —— 阶段总览（首页第一标签，用户 2026-10-15 四阶段制）：
  * 四张阶段卡片（各阶段词库量 / 今日待刷 / 特种训练），点卡片进阶段详情；
- * 保留计划概览与欠账守卫（计划制输入面板仍生效）。
+ * 保留计划概览（计划制输入面板仍生效）；欠账守卫/提示 2026-10-18 已删。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -10,9 +10,6 @@ import {
   Box,
   Button,
   CircularProgress,
-  Dialog,
-  DialogContent,
-  DialogTitle,
   LinearProgress,
   Paper,
   Stack,
@@ -25,7 +22,6 @@ import { EXAM_DATE } from '../config/constants';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import { STAGE_META, stageStats } from '../features/quiz/stages';
 import PlanSummaryCard from '../components/plan/PlanSummaryCard';
-import ReschedulePanel from '../components/plan/ReschedulePanel';
 
 export default function StagePage() {
   const navigate = useNavigate();
@@ -38,12 +34,10 @@ export default function StagePage() {
     planValidation,
     planFinish,
     activeBookId,
-    overdue,
     refreshToday,
     bootstrap,
   } = useAppStore();
 
-  const [guardOpen, setGuardOpen] = useState(false);
   const [stats, setStats] = useState<ReturnType<typeof stageStats> | null>(null);
   const [fullyGraduated, setFullyGraduated] = useState(0);
   const [listError, setListError] = useState('');
@@ -130,9 +124,7 @@ export default function StagePage() {
               plan={activePlan}
               validation={planValidation}
               finishDate={planFinish}
-              overdueCount={overdue?.count ?? 0}
               onEditPlan={() => navigate('/plan-editor')}
-              onOpenReschedule={() => setGuardOpen(true)}
             />
           </Paper>
 
@@ -182,22 +174,6 @@ export default function StagePage() {
             </Typography>
           )}
 
-          {/* 欠账提示（计划制守卫保留） */}
-          {overdue && overdue.count > 0 && (
-            <Alert
-              severity={overdue.mustReschedule ? 'warning' : 'info'}
-              sx={{ mt: 2 }}
-              action={
-                <Button color="inherit" size="small" onClick={() => setGuardOpen(true)}>
-                  去处理
-                </Button>
-              }
-            >
-              欠账 {overdue.count} 条（阈值 {overdue.threshold}）
-              {overdue.mustReschedule ? '：已超阈值，需要重排后才能继续新任务。' : '：可在队列中顺带补上。'}
-            </Alert>
-          )}
-
           <Button
             fullWidth
             variant="outlined"
@@ -210,13 +186,6 @@ export default function StagePage() {
         </>
       )}
 
-      {/* 重排弹窗 */}
-      <Dialog open={guardOpen} onClose={() => setGuardOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>欠账重排</DialogTitle>
-        <DialogContent>
-          <ReschedulePanel onDone={() => setGuardOpen(false)} />
-        </DialogContent>
-      </Dialog>
       {/* stats 加载指示 */}
       {!stats && activePlan && (
         <Box sx={{ mt: 2 }}>
