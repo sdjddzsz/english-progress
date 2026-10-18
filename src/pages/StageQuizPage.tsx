@@ -422,6 +422,11 @@ export default function StageQuizPage() {
                         : '先听发音再拼写'}
                     </Typography>
                   )}
+                  {/* 毕业线（用户 2026-10-18 v2：阶段四=写对一次即彻底毕业） */}
+                  <Typography variant="caption" color={spellVerdict.kind === 'correct' ? 'success.main' : 'text.secondary'}>
+                    毕业线：{spellVerdict.kind === 'correct' ? '1' : '0'}/1（写对一次即彻底毕业）
+                    {spellVerdict.kind === 'correct' ? ' · 已毕业' : ''}
+                  </Typography>
                   {/* 该词全部释义（用户 2026-10-15：拼写完也要看到完整释义） */}
                   <Box sx={{ width: '100%', textAlign: 'left' }}>
                     <Typography variant="caption" color="text.secondary">
@@ -482,25 +487,26 @@ export default function StageQuizPage() {
                       {verdict === 'skilled' ? '继续，连对就晋级' : '这个词标记后会更频繁出现'}
                     </Typography>
                   </Stack>
-                  {/* 进度显示（用户 2026-10-18）：距本轮过关 / 距毕业（首熟口径） */}
-                  <Box sx={{ width: '100%' }}>
-                    {current.released ? (
-                      <Typography variant="body2" color="success.main" sx={{ textAlign: 'center' }}>
-                        {current.promoted ? '已晋级，进入下一阶段！' : '本轮已过关（一遍过 / 连续达标），不再出现'}
-                      </Typography>
-                    ) : (
-                      <Stack spacing={0.25} alignItems="center">
-                        <Typography variant="body2" color="text.secondary">
-                          距本轮过关还差 {Math.max(0, QUIZ_DAY_PASS_COUNT - (current.bookWord.quizDayStreak ?? 0))} 次连续达标
-                          （挡位线：{thresholdLineLabel(quizDayThreshold)}，一次没到线清零）
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          距阶段毕业还差 {Math.max(0, stageGraduate[stageNo] - current.bookWord.stageStreak)} 轮首熟
-                          （每轮首次遇见且熟练；已连 {current.bookWord.stageStreak} 轮）
-                        </Typography>
-                      </Stack>
-                    )}
-                  </Box>
+                  {/* 双线进度（用户 2026-10-18 v2：紧凑格式；毕业线始终显示） */}
+                  <Stack spacing={0.25} alignItems="center" sx={{ width: '100%' }}>
+                    <Typography variant="body2" color="text.secondary">
+                      轮标线：{current.bookWord.quizDayStreak ?? 0}/{QUIZ_DAY_PASS_COUNT}（{thresholdLineLabel(quizDayThreshold)}）
+                      {current.released
+                        ? current.promoted
+                          ? ' · 已晋级'
+                          : (current.bookWord.quizDayStreak ?? 0) >= QUIZ_DAY_PASS_COUNT
+                            ? ' · 已过关，不再出现'
+                            : ' · 首答即熟练一遍过'
+                        : ''}
+                    </Typography>
+                    <Typography
+                      variant="body2"
+                      sx={{ color: current.promoted ? 'success.main' : 'text.secondary' }}
+                    >
+                      毕业线：{current.bookWord.stageStreak}/{stageGraduate[stageNo]}（熟练）
+                      {current.promoted ? ' · 已晋级，进入下一阶段' : ''}
+                    </Typography>
+                  </Stack>
                   {/* 该词全部释义（用户 2026-10-15：多义词只考一个义项，出答案必须完整显示） */}
                   <Box sx={{ width: '100%', textAlign: 'left' }}>
                     <Typography variant="caption" color="text.secondary">
