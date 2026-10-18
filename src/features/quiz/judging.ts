@@ -212,8 +212,9 @@ export function isDayPassedToday(
  * 旧实现「答对一次就放行」，档位设置形同虚设。2026-10-17 增补首答规则）。
  *
  * 规则（阶段一~四一致）：
- *  - **本轮第一次作答就是「熟练」⇒ 一遍过，立即放行**（用户 2026-10-17：秒会的词
- *    没有理由再关 3 次）；
+ *  - **本轮第一次作答就达到当前挡位线（首见即达标）⇒ 一遍过，立即放行**
+ *    （用户 2026-10-18 定案：首过看的是「当前设置的挡位」——设首熟就要熟练，
+ *     设首认识认识就行；旧实现硬编码「熟练」，档位设置对首过形同虚设）；
  *  - 其余词：连续 QUIZ_DAY_PASS_COUNT 次达到档位线 ⇒ 放行（本轮不再出现）；
  *  - 本次作答后离开本阶段（晋级/毕业）⇒ 立即放行（它已不属于本阶段的池）；
  *  - 连续计数跨天自动重新起算（lastQuizAt 不是今天 ⇒ 已累计次数作废）。
@@ -231,9 +232,10 @@ export function roundRelease(args: {
   const now = args.now ?? new Date();
   const carried = isSameUtcDay(args.lastQuizAt, now) ? args.prevStreak : 0;
   const dayStreak = quizDayStreakAfter(carried, args.verdict, args.threshold);
-  const firstTrySkilled = args.attemptNo === 1 && args.verdict === 'skilled';
+  // 首见即达标：本轮第一次作答（attemptNo===1）就达到当前挡位线 ⇒ 一遍过
+  const firstTryOk = args.attemptNo === 1 && dayVerdictOk(args.verdict, args.threshold);
   return {
     dayStreak,
-    release: args.leftStage || firstTrySkilled || dayStreak >= QUIZ_DAY_PASS_COUNT,
+    release: args.leftStage || firstTryOk || dayStreak >= QUIZ_DAY_PASS_COUNT,
   };
 }

@@ -16,7 +16,7 @@
  * 纯函数、零 IO、零 React 依赖。
  */
 import type { BookWord, Tier } from '../../types/domain';
-import type { QuizVerdict } from './judging';
+import { dayVerdictOk, type QuizDayThreshold, type QuizVerdict } from './judging';
 
 export type WordStage = 0 | 1 | 2 | 3 | 4;
 
@@ -107,15 +107,22 @@ export interface StageResultPatch {
 
 /**
  * 阶段一~三（4 选 1）：判定 → 状态走向 →（可能）晋级。
- * graduateStreak = 该阶段毕业阈值（设置页可配）。
- * attemptNo = 本轮内第几次作答该词（用户 2026-10-18：毕业只数「首熟」——
- * 每轮首次遇见且熟练才 +1；同轮重排后的熟练不再累加，否则一个词在一轮里
- * 被 3 连问就能毕业，和「差几轮首熟」的口径矛盾。不传按首答处理=旧行为）。
+ * graduateStreak = 该阶段毕业阈值（设置页可配，默认 3）。
+ *
+ * ★ 每轮首过规则（用户 2026-10-18 定案）：
+ *  - **首见即达标**：本轮第一次作答（attemptNo===1）就要达到当前挡位线
+ *    （threshold：首熟=熟练 / 首认识=认识 / 首不熟=不熟）才算这一轮「首过」；
+ *  - 首见达标 ⇒ stageStreak +1；首见没达标 ⇒ stageStreak 清零（「连续」从此轮断）；
+ *  - **同轮重排后的作答（attemptNo>1）一律不动 stageStreak**——既不加也不清零：
+ *    哪怕这个词今天已经被重排刷过好几轮、答对了 N 次，没凑够连续 N 轮首见达标
+ *    就坚决不毕业（毕业线只认首见）；
+ *  - tier / failStreak / 特训标记仍然每次作答都更新（它们管频率，不管毕业）。
  */
 export function applyStageChoiceResult(
   bw: BookWord,
   verdict: QuizVerdict,
   graduateStreak: number,
+  threshold: QuizDayThreshold,
   now: Date = new Date(),
   attemptNo?: number,
 ): StageResultPatch {
@@ -137,12 +144,14 @@ export function applyStageChoiceResult(
   let failStreak = bw.failStreak;
   let special = bw.specialTraining;
 
+  // 毕业线（stageStreak）只由「本轮首见作答」写：达标 +1，没达标清零；
+  // 重排后的作答（attemptNo>1）不碰它——刷再多次也不算首过（用户 2026-10-18）
+  if (attemptNo === undefined || attemptNo === 1) {
+    stageStreak = dayVerdictOk(verdict, threshold) ? stageStreak + 1 : 0;
+  }
   if (verdict === 'skilled') {
-    // 只有「首熟」（本轮第一次作答就熟练）才累计毕业轮次；重排后的熟练不动计数
-    if (attemptNo === undefined || attemptNo === 1) stageStreak += 1;
     tier = Math.max(1, tier - 1) as Tier;
   } else {
-    stageStreak = 0;
     if (verdict === 'unknown') tier = Math.min(4, tier + 1) as Tier;
     if (verdict === 'unfamiliar' || verdict === 'unknown') failStreak += 1;
   }

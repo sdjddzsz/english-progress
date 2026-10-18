@@ -66,14 +66,14 @@ describe('selectStagePool', () => {
 
 describe('applyStageChoiceResult（阶段一~三）', () => {
   it('熟练 → stageStreak+1、层升；未达阈值不晋级', () => {
-    const p = applyStageChoiceResult(bw({ stage: 1, tier: 3, stageStreak: 0 }), 'skilled', 3, NOW);
+    const p = applyStageChoiceResult(bw({ stage: 1, tier: 3, stageStreak: 0 }), 'skilled', 3, 'strict', NOW);
     expect(p.stageStreak).toBe(1);
     expect(p.stage).toBe(1);
     expect(p.tier).toBe(2);
   });
 
   it('连续熟练达阈值 → 晋级下一阶段、连击与特训清零', () => {
-    const p = applyStageChoiceResult(bw({ stage: 1, tier: 3, stageStreak: 2, specialTraining: true, failStreak: 3 }), 'skilled', 3, NOW);
+    const p = applyStageChoiceResult(bw({ stage: 1, tier: 3, stageStreak: 2, specialTraining: true, failStreak: 3 }), 'skilled', 3, 'strict', NOW);
     expect(p.stage).toBe(2);
     expect(p.stageStreak).toBe(0);
     expect(p.specialTraining).toBe(false);
@@ -81,56 +81,72 @@ describe('applyStageChoiceResult（阶段一~三）', () => {
   });
 
   it('认识/不熟/生词 → 连击清零；生词降层、不熟/生词累 failStreak', () => {
-    const r = applyStageChoiceResult(bw({ stage: 1, stageStreak: 2 }), 'recognized', 3, NOW);
+    const r = applyStageChoiceResult(bw({ stage: 1, stageStreak: 2 }), 'recognized', 3, 'strict', NOW);
     expect(r.stageStreak).toBe(0);
-    const u = applyStageChoiceResult(bw({ stage: 1, stageStreak: 2, failStreak: 0 }), 'unfamiliar', 3, NOW);
+    const u = applyStageChoiceResult(bw({ stage: 1, stageStreak: 2, failStreak: 0 }), 'unfamiliar', 3, 'strict', NOW);
     expect(u.failStreak).toBe(1);
-    const k = applyStageChoiceResult(bw({ stage: 1, tier: 3, stageStreak: 2 }), 'unknown', 3, NOW);
+    const k = applyStageChoiceResult(bw({ stage: 1, tier: 3, stageStreak: 2 }), 'unknown', 3, 'strict', NOW);
     expect(k.tier).toBe(4);
     expect(k.failStreak).toBe(1);
   });
 
   it(`连续不熟/生词 ≥ ${STAGE_SPECIAL_FAILS} → 特种训练`, () => {
-    const p = applyStageChoiceResult(bw({ stage: 1, failStreak: 2 }), 'unknown', 3, NOW);
+    const p = applyStageChoiceResult(bw({ stage: 1, failStreak: 2 }), 'unknown', 3, 'strict', NOW);
     expect(p.specialTraining).toBe(true);
   });
 
   it('阶段三毕业 → 进阶段四', () => {
-    const p = applyStageChoiceResult(bw({ stage: 3, stageStreak: 2 }), 'skilled', 3, NOW);
+    const p = applyStageChoiceResult(bw({ stage: 3, stageStreak: 2 }), 'skilled', 3, 'strict', NOW);
     expect(p.stage).toBe(4);
     expect(p.stageStreak).toBe(0);
   });
 
   it('阈值取自设置（如改 5）：连 3 不毕业、连 5 毕业且只进一阶', () => {
-    const no = applyStageChoiceResult(bw({ stage: 1, stageStreak: 3 }), 'skilled', 5, NOW);
+    const no = applyStageChoiceResult(bw({ stage: 1, stageStreak: 3 }), 'skilled', 5, 'strict', NOW);
     expect(no.stage).toBe(1);
-    const yes = applyStageChoiceResult(bw({ stage: 1, stageStreak: 4 }), 'skilled', 5, NOW);
+    const yes = applyStageChoiceResult(bw({ stage: 1, stageStreak: 4 }), 'skilled', 5, 'strict', NOW);
     expect(yes.stage).toBe(2);
   });
 
-  // ===== 首熟口径（用户 2026-10-18：毕业只数「每轮首次遇见且熟练」）=====
+  // ===== 每轮首过口径（用户 2026-10-18 定案：首见即达标，档位取自设置）=====
   it('本轮首答即熟练（attemptNo=1）→ stageStreak +1', () => {
-    const p = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, NOW, 1);
+    const p = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, 'strict', NOW, 1);
     expect(p.stageStreak).toBe(2);
   });
 
   it('同轮重排后再答熟练（attemptNo≥2）→ stageStreak 不动（首熟才计数）', () => {
-    const p = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, NOW, 2);
+    const p = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, 'strict', NOW, 2);
     expect(p.stageStreak).toBe(1);
-    const p3 = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, NOW, 3);
+    const p3 = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, 'strict', NOW, 3);
     expect(p3.stageStreak).toBe(1);
   });
 
   it('重排后熟练不影响毕业，但首答不熟练会清零', () => {
     const base = bw({ stage: 1, stageStreak: 2 });
-    const reset = applyStageChoiceResult(base, 'unfamiliar', 3, NOW, 1);
+    const reset = applyStageChoiceResult(base, 'unfamiliar', 3, 'strict', NOW, 1);
     expect(reset.stageStreak).toBe(0);
   });
 
-  it('连续三轮首熟 → 晋级（3 轮 × attemptNo=1）', () => {
+  it('首见即达标看当前挡位：设「首认识」时首答认识也 +1（旧实现硬编码熟练，白答）', () => {
+    const strict = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'recognized', 3, 'strict', NOW, 1);
+    expect(strict.stageStreak).toBe(0); // 首熟档：认识不达标 ⇒ 清零
+    const standard = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'recognized', 3, 'standard', NOW, 1);
+    expect(standard.stageStreak).toBe(2); // 首认识档：首见认识即达标 ⇒ +1
+  });
+
+  it('重排后的作答不碰毕业线：答对不加、答错也不清零（只认首见）', () => {
+    const base = bw({ stage: 1, stageStreak: 2 });
+    const ok = applyStageChoiceResult(base, 'recognized', 3, 'strict', NOW, 2);
+    expect(ok.stageStreak).toBe(2); // 重排后答错档位不清零
+    const bad = applyStageChoiceResult(base, 'unknown', 3, 'strict', NOW, 2);
+    expect(bad.stageStreak).toBe(2); // 重排后生词也不清零（频率字段照旧更新）
+    expect(bad.failStreak).toBe(1);
+  });
+
+  it('连续三轮首见达标 → 晋级（3 轮 × attemptNo=1）', () => {
     let cur = bw({ stage: 1, stageStreak: 0 });
     for (let i = 0; i < 3; i++) {
-      const p = applyStageChoiceResult(cur, 'skilled', 3, NOW, 1);
+      const p = applyStageChoiceResult(cur, 'skilled', 3, 'strict', NOW, 1);
       cur = { ...cur, ...p };
     }
     expect(cur.stage).toBe(2);
@@ -138,7 +154,7 @@ describe('applyStageChoiceResult（阶段一~三）', () => {
   });
 
   it('不传 attemptNo = 旧行为（每次熟练都计数，兼容既有调用）', () => {
-    const p = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, NOW);
+    const p = applyStageChoiceResult(bw({ stage: 1, stageStreak: 1 }), 'skilled', 3, 'strict', NOW);
     expect(p.stageStreak).toBe(2);
   });
 });

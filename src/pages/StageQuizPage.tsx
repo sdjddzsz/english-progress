@@ -200,7 +200,7 @@ export default function StageQuizPage() {
     setPicked(opt);
     setVerdict(v);
     const bw = current.bookWord;
-    const sp = applyStageChoiceResult(bw, v, stageGraduate[stageNo === 4 ? 3 : stageNo], new Date(), current.attemptNo);
+    const sp = applyStageChoiceResult(bw, v, stageGraduate[stageNo === 4 ? 3 : stageNo], quizDayThreshold, new Date(), current.attemptNo);
     const advanced = sp.stage !== bw.stage && sp.stage > (bw.stage as number);
     // 每轮过关挡位（用户 2026-10-15）：连续达标才放行；晋级立即放行。
     // 与阶段一（QuizPage）同一套 roundRelease 规则，挡位不匹配的问题同源修复
@@ -507,7 +507,7 @@ export default function StageQuizPage() {
                       variant="body2"
                       sx={{ color: current.promoted ? 'success.main' : 'text.secondary' }}
                     >
-                      毕业线：{current.bookWord.stageStreak}/{stageGraduate[stageNo]}（熟练）
+                      毕业线：{current.bookWord.stageStreak}/{stageGraduate[stageNo]}（首见{thresholdLineLabel(quizDayThreshold)}）
                       {current.promoted ? ' · 已晋级，进入下一阶段' : ''}
                     </Typography>
                   </Stack>

@@ -264,7 +264,7 @@ describe('roundRelease：连续达标才放行，晋级/毕业立即放行', () 
     expect(r.release).toBe(true);
   });
 
-  it('首答但只到「认识」（适当档线）→ 不放行，仍要连续 3 次', () => {
+  it('首见即达标（用户 2026-10-18）：首答「认识」+ 适当档 ⇒ 一遍过立即放行', () => {
     const r = roundRelease({
       verdict: 'recognized',
       prevStreak: 0,
@@ -275,6 +275,19 @@ describe('roundRelease：连续达标才放行，晋级/毕业立即放行', () 
       now,
     });
     expect(r.dayStreak).toBe(1);
+    expect(r.release).toBe(true); // 首见达到当前挡位线 = 本轮首过
+  });
+
+  it('首见没达标（严格档下只到认识）→ 不放行，排到队尾刷次数', () => {
+    const r = roundRelease({
+      verdict: 'recognized',
+      prevStreak: 0,
+      threshold: 'strict',
+      leftStage: false,
+      attemptNo: 1,
+      lastQuizAt: todayIso,
+      now,
+    });
     expect(r.release).toBe(false);
   });
 

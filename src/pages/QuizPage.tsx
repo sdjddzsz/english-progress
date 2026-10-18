@@ -308,7 +308,7 @@ export default function QuizPage() {
     const now = new Date();
     const firstQuizOfDay = !isSameUtcDay(bw.lastQuizAt, now);
     // ★ 四阶段制（用户 2026-10-15）：阶段走向是唯一权威（晋级/特训/层升降都在 stages.ts 引擎里）
-    const sp = applyStageChoiceResult(bw, v, graduateStreak, now, current.attemptNo);
+    const sp = applyStageChoiceResult(bw, v, graduateStreak, quizDayThreshold, now, current.attemptNo);
     const graduated = sp.stage !== bw.stage; // 阶段一毕业 → 晋级阶段二
     // 每轮过关计数（用户 2026-10-15）：连续达标才放行；跨天重新起算；
     // 晋级/毕业立即放行。quizDayPassed 只在真正达到过关线时才写 true
@@ -734,7 +734,7 @@ export default function QuizPage() {
                   variant="body2"
                   sx={{ color: current.promoted ? 'success.main' : 'text.secondary' }}
                 >
-                  毕业线：{current.bookWord.stageStreak}/{graduateStreak}（熟练）
+                  毕业线：{current.bookWord.stageStreak}/{graduateStreak}（首见{thresholdLineLabel(quizDayThreshold)}）
                   {current.promoted ? ' · 已晋级，进入下一阶段' : ''}
                 </Typography>
               </Stack>
