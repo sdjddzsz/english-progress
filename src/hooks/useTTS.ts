@@ -53,6 +53,7 @@ function getOrchestrator(): TTSOrchestrator {
   });
   orchestratorSingleton = createOrchestrator({
     cache,
+    getUserId: () => useAppStore.getState().userId,
     getConfig: async () => {
       // 未登录（userId 为空）→ 绝不伪造身份、不发云端请求：直接返回 null，
       // 编排器对 config === null 已有既有处理（回落 espeak 兜底轨），不新增分支。

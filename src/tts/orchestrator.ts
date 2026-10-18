@@ -126,6 +126,8 @@ export type AudioPhase = 'reading' | 'synthesizing';
 export interface OrchestratorDeps {
   /** 读云端 TTSProviderConfig + 已解析 key（运行时从配置文档取入内存） */
   getConfig(): Promise<{ config: TTSProviderConfig; apiKey?: string } | null>;
+  /** 当前用户 id（云音频库路径 shared/{uid}/... 需要；2026-10-18 修复路径归属） */
+  getUserId?(): string | null;
   log(entry: PronunciationLogEntry): Promise<void>;
   cache: AudioCache;
   /** Provider 可注入（测试 mock） */
@@ -149,7 +151,11 @@ export function createOrchestrator(deps: OrchestratorDeps) {
     deps.remote === undefined ? (isCloudConfigured() ? cloudAudioStore() : null) : deps.remote;
 
   return {
-    async getAudio(req: TTSRequest, wordId?: string): Promise<TTSResult> {
+    async getAudio(
+      req: TTSRequest,
+      wordId?: string,
+      opts?: { skipCloudRead?: boolean },
+    ): Promise<TTSResult> {
       // 先读配置：缓存 key 必须含 voice/model（v2），否则换音色不换 key、命中旧音频。
       // 多一次云端读仍在 <800ms 体验路径内，且只有未命中时才付这个代价。
       const cfg = await deps.getConfig();
@@ -164,15 +170,22 @@ export function createOrchestrator(deps: OrchestratorDeps) {
 
       // 2) 云音频库（用户 2026-10-14）：该音色此前合成过这个词 → 直接取文件，不再合成。
       //    路径含音色目录 + 由含 voice/model 的 key 派生的 hash ⇒ 不可能取到别的音色的音频。
-      //    无配置（音色未定）时不查云端：不确定音色就不该复用任何音频。
+      //    无配置（音色未定）或无用户时不查云端：不确定归属就不该复用任何音频。
+      //    skipCloudRead（regenerate 专用）：防止云删失败时把旧音频又读回来——
+      //    重新合成必须真的重新合成，合成后 upsert 覆盖云端旧文件。
       let cloudPath: string | null = null;
-      if (remote && cfg) {
-        cloudPath = await cloudAudioPath(req, voice, model);
-        const cloudAudio = await remote.get(cloudPath);
-        if (cloudAudio && cloudAudio.byteLength > 0) {
-          // 回写本地缓存，下次连下载都省掉；engine 恒为主轨（云端只存主轨音频）
-          await deps.cache.put(key, cloudAudio, 'neural_tts');
-          return { audio: cloudAudio, engine: 'neural_tts', fromCache: true };
+      const userId = deps.getUserId?.() ?? null;
+      if (remote && cfg && userId) {
+        // 路径必须照算（regenerate 重录后要往这里覆盖写）；skipCloudRead 只跳过「读」——
+        // 随后照常走主轨合成，合成成功照样 upsert 覆盖云端旧文件
+        cloudPath = await cloudAudioPath(req, userId, voice, model);
+        if (!opts?.skipCloudRead) {
+          const cloudAudio = await remote.get(cloudPath);
+          if (cloudAudio && cloudAudio.byteLength > 0) {
+            // 回写本地缓存，下次连下载都省掉；engine 恒为主轨（云端只存主轨音频）
+            await deps.cache.put(key, cloudAudio, 'neural_tts');
+            return { audio: cloudAudio, engine: 'neural_tts', fromCache: true };
+          }
         }
       }
 
@@ -241,11 +254,14 @@ export function createOrchestrator(deps: OrchestratorDeps) {
       const model = cfg?.config.model;
       const key = cfg ? cacheKey(req, voice, model) : cacheKey(req);
       await deps.cache.remove?.(key);
-      if (remote && cfg) {
-        const p = await cloudAudioPath(req, voice, model);
+      const userId = deps.getUserId?.() ?? null;
+      if (remote && cfg && userId) {
+        const p = await cloudAudioPath(req, userId, voice, model);
         await remote.remove(p);
       }
-      return this.getAudio(req, wordId);
+      // skipCloudRead：就算云删因网络抖动失败、旧文件还在，也绝不取回旧音频——
+      // 重新合成后 upsert（覆盖写）把云端换掉
+      return this.getAudio(req, wordId, { skipCloudRead: true });
     },
   };
 }

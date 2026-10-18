@@ -42,28 +42,28 @@ function stubProvider(engine: TTSResult['engine'], tag: string): TTSProvider {
 
 describe('云音频库路径：音色隔离', () => {
   it('同音色同词 → 同一路径（可复用）', async () => {
-    const a = await cloudAudioPath(req, 'Lingfei', 'm1');
-    const b = await cloudAudioPath(req, 'Lingfei', 'm1');
+    const a = await cloudAudioPath(req, 'u1', 'Lingfei', 'm1');
+    const b = await cloudAudioPath(req, 'u1', 'Lingfei', 'm1');
     expect(a).toBe(b);
     expect(a.startsWith(`${CLOUD_AUDIO_PREFIX}/`)).toBe(true);
   });
   it('换音色 → 路径不同（音色目录 + key hash 双保险）', async () => {
-    const a = await cloudAudioPath(req, 'Lingfei', 'm1');
-    const b = await cloudAudioPath(req, 'Stella', 'm1');
+    const a = await cloudAudioPath(req, 'u1', 'Lingfei', 'm1');
+    const b = await cloudAudioPath(req, 'u1', 'Stella', 'm1');
     expect(a).not.toBe(b);
-    expect(a.split('/')[1]).not.toBe(b.split('/')[1]);
+    expect(a.split('/')[3]).not.toBe(b.split('/')[3]);
   });
   it('同音色换模型 / 换音标 / 换模式 → 路径也不同', async () => {
-    const base = await cloudAudioPath(req, 'Lingfei', 'm1');
-    expect(await cloudAudioPath(req, 'Lingfei', 'm2')).not.toBe(base);
-    expect(await cloudAudioPath({ ...req, ipa: '/x/' }, 'Lingfei', 'm1')).not.toBe(base);
-    expect(await cloudAudioPath({ ...req, mode: 'sentence' }, 'Lingfei', 'm1')).not.toBe(base);
+    const base = await cloudAudioPath(req, 'u1', 'Lingfei', 'm1');
+    expect(await cloudAudioPath(req, 'u1', 'Lingfei', 'm2')).not.toBe(base);
+    expect(await cloudAudioPath({ ...req, ipa: '/x/' }, 'u1', 'Lingfei', 'm1')).not.toBe(base);
+    expect(await cloudAudioPath({ ...req, mode: 'sentence' }, 'u1', 'Lingfei', 'm1')).not.toBe(base);
   });
   it('音色名为空/含非法字符 → 落到 default 目录且不崩', async () => {
     expect(slugifyVoice('')).toBe('default');
     expect(slugifyVoice('Ada Bell/v2')).toBe('ada_bell_v2');
-    const p = await cloudAudioPath(req, '', 'm1');
-    expect(p.split('/')[1]).toBe('default');
+    const p = await cloudAudioPath(req, 'u1', '', 'm1');
+    expect(p.split('/')[3]).toBe('default');
   });
 });
 
@@ -75,6 +75,7 @@ describe('编排器接云音频库', () => {
     phases?: string[];
   }) => {
     const logs: Record<string, unknown>[] = [];
+    // getUserId：云音频路径 shared/{uid}/... 的归属（缺了就不查/不上传云端）
     const neural: TTSProvider = opts.neuralFails
       ? {
           id: 'fail',
@@ -88,6 +89,7 @@ describe('编排器接云音频库', () => {
       orch: createOrchestrator({
         cache: inMemoryAudioCache(),
         remote: opts.remote === undefined ? null : opts.remote,
+        getUserId: () => 'u1',
         getConfig: async () => ({ config: cfgOf(opts.voice ?? 'Lingfei'), apiKey: 'k' }),
         log: async (e) => {
           logs.push({ ...e });
@@ -101,7 +103,7 @@ describe('编排器接云音频库', () => {
 
   it('云端有该音色的音频 → 直接返回，不调主轨合成', async () => {
     const remote = inMemoryAudioStore();
-    const path = await cloudAudioPath(req, 'Lingfei', 'sambert-v1');
+    const path = await cloudAudioPath(req, 'u1', 'Lingfei', 'sambert-v1');
     remote.store.set(path, new TextEncoder().encode('CLOUD').buffer);
     const phases: string[] = [];
     const { orch, logs } = deps({ remote, phases });
@@ -115,7 +117,7 @@ describe('编排器接云音频库', () => {
 
   it('云端缺词 → 现场合成并回传云端（下次直接读）', async () => {
     const remote = inMemoryAudioStore();
-    const path = await cloudAudioPath(req, 'Lingfei', 'sambert-v1');
+    const path = await cloudAudioPath(req, 'u1', 'Lingfei', 'sambert-v1');
     const phases: string[] = [];
     const { orch, logs } = deps({ remote, phases });
     const res = await orch.getAudio(req, 'w1');
@@ -157,7 +159,7 @@ describe('编排器接云音频库', () => {
     const other = deps({ remote, voice: 'Stella' });
     const res = await other.orch.getAudio(req, 'w1');
     expect(new TextDecoder().decode(res.audio)).toBe('NEURAL');
-    const stellaPath = await cloudAudioPath(req, 'Stella', 'sambert-v1');
+    const stellaPath = await cloudAudioPath(req, 'u1', 'Stella', 'sambert-v1');
     expect(remote.store.get(stellaPath)).toBeDefined(); // Stella 自己那份，而不是复用 Lingfei 的
     expect(other.logs[0].cloudMiss).toBe(true);
   });

@@ -184,12 +184,14 @@ describe('编排器：缓存 → 主轨 → 兜底 → 日志 → 轻提示一�
       cloudRemoved += 1;
       return origRemove(path);
     };
-    const deps = { ...makeDeps(cfg(), 'key-123'), remote };
+    const deps = { ...makeDeps(cfg(), 'key-123'), remote, getUserId: () => 'u1' };
     const orch = createOrchestrator(deps);
 
     await orch.getAudio(req, 'w1'); // 首次：现场合成 + 回传云端
     expect(providers.calls.neural).toBe(1);
-    const cloudPath = await cloudAudioPath(req, undefined, undefined);
+    // 路径必须是 storage RLS 放行的 shared/{uid}/...（2026-10-18 修复：旧 tts/ 路径全被拒）
+    const cloudPath = await cloudAudioPath(req, 'u1', undefined, undefined);
+    expect(cloudPath.startsWith('shared/u1/tts-audio/')).toBe(true);
     expect(remote.store.has(cloudPath)).toBe(true);
 
     // regenerate：即使本地缓存/云端都有，也必须重新合成
@@ -199,5 +201,25 @@ describe('编排器：缓存 → 主轨 → 兜底 → 日志 → 轻提示一�
     expect(providers.calls.neural).toBe(2);
     expect(cloudRemoved).toBe(1); // 云端旧文件删过一次
     expect(remote.store.has(cloudPath)).toBe(true); // 新音频已回传云端
+  });
+
+  it('regenerate：云删失败（旧文件仍在）也绝不取回旧音频——skipCloudRead + upsert 覆盖', async () => {
+    const remote = inMemoryAudioStore();
+    // remove 假失败：返回 true 但文件仍在（模拟 RLS/网络异常导致的静默失败）
+    remote.remove = async () => true;
+    const deps = { ...makeDeps(cfg(), 'key-123'), remote, getUserId: () => 'u1' };
+    const orch = createOrchestrator(deps);
+
+    await orch.getAudio(req, 'w1'); // 首次合成，云里有旧文件
+    const cloudPath = await cloudAudioPath(req, 'u1', undefined, undefined);
+    expect(remote.store.has(cloudPath)).toBe(true);
+
+    const r = await orch.regenerate(req, 'w1');
+    // 关键断言：没有跳过合成（否则就是取回了旧音频）
+    expect(r.engine).toBe('neural_tts');
+    expect(r.fromCache).toBe(false);
+    expect(providers.calls.neural).toBe(2);
+    // 旧文件被新音频 upsert 覆盖（put 两次 = 首次 + 重录回传）
+    expect(remote.puts.filter((p) => p === cloudPath).length).toBe(2);
   });
 });

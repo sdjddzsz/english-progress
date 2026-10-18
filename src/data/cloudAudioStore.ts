@@ -2,8 +2,13 @@
  * cloudAudioStore.ts —— 云音频库（用户 2026-10-14）：
  * 「同一音色第一次合成某个词的读音 → 存进云空间；该音色以后再遇这个词 → 直接取文件，不再合成」。
  *
+ * ★ 路径必须是 storage RLS 放行的结构（2026-10-18 修复）：runtime 桶只放行
+ *   `users/{uid}/...` 与 `shared/{uid}/...`。旧实现用 `tts/{voice}/{hash}.mp3`——
+ *   INSERT/DELETE/SELECT 全被策略拒绝且静默失败 ⇒ 云音频库从未真正存过文件
+ *   （18:50 发布的「重新合成」云端更新环节因此失效）。现改为
+ *   `shared/{userId}/tts-audio/{voiceSlug}/{keyHash}.mp3`：同账号跨设备共享。
+ *
  * ★ 音色匹配是硬约束（用户原话：不可以设置了某音色却拿别的音色的读音文件代替）：
- *   对象路径 = `tts/{voiceSlug}/{keyHash}.mp3`，两道保险 ——
  *   ① 目录按音色分隔；② keyHash 由含 voice+model 的 cacheKey 派生（v2 key），
  *      换音色/换模型/换音标 → hash 必变 → 绝不会命中别的音色的文件。
  *
@@ -14,8 +19,8 @@ import { getCloud } from './cloud';
 import { cacheKey } from '../tts/orchestrator';
 import type { TTSRequest } from '../tts/types';
 
-/** 云端目录前缀（不按用户隔离：同一音色同一词的读音对所有用户一致，共享可省合成次数） */
-export const CLOUD_AUDIO_PREFIX = 'tts';
+/** 云端目录前缀：shared/{uid} 是 storage RLS 唯一放行的跨设备共享结构 */
+export const CLOUD_AUDIO_PREFIX = 'shared';
 
 /**
  * 云音频读取上限（毫秒）。
@@ -67,16 +72,17 @@ export async function hashKey(key: string): Promise<string> {
 }
 
 /**
- * 云端对象路径（纯函数，可单测）。
+ * 云端对象路径（纯函数，可单测）。userId 必传（RLS 要求 shared/{uid} 归属当前用户）。
  * voice 缺省时归到 `default` 目录 —— 与「没设音色」的语义一致，不会串到具体音色。
  */
 export async function cloudAudioPath(
   req: TTSRequest,
+  userId: string,
   voice?: string,
   model?: string,
 ): Promise<string> {
   const key = cacheKey(req, voice, model);
-  return `${CLOUD_AUDIO_PREFIX}/${slugifyVoice(voice ?? '')}/${await hashKey(key)}.mp3`;
+  return `${CLOUD_AUDIO_PREFIX}/${userId}/tts-audio/${slugifyVoice(voice ?? '')}/${await hashKey(key)}.mp3`;
 }
 
 /** 给任意 promise 套超时：超时返回 null（调用方按「未命中」处理） */
