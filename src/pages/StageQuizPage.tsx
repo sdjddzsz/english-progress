@@ -551,7 +551,7 @@ export default function StageQuizPage() {
                       ))}
                     </Stack>
                     <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-                      长按任一释义可编辑 / 删除（改动直接写回词书）
+                      长按任一释义可编辑 / 删除（电脑上直接右键也行；改动直接写回词书）
                     </Typography>
                   </Box>
                   <Button variant="contained" onClick={next}>
@@ -576,8 +576,8 @@ export default function StageQuizPage() {
             <Tooltip
               title={
                 voiceOverride
-                  ? `重新合成（本轮临时：${voiceLabelOf(voiceOverride.model, voiceOverride.voice)} · ${voiceOverride.model}；长按可改）`
-                  : '重新合成（这个读音不对时用；长按可临时换模型/音色）'
+                  ? `重新合成（本轮临时：${voiceLabelOf(voiceOverride.model, voiceOverride.voice)} · ${voiceOverride.model}；长按或右键可改）`
+                  : '重新合成（这个读音不对时用；长按或右键可临时换模型/音色）'
               }
             >
               <span>
