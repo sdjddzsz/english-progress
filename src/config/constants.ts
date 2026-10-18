@@ -142,7 +142,14 @@ export const DASHSCOPE_PHONEME_STRIP_STRESS = false;
 export const DASHSCOPE_PRICE_PER_10K_CHARS = 1.0;
 /** 新用户开通百炼 90 天内 TTS 免费额度（字符） */
 export const DASHSCOPE_FREE_QUOTA_CHARS = 10000;
-/** 音色下拉：按模型分组（官方明确音色不能跨模型混用；以下 ID 均已实测可用） */
+/**
+ * 音色下拉：按模型分组（官方明确音色不能跨模型混用）。
+ * 2026-10-18 实测对照试验（.workbuddy/tmp/voice-compare.mts，应用同通道）：
+ * qwen-audio-3.1-tts-flash 接受 cmu 音素注入（<phoneme alphabet="cmu">），英语母语音色读英文
+ * 结构上优于中文系音色（用户「每个音色各有各的错」的根源）。
+ * ⚠ 勿加：qwen-audio-3.0 的英语音色（loongmary / loongeva_v3.6 / loongjohn）官方标注 SSML 不支持；
+ *   cosyvoice-v3.5-flash/plus 仅声音复刻、无系统音色。
+ */
 export const DASHSCOPE_VOICE_OPTIONS_BY_MODEL: Record<string, readonly { voice: string; label: string }[]> = {
   'cosyvoice-v3-flash': [
     { voice: 'longanyang', label: '龙安洋（v3 · 默认）' },
@@ -154,6 +161,24 @@ export const DASHSCOPE_VOICE_OPTIONS_BY_MODEL: Record<string, readonly { voice: 
     { voice: 'longjielidou_v3', label: '龙杰力豆（v3）' },
     { voice: 'longwan_v3', label: '龙婉（v3）' },
   ],
+  // qwen-audio-3.1：英语母语音色（官方音色列表全部标注 SSML 支持）；Brian/Emily 已对照试听
+  'qwen-audio-3.1-tts-flash': [
+    { voice: 'Brian_v3.1', label: 'Brian（美式男声 · 已对照试听）' },
+    { voice: 'Emily_v3.1', label: 'Emily（英式女声 · 已对照试听）' },
+    { voice: 'Andy_v3.1', label: 'Andy（美式男声）' },
+    { voice: 'David_v3.1', label: 'David（美式男声）' },
+    { voice: 'Abby_v3.1', label: 'Abby（美式女声）' },
+    { voice: 'Annie_v3.1', label: 'Annie（美式女声）' },
+    { voice: 'Ava_v3.1', label: 'Ava（美式女声）' },
+    { voice: 'Beth_v3.1', label: 'Beth（美式女声）' },
+    { voice: 'Betty_v3.1', label: 'Betty（美式女声）' },
+    { voice: 'Cally_v3.1', label: 'Cally（美式女声）' },
+    { voice: 'Cindy_v3.1', label: 'Cindy（美式女声）' },
+    { voice: 'Donna_v3.1', label: 'Donna（美式女声）' },
+    { voice: 'Eric_v3.1', label: 'Eric（英式男声）' },
+    { voice: 'Luca_v3.1', label: 'Luca（英式男声）' },
+    { voice: 'Luna_v3.1', label: 'Luna（英式女声）' },
+  ],
   'cosyvoice-v2': [
     { voice: 'longxiaochun_v2', label: '龙小淳（知性女声）' },
     { voice: 'longwan_v2', label: '龙婉（普通话女声）' },
@@ -164,8 +189,13 @@ export const DASHSCOPE_VOICE_OPTIONS_BY_MODEL: Record<string, readonly { voice: 
     { voice: 'longanyang', label: '龙安洋（v3-plus · 默认）' },
   ],
 };
-/** 模型下拉（v3-flash 排第一＝默认；v2 保留可切换但音素注入有跑飞缺陷） */
-export const DASHSCOPE_MODEL_OPTIONS = ['cosyvoice-v3-flash', 'cosyvoice-v2', 'cosyvoice-v3-plus'] as const;
+/** 模型下拉（v3-flash 排第一＝默认；qwen-audio-3.1 第二＝英语母语音色；v2 保留可切换但音素注入有跑飞缺陷） */
+export const DASHSCOPE_MODEL_OPTIONS = [
+  'cosyvoice-v3-flash',
+  'qwen-audio-3.1-tts-flash',
+  'cosyvoice-v2',
+  'cosyvoice-v3-plus',
+] as const;
 
 // ===== 同步 =====
 

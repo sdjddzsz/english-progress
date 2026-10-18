@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { cacheKey, createOrchestrator, inMemoryAudioCache, type OrchestratorDeps } from '../../src/tts/orchestrator';
 import { cloudAudioPath, inMemoryAudioStore } from '../../src/data/cloudAudioStore';
-import { defaultVoiceForModel, voiceLabelOf, voicesForModel } from '../../src/tts/voiceOptions';
+import { defaultVoiceForModel, voiceLabelOf, voicesForModel, ALL_MODELS } from '../../src/tts/voiceOptions';
 import type { TTSContext, TTSProvider, TTSResult, VoiceOverride } from '../../src/tts/types';
 import type { TTSProviderConfig } from '../../src/types/domain';
 
@@ -74,6 +74,15 @@ describe('voiceOptions：音色按模型分组（官方约束：不能跨模型�
   it('voiceLabelOf 查表、未知回落原始 ID', () => {
     expect(voiceLabelOf('cosyvoice-v3-flash', 'longhuhu_v3')).toContain('龙呼呼');
     expect(voiceLabelOf('cosyvoice-v3-flash', 'unknown_voice')).toBe('unknown_voice');
+  });
+
+  it('qwen-audio-3.1-tts-flash 已入表（用户 2026-10-18 拍板：英语母语音色直接可选）', () => {
+    expect(ALL_MODELS).toContain('qwen-audio-3.1-tts-flash');
+    const q = voicesForModel('qwen-audio-3.1-tts-flash').map((v) => v.voice);
+    expect(q).toContain('Brian_v3.1');
+    expect(q).toContain('Emily_v3.1');
+    expect(q).not.toContain('loongmary'); // 3.0 英语音色 SSML 不支持，禁止入表
+    expect(defaultVoiceForModel('qwen-audio-3.1-tts-flash')).toBe('Brian_v3.1');
   });
 
   it('cacheKey 含 voice+model：换任何一个都是新 key（v2 口径）', () => {
