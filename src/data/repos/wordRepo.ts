@@ -24,11 +24,15 @@ export interface WordRepo {
    */
   updateWordSenses(word: Word): Promise<void>;
   /**
-   * 新一轮开局：轮标线批量归零（用户 2026-10-18）。走 upsert 通道
-   * （book_words RLS 同 words：只放行 insert 语义的 upsert，单 PATCH 会被拒）。
-   * 行内已是 0 的原样带回（引用相等），由调用方决定是否还值得写。
+   * 新一轮开局：轮标线批量归零（用户 2026-10-18「进入新一轮的单词得从零开始计数」）。
+   * 打法同 updateWordTiers：按 id 分片**读回原行** → 只改 quizDayStreak/quizDayPassed 两列 → upsert。
+   * 为什么不收调用方的行、要读回：① 云端值才是权威，读回能顺带修掉昔日失败残留的旧值；
+   * ② 离线补传重放时以云端现值为基底，不会把调用方开局快照的其它列（tier/streak…）写旧；
+   * ③ skipAnsweredSince 让「入队后又答过题」的词不被归零误伤——作答自己的写回才权威。
+   * 两列本就是 0/未过关的行不写（无变化不落库）。
+   * @returns 实际归零的行数
    */
-  resetRoundStreaks(rows: BookWord[]): Promise<void>;
+  resetRoundStreaks(ids: string[], opts?: { skipAnsweredSince?: string }): Promise<number>;
   getWordByLemma(lemma: string): Promise<Word | null>;
   /** 前缀搜索（词形开头匹配）；传空串返回前 limit 个（词书/生词本列表用） */
   searchWordsByPrefix(prefix: string, limit?: number): Promise<Word[]>;
@@ -175,12 +179,26 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
     upsertWords: (rows) => words.upsertMany(rows),
     updateWordSenses: (word) =>
       words.upsertMany([word as Word & Record<string, unknown>]),
-    resetRoundStreaks: (rows) =>
-      bookWords.upsertMany(
-        rows
-          .filter((r) => r.quizDayStreak !== 0 || r.quizDayPassed)
-          .map((r) => ({ ...r, quizDayStreak: 0, quizDayPassed: false } as BookWord & Record<string, unknown>)),
-      ),
+    resetRoundStreaks: async (ids, opts) => {
+      const unique = [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+      if (unique.length === 0) return 0;
+      const batches: string[][] = [];
+      for (let i = 0; i < unique.length; i += ID_BATCH) batches.push(unique.slice(i, i + ID_BATCH));
+      const pages = await mapLimit(batches, ID_BATCH_CONCURRENCY, (batch) =>
+        bookWords.list([{ column: 'id', op: 'in', values: batch }], { limit: batch.length }),
+      );
+      const since = opts?.skipAnsweredSince;
+      const zeroed = pages
+        .flat()
+        // 只碰真有计数/过关标记的行（无变化不落库）
+        .filter((r) => (r.quizDayStreak ?? 0) !== 0 || Boolean(r.quizDayPassed))
+        // 入队后又答过题的词不归零：那次作答的写回才是权威（lastQuizAt > since）
+        .filter((r) => !since || !r.lastQuizAt || r.lastQuizAt <= since)
+        .map((r) => ({ ...r, quizDayStreak: 0, quizDayPassed: false } as BookWord & Record<string, unknown>));
+      if (zeroed.length === 0) return 0;
+      await bookWords.upsertMany(zeroed);
+      return zeroed.length;
+    },
     getWordByLemma: async (lemma) => {
       const rows = await words.list([{ column: 'lemma', op: 'eq', value: lemma }], { limit: 1 });
       return rows[0] ?? null;

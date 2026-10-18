@@ -8,6 +8,9 @@ import type { Hit, HitStatus } from '../types/domain';
 import { takePendingOps, resolveOp, failOp, isOnline } from '../data/queue';
 import type { PendingOp, PendingOpName } from '../data/localDb';
 import type { Repos } from '../store/useAppStore';
+import { TTS_CACHE_NAME } from '../config/constants';
+import { cloudAudioStore } from '../data/cloudAudioStore';
+import { sniffAudioMime } from '../tts/mime';
 
 export interface ReplayResult {
   done: number;
@@ -67,6 +70,31 @@ const HANDLERS: Record<PendingOpName, OpHandler> = {
     const patch = (payload.patch ?? {}) as Record<string, unknown>;
     const updated = await repos.word.updateBookWordQuiz(bookWordId, patch as never);
     if (!updated) throw new Error(`bookWord.quiz affected 0 rows for ${bookWordId}`);
+  },
+  // 新一轮开局轮标线归零（2026-10-18 C1：旧实现 try/catch 静默吞，云端残留旧值）。
+  // skipAnsweredSince：入队后又答过题的词不归零——那次作答的写回才是权威。
+  // 0 行不抛错：全部被 since 跳过是合法结果。
+  'bookWord.roundReset': async (payload, repos) => {
+    const ids = Array.isArray(payload.ids)
+      ? (payload.ids as unknown[]).filter((v): v is string => typeof v === 'string' && v.length > 0)
+      : [];
+    const since = typeof payload.since === 'string' ? payload.since : undefined;
+    await repos.word.resetRoundStreaks(ids, since ? { skipAnsweredSince: since } : undefined);
+  },
+  // 云端音频回传（2026-10-18 C2：旧实现 void 即发即忘，失败永不补传）。
+  // 按 cacheKey 从 CacheStorage 取字节上传；无 CacheStorage（node/测试）或缓存已被
+  // LRU 淘汰 ⇒ 音频不可恢复，直接出队（下次现场合成会重新入队，不会卡成毒丸）。
+  'audio.upload': async (payload) => {
+    const cloudPath = s(payload.cloudPath);
+    const cacheKey = s(payload.cacheKey);
+    if (!cloudPath || !cacheKey) throw new Error('audio.upload payload 缺 cloudPath/cacheKey');
+    if (typeof caches === 'undefined') return;
+    const res = await caches.open(TTS_CACHE_NAME).then((c) => c.match(cacheKey));
+    if (!res) return;
+    const audio = await res.arrayBuffer();
+    if (audio.byteLength === 0) return;
+    const ok = await cloudAudioStore().put(cloudPath, audio, sniffAudioMime(audio));
+    if (!ok) throw new Error(`audio.upload put failed: ${cloudPath}`);
   },
 };
 

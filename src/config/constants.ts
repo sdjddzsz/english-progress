@@ -107,6 +107,11 @@ export const DEFAULT_TTS_STATUS: TTSConfigStatus = 'pending_user_setup';
 export const TTS_REQUEST_TIMEOUT_MS = 3000;
 /** 音频缓存 LRU 预算（T05 实现，此处仅定常量） */
 export const AUDIO_CACHE_BUDGET_BYTES = 50 * 1024 * 1024;
+/**
+ * TTS 音频 CacheStorage 名（orchestrator 缓存实现与离线补传 audio.upload 共用——
+ * 补传按 cacheKey 从这个缓存取字节，改名=两处必须同改，见 docs/联动清单.md）
+ */
+export const TTS_CACHE_NAME = 'tts-audio';
 
 // ===== DashScope 主轨（阿里云百炼 CosyVoice；架构增量 v0.1）=====
 

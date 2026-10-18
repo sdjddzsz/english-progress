@@ -428,3 +428,77 @@ describe('wordRepo.updateWordTiers 批量改层（不是逐条 update）', () =>
     expect(await repo.updateWordTiers([{ bookWordId: 'nope', tier: 2 as Tier }])).toBe(0);
   });
 });
+
+/**
+ * resetRoundStreaks —— 新一轮开局轮标线归零（用户 2026-10-18）。
+ * C1（2026-10-18）：旧实现收调用方的行、try/catch 静默吞失败 ⇒ 断网时云端残留旧值。
+ * 现在按 id 读回原行只改两列（同 updateWordTiers 打法），并由 runOrQueue 入队补传；
+ * skipAnsweredSince 防止补传把「入队后又答过题」的词误归零。
+ */
+describe('wordRepo.resetRoundStreaks 轮标线归零（读回原行→只改两列）', () => {
+  function seeded(rows: Record<string, unknown>[]): { rec: RecordingDb } {
+    const db = new MockDb();
+    db.tables.set('book_words', rows);
+    return { rec: new RecordingDb(db) };
+  }
+
+  const bw = (over: Record<string, unknown>): Record<string, unknown> => ({
+    id: 'bw_0',
+    bookId: 'b1',
+    wordId: 'word_0',
+    listNo: 1,
+    orderInList: 1,
+    tier: 2,
+    streak: 5,
+    failStreak: 1,
+    specialTraining: false,
+    status: 'normal',
+    quizDayStreak: 0,
+    quizDayPassed: false,
+    stage: 1,
+    stageStreak: 2,
+    ...over,
+  });
+
+  it('只归零真有计数/过关标记的行，其它列以云端现值为基底不动', async () => {
+    const { rec } = seeded([
+      bw({ id: 'bw_0', quizDayStreak: 2, quizDayPassed: false, tier: 2, streak: 5, stageStreak: 2 }),
+      bw({ id: 'bw_1', quizDayStreak: 0, quizDayPassed: false }),
+      bw({ id: 'bw_2', quizDayStreak: 0, quizDayPassed: true }),
+    ]);
+    const repo = createWordRepo(rec);
+    expect(await repo.resetRoundStreaks(['bw_0', 'bw_1', 'bw_2'])).toBe(2);
+    const rows = await repo.listBookWords('b1');
+    const r0 = rows.find((r) => r.id === 'bw_0')!;
+    expect(r0.quizDayStreak).toBe(0);
+    expect(r0.quizDayPassed).toBe(false);
+    // 读回基底：频率/毕业列不许被开局快照写旧
+    expect(r0.tier).toBe(2);
+    expect(r0.streak).toBe(5);
+    expect(r0.stageStreak).toBe(2);
+    expect(rows.find((r) => r.id === 'bw_1')!.quizDayStreak).toBe(0); // 本就 0，不写
+  });
+
+  it('skipAnsweredSince：入队后又答过题的词不归零（作答写回才是权威）', async () => {
+    const since = '2026-10-18T10:00:00.000Z';
+    const { rec } = seeded([
+      bw({ id: 'bw_0', quizDayStreak: 1, lastQuizAt: '2026-10-18T09:00:00.000Z' }), // 答于入队前 → 归零
+      bw({ id: 'bw_1', quizDayStreak: 1, lastQuizAt: '2026-10-18T10:30:00.000Z' }), // 答于入队后 → 不动
+      bw({ id: 'bw_2', quizDayStreak: 1, lastQuizAt: undefined }), // 从未答过 → 归零
+    ]);
+    const repo = createWordRepo(rec);
+    expect(await repo.resetRoundStreaks(['bw_0', 'bw_1', 'bw_2'], { skipAnsweredSince: since })).toBe(2);
+    const rows = await repo.listBookWords('b1');
+    expect(rows.find((r) => r.id === 'bw_0')!.quizDayStreak).toBe(0);
+    expect(rows.find((r) => r.id === 'bw_1')!.quizDayStreak).toBe(1); // 保留
+    expect(rows.find((r) => r.id === 'bw_2')!.quizDayStreak).toBe(0);
+  });
+
+  it('空入参 / id 不存在：不发请求、返回 0', async () => {
+    const { rec } = seeded([bw({ id: 'bw_0', quizDayStreak: 2 })]);
+    const repo = createWordRepo(rec);
+    expect(await repo.resetRoundStreaks([])).toBe(0);
+    expect(rec.inSizes).toEqual([]);
+    expect(await repo.resetRoundStreaks(['nope'])).toBe(0);
+  });
+});

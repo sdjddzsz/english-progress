@@ -213,7 +213,7 @@ export function isDayPassedToday(
  * 旧实现「答对一次就放行」，档位设置形同虚设。2026-10-17 增补首答规则）。
  *
  * 规则（阶段一~四一致）：
- *  - **本轮第一次作答就达到当前挡位线（首见即达标）⇒ 一遍过，立即放行**
+ *  - **本轮第一次作答就达到当前挡位线（首答即达标）⇒ 一遍过，立即放行**
  *    （用户 2026-10-18 定案：首过看的是「当前设置的挡位」——设首熟就要熟练，
  *     设首认识认识就行；旧实现硬编码「熟练」，档位设置对首过形同虚设）；
  *  - 其余词：连续 QUIZ_DAY_PASS_COUNT 次达到档位线 ⇒ 放行（本轮不再出现）；
@@ -233,7 +233,7 @@ export function roundRelease(args: {
   const now = args.now ?? new Date();
   const carried = isSameUtcDay(args.lastQuizAt, now) ? args.prevStreak : 0;
   const dayStreak = quizDayStreakAfter(carried, args.verdict, args.threshold);
-  // 首见即达标：本轮第一次作答（attemptNo===1）就达到当前挡位线 ⇒ 一遍过
+  // 首答即达标：本轮第一次作答（attemptNo===1）就达到当前挡位线 ⇒ 一遍过
   const firstTryOk = args.attemptNo === 1 && dayVerdictOk(args.verdict, args.threshold);
   return {
     dayStreak,

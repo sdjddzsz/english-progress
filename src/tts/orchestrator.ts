@@ -11,6 +11,8 @@ import type { PhonemeSource, TTSProvider, TTSRequest, TTSResult } from './types'
 import type { RemoteAudioStore } from '../data/cloudAudioStore';
 import { cloudAudioPath, cloudAudioStore } from '../data/cloudAudioStore';
 import { isCloudConfigured } from '../data/cloud';
+import { TTS_CACHE_NAME } from '../config/constants';
+import { enqueueOp } from '../data/queue';
 
 export interface AudioCache {
   get(key: string): Promise<{ audio: ArrayBuffer; engine: TTSEngine } | null>;
@@ -20,7 +22,7 @@ export interface AudioCache {
 }
 
 /** Cache Storage 实现（浏览器）；engine 存于 Response header，音频反序列化即可播 */
-export function cacheStorageCache(cacheName = 'tts-audio'): AudioCache {
+export function cacheStorageCache(cacheName: string = TTS_CACHE_NAME): AudioCache {
   return {
     async get(key) {
       const c = await caches.open(cacheName);
@@ -100,6 +102,38 @@ export function consumeFallbackNotice(): boolean {
 
 export function resetFallbackNotice(): void {
   fallbackNoticePending = false;
+}
+
+/**
+ * 合成成功后的云端回传（用户 2026-10-14：云音频库缺词 → 现场合成 → 回传，免下次再合成）。
+ *
+ * C2（用户 2026-10-18 点名修）：旧实现 `void remote?.put(...)` 即发即忘——
+ * 而 cloudAudioStore().put **失败不抛异常、只返回 false**（RLS 拒绝/断网都静默），
+ * 等于成功失败都无人知晓，换设备永远拿不到这份音频。
+ * 现在：await 结果，失败入 pending_ops（audio.upload），由 useOfflineSync
+ * （联网事件 / 30s 对账）按 cacheKey 从 CacheStorage 取字节重传；
+ * 缓存被 LRU 淘汰则重放时出队（音频不可恢复，下次现场合成会重新入队）。
+ */
+async function uploadCloudAudio(
+  remote: RemoteAudioStore | null,
+  cloudPath: string,
+  key: string,
+  audio: ArrayBuffer,
+): Promise<void> {
+  if (!remote) return;
+  let ok = false;
+  try {
+    ok = await remote.put(cloudPath, audio, sniffAudioMime(audio));
+  } catch (err) {
+    console.warn('[tts] 云端音频回传异常:', cloudPath, err instanceof Error ? err.message : String(err));
+  }
+  if (ok) return;
+  console.warn('[tts] 云端音频回传失败，已入补传队列:', cloudPath);
+  try {
+    await enqueueOp('audio.upload', { cloudPath, cacheKey: key });
+  } catch {
+    // IndexedDB 不可用（隐私模式等）：队列都进不去，放弃本次回传（音频仍在本地缓存）
+  }
 }
 
 export interface PronunciationLogEntry {
@@ -200,8 +234,9 @@ export function createOrchestrator(deps: OrchestratorDeps) {
           // 云音频库缺词 → 合成成功即回传云端（后台，失败不阻断），
           // 下次同一音色遇到这个词直接读文件，不再付合成。
           // ★ 只传主轨音频：espeak 兜底音频不上传，否则机械音污染音色库。
+          // ★ C2（2026-10-18）：失败入 pending_ops 补传，不再即发即忘（见 uploadCloudAudio）
           if (cloudPath && r.engine === 'neural_tts') {
-            void remote?.put(cloudPath, r.audio, sniffAudioMime(r.audio));
+            void uploadCloudAudio(remote, cloudPath, key, r.audio);
           }
           await deps.log({
             engine: 'neural_tts',

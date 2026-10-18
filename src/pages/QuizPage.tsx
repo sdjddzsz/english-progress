@@ -62,7 +62,7 @@ interface QuizItem {
   bookWord: BookWord;
   word: Word;
   senseIndex: number;
-  /** 本轮内第几次作答该词（1=第一次；用户 2026-10-17：首答即熟练 → 一遍过） */
+  /** 本轮内第几次作答该词（1=第一次；用户 2026-10-17：首答即达标 → 一遍过，达标线=设置页「每轮过关挡位」） */
   attemptNo: number;
   /** 本次作答后该词是否已放行（一遍过/连续达标/晋级）——进度显示用 */
   released?: boolean;
@@ -192,14 +192,18 @@ export default function QuizPage() {
       }
       const batch = stagePool.slice(0, quizDailyLimit);
       // 新一轮开局：轮标线归零（用户 2026-10-18「进入新一轮的单词得从零开始计数」）。
-      // 本地先换成 0（题旁立刻显示 0/3），再落库；落库失败不阻断开局——
-      // 本轮判定以本地值为准，下次成功写回会带上正确值。
+      // 本地先换成 0（题旁立刻显示 0/3）；落库走离线队列——断网/云端缺列时入
+      // pending_ops 补传（C1：旧实现 try/catch 静默吞，云端残留旧值、跨设备语义不一致；
+      // 补传带 skipAnsweredSince，入队后又答过的词以作答写回为权威，不被归零误伤）。
+      const resetOutcome = await runOrQueue(
+        'bookWord.roundReset',
+        { ids: batch.map((bw) => bw.id), since: new Date().toISOString() },
+        async () => {
+          await repos.word.resetRoundStreaks(batch.map((bw) => bw.id));
+        },
+      );
+      if (resetOutcome === 'queued') setSyncHint('本轮过关计数归零已存本机，联网后自动同步');
       const roundBatch = batch.map(enteringRound);
-      try {
-        await repos.word.resetRoundStreaks(roundBatch);
-      } catch {
-        // 归零落库失败（断网/云端缺列）不阻断考查
-      }
       const words = await repos.word.listWordsByIds(roundBatch.map((bw) => bw.wordId));
       const wordById = new Map(words.map((w) => [w.id, w]));
       const quizItems: QuizItem[] = roundBatch

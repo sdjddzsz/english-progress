@@ -4,11 +4,13 @@
  * - IPA→Azure 映射；
  * - 编排器回退链（主轨失败→兜底）、缓存命中不重复合成、PronunciationLog 落库、轻提示一次。
  */
+import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mapIpaToAzure, splitSyllables, stripIpaSlashes, ipaToWordTokens } from '../../src/tts/ipaMap';
 import { buildSsml, escapeXml } from '../../src/tts/ssml';
 import { cacheKey, consumeFallbackNotice, createOrchestrator, inMemoryAudioCache, resetFallbackNotice } from '../../src/tts/orchestrator';
 import { cloudAudioPath, inMemoryAudioStore } from '../../src/data/cloudAudioStore';
+import { localDb, type PendingOp } from '../../src/data/localDb';
 import type { OrchestratorDeps, PronunciationLogEntry } from '../../src/tts/orchestrator';
 import type { TTSProviderConfig } from '../../src/types/domain';
 
@@ -221,5 +223,42 @@ describe('编排器：缓存 → 主轨 → 兜底 → 日志 → 轻提示一�
     expect(providers.calls.neural).toBe(2);
     // 旧文件被新音频 upsert 覆盖（put 两次 = 首次 + 重录回传）
     expect(remote.puts.filter((p) => p === cloudPath).length).toBe(2);
+  });
+
+  it('C2：云端回传失败（put 返回 false）→ 入 pending_ops 补传，不丢上传', async () => {
+    await localDb.pendingOps.clear();
+    const remote = inMemoryAudioStore();
+    // 真实 cloudAudioStore().put 的失败语义：不抛异常、只返回 false（RLS 拒绝/断网）
+    remote.put = async () => false;
+    const deps = { ...makeDeps(cfg(), 'key-123'), remote, getUserId: () => 'u1' };
+    const orch = createOrchestrator(deps);
+
+    const r = await orch.getAudio(req, 'w1');
+    expect(r.engine).toBe('neural_tts'); // 回传失败不阻断发音
+    expect(remote.store.size).toBe(0); // 没上传成功
+    expect(await cache.get(cacheKey(req))).not.toBeNull(); // 本地缓存照常
+
+    // 上传在后台异步收尾后入队（轮询至多 500ms，避免固定 sleep 拍时间）
+    const cloudPath = await cloudAudioPath(req, 'u1', undefined, undefined);
+    let ops: PendingOp[] = [];
+    for (let i = 0; i < 50 && ops.length === 0; i += 1) {
+      await new Promise((res) => setTimeout(res, 10));
+      ops = await localDb.pendingOps.toArray();
+    }
+    expect(ops.length).toBe(1);
+    expect(ops[0].name).toBe('audio.upload');
+    expect(ops[0].payload['cloudPath']).toBe(cloudPath);
+    expect(ops[0].payload['cacheKey']).toBe(cacheKey(req, undefined, undefined));
+  });
+
+  it('C2：回传成功则不入队（不制造无谓补传）', async () => {
+    await localDb.pendingOps.clear();
+    const remote = inMemoryAudioStore();
+    const deps = { ...makeDeps(cfg(), 'key-123'), remote, getUserId: () => 'u1' };
+    const orch = createOrchestrator(deps);
+    await orch.getAudio(req, 'w1');
+    await new Promise((res) => setTimeout(res, 30));
+    expect(await localDb.pendingOps.count()).toBe(0);
+    expect(remote.store.size).toBe(1);
   });
 });

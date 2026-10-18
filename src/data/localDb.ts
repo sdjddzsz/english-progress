@@ -18,7 +18,13 @@ export type PendingOpName =
   | 'confusion.upsert'
   | 'issue.create'
   | 'pronunciation.log'
-  | 'bookWord.quiz';
+  | 'bookWord.quiz'
+  // 新一轮开局轮标线归零（2026-10-18 C1：旧实现 try/catch 静默吞，云端残留旧值；
+  // 入队补传，重放带 skipAnsweredSince 防误伤入队后又答过的词）
+  | 'bookWord.roundReset'
+  // 云端音频库回传（2026-10-18 C2：旧实现 void 即发即忘；入队补传，
+  // 重放时按 cacheKey 从 CacheStorage 取字节上传）
+  | 'audio.upload';
 
 export interface PendingOp {
   /** 幂等键（uuid）；重复补传同 op 无副作用 */

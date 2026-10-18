@@ -118,3 +118,64 @@ describe('离线补传（断网 10 hit 端到端）', () => {
     expect(remaining[0].retries).toBe(1);
   });
 });
+
+/**
+ * C1/C2（用户 2026-10-18）：轮标线归零与云端音频回传都改走离线队列——
+ * 旧实现分别是 try/catch 静默吞 与 void 即发即忘，失败即永久丢失。
+ */
+describe('离线补传：bookWord.roundReset / audio.upload（2026-10-18 C1/C2）', () => {
+  let repos: Repos;
+  let mockDb: MockDb;
+
+  beforeEach(async () => {
+    vi.stubGlobal('navigator', { onLine: true });
+    mockDb = new MockDb();
+    repos = createToolContext(mockDb).repos as unknown as Repos;
+    await localDb.pendingOps.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function seedBookWords(rows: Record<string, unknown>[]): void {
+    mockDb.tables.set('book_words', rows);
+  }
+
+  it('bookWord.roundReset：补传归零轮标线；skipAnsweredSince 之后的词不误伤', async () => {
+    seedBookWords([
+      { id: 'bw_0', bookId: 'b1', wordId: 'w0', listNo: 1, orderInList: 1, tier: 2, status: 'normal', quizDayStreak: 2, quizDayPassed: true, lastQuizAt: '2026-10-18T09:00:00.000Z' },
+      { id: 'bw_1', bookId: 'b1', wordId: 'w1', listNo: 1, orderInList: 2, tier: 3, status: 'normal', quizDayStreak: 1, quizDayPassed: false, lastQuizAt: '2026-10-18T10:30:00.000Z' },
+    ]);
+    await enqueueOp('bookWord.roundReset', { ids: ['bw_0', 'bw_1'], since: '2026-10-18T10:00:00.000Z' });
+
+    const r = await replayPendingOps(repos);
+    expect(r.done).toBe(1);
+    expect(r.failed).toBe(0);
+    expect(await localDb.pendingOps.count()).toBe(0);
+
+    const rows = await repos.word.listBookWords('b1');
+    expect(rows.find((x) => x.id === 'bw_0')!.quizDayStreak).toBe(0);
+    expect(rows.find((x) => x.id === 'bw_0')!.quizDayPassed).toBe(false);
+    expect(rows.find((x) => x.id === 'bw_1')!.quizDayStreak).toBe(1); // 入队后又答过 → 不归零
+  });
+
+  it('audio.upload：无 CacheStorage（node 环境）→ 取不到字节直接出队，不卡队列', async () => {
+    await enqueueOp('audio.upload', { cloudPath: 'shared/u1/tts-audio/longhuhu/abc.mp3', cacheKey: 'v2|k' });
+    const r = await replayPendingOps(repos);
+    expect(r.done).toBe(1);
+    expect(r.failed).toBe(0);
+    expect(await localDb.pendingOps.count()).toBe(0);
+  });
+
+  it('audio.upload：payload 缺字段 → 抛错留队列重试（不当毒丸静默丢弃）', async () => {
+    await enqueueOp('audio.upload', { cloudPath: 'shared/u1/tts-audio/x.mp3' }); // 缺 cacheKey
+    const r = await replayPendingOps(repos);
+    expect(r.done).toBe(0);
+    expect(r.failed).toBe(1);
+    const remaining = (await localDb.pendingOps.toArray()) as PendingOp[];
+    expect(remaining.length).toBe(1);
+    expect(remaining[0].retries).toBe(1);
+    expect(remaining[0].lastError).toContain('cacheKey');
+  });
+});
