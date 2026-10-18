@@ -27,7 +27,7 @@ import { getRepos, useAppStore } from '../store/useAppStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useTTS } from '../hooks/useTTS';
 import { useSfx } from '../hooks/useSfx';
-import { displaySenses, normalizeSenses } from '../features/senses';
+import { clampSenseIndex, displaySenses, normalizeSenses } from '../features/senses';
 import {
   judgeAnswer,
   QUIZ_DAY_PASS_COUNT,
@@ -594,7 +594,13 @@ export default function StageQuizPage() {
         senseIndex={senseEditIdx}
         onClose={() => setSenseEditIdx(null)}
         onSaved={(w) =>
-          setItems((prev) => prev.map((it) => (it.word.id === w.id ? { ...it, word: w } : it)))
+          setItems((prev) =>
+            prev.map((it) =>
+              it.word.id === w.id
+                ? { ...it, word: w, senseIndex: clampSenseIndex(w, it.senseIndex) }
+                : it,
+            ),
+          )
         }
       />
     </Box>

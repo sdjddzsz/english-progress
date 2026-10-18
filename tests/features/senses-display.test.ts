@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Word, WordSense } from '../../src/types/domain';
-import { applySenseDelete, applySenseEdit, displaySenses, isDomainTag, normalizeSenses } from '../../src/features/senses';
+import { applySenseDelete, applySenseEdit, clampSenseIndex, displaySenses, isDomainTag, normalizeSenses } from '../../src/features/senses';
 
 function word(overrides: Partial<Word>, senses: Partial<WordSense>[]): Word {
   const base: Word = {
@@ -145,5 +145,28 @@ describe('义项长按编辑/删除（用户 2026-10-18）', () => {
     const next = applySenseEdit(word, 0, { zh: '记载' });
     expect(next).not.toBe(word);
     expect(word.sensesDetail?.[0].zh).toBe('记录');
+  });
+});
+
+describe('clampSenseIndex：删义项后题目锚点收敛（用户 2026-10-18）', () => {
+  const word: Word = {
+    id: 'w1', lemma: 'record', ipa: '', arpabet: '', pos: '', frequency: 0, tags: [], senses: [],
+    sensesDetail: [
+      { senseId: 'record#0', lemma: 'record', pos: 'n.', zh: '记录', pronunciationKey: 'k', arpabet: '', ipa: '' },
+      { senseId: 'record#1', lemma: 'record', pos: 'v.', zh: '录制', pronunciationKey: 'k', arpabet: '', ipa: '' },
+    ],
+    examples: [],
+  };
+  it('删掉正在考的那个义项 ⇒ 收敛到还剩的最后一个（题卡不消失）', () => {
+    const after = applySenseDelete(word, 1)!; // 删「录制」，原锚点 1 越界
+    expect(clampSenseIndex(after, 1)).toBe(0);
+  });
+  it('删掉当前义项前面的 ⇒ 目标前移对齐', () => {
+    const after = applySenseDelete(word, 0)!; // 删「记录」，原锚点 1（录制）应变 0
+    expect(clampSenseIndex(after, 1)).toBe(0);
+  });
+  it('没删当前词 / 编辑不改数量 ⇒ 锚点原样', () => {
+    expect(clampSenseIndex(word, 1)).toBe(1);
+    expect(clampSenseIndex(applySenseEdit(word, 0, { zh: '记载' }), 1)).toBe(1);
   });
 });

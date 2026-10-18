@@ -175,3 +175,15 @@ export function applySenseDelete(word: Word, senseIndex: number): Word | null {
     detail.filter((_, i) => i !== senseIndex),
   );
 }
+
+/**
+ * 删除/编辑义项后，把题目锚定的 senseIndex 收回到有效范围（用户 2026-10-18）。
+ * 背景：删掉正在考的那个义项（或它前面的义项）后 senseIndex 越界 ⇒ 主卡片渲染条件
+ * `senseOf` 为空 ⇒ 整块题卡消失，用户以为「题页没了 / 单词被连删」——实际词还在
+ * （AI 框仍带该词上下文可证）。语义：删的正是当前项 ⇒ 顺移到下一个；删的是前面的 ⇒ 目标前移。
+ */
+export function clampSenseIndex(word: Word, senseIndex: number): number {
+  const n = normalizeSenses(word).length;
+  if (n === 0) return 0;
+  return Math.min(Math.max(senseIndex, 0), n - 1);
+}

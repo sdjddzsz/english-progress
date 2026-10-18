@@ -34,7 +34,7 @@ import { useSettingsStore } from '../store/useSettingsStore';
 import { useTTS } from '../hooks/useTTS';
 import { useSfx } from '../hooks/useSfx';
 import { chatTurn, listModels, type LLMModelInfo } from '../ai/llmClient';
-import { displaySenses, normalizeSenses } from '../features/senses';
+import { clampSenseIndex, displaySenses, normalizeSenses } from '../features/senses';
 import type { BookWord, Word } from '../types/domain';
 import {
   judgeAnswer,
@@ -941,7 +941,13 @@ export default function QuizPage() {
         senseIndex={senseEditIdx}
         onClose={() => setSenseEditIdx(null)}
         onSaved={(w) =>
-          setItems((prev) => prev.map((it) => (it.word.id === w.id ? { ...it, word: w } : it)))
+          setItems((prev) =>
+            prev.map((it) =>
+              it.word.id === w.id
+                ? { ...it, word: w, senseIndex: clampSenseIndex(w, it.senseIndex) }
+                : it,
+            ),
+          )
         }
       />
     </Box>
