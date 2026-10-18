@@ -88,8 +88,14 @@ export class LruAudioCache implements AudioCache {
     return evicted;
   }
 
-  /** 内存元数据与内层（如 Cache Storage）可能失步：以 inner 删除为准的显式清除 */
+  /**
+   * 显式清除（regenerate 重新合成依赖它）：**内层与元数据都必须删**。
+   * ⚠ 2026-10-18 修复：旧实现只 `this.meta.delete(key)`，CacheStorage 里的旧音频还在，
+   *   紧接着 getAudio 第一步就命中旧缓存 ⇒ 重新合成永远播旧音、根本不合成
+   *   （用户实测「试了好多次一点没变」，pronunciation_logs 无重复合成记录佐证）。
+   */
   async remove(key: string): Promise<void> {
+    await this.inner.remove(key);
     this.meta.delete(key);
   }
 }

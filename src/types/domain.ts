@@ -357,6 +357,8 @@ export interface PronunciationLog {
   phonemeSource?: 'cmu' | 'ipa' | 'text';
   /** 2026-10-14：云音频库本次缺词（该音色此前没录过）→ 现场合成；合成成功会回传云端 */
   cloudMiss?: boolean;
+  /** 2026-10-18：本次为用户主动「重新合成」（regenerate），区别于正常出题合成 */
+  regenerate?: boolean;
   createdAt: string;
 }
 

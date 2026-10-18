@@ -78,6 +78,7 @@ function getOrchestrator(): TTSOrchestrator {
           ...(entry.chars != null ? { chars: entry.chars } : {}),
           ...(entry.phonemeSource ? { phonemeSource: entry.phonemeSource } : {}),
           ...(entry.cloudMiss ? { cloudMiss: true } : {}),
+          ...(entry.regenerate ? { regenerate: true } : {}),
         });
       } catch {
         // 日志失败不阻断学习

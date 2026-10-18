@@ -41,7 +41,7 @@ export function cacheStorageCache(cacheName = 'tts-audio'): AudioCache {
 }
 
 /** 内存实现（测试 / SSR） */
-export function inMemoryAudioCache(): AudioCache {
+export function inMemoryAudioCache(): AudioCache & { remove(key: string): Promise<void> } {
   const map = new Map<string, { audio: ArrayBuffer; engine: TTSEngine }>();
   return {
     async get(key) {
@@ -114,6 +114,8 @@ export interface PronunciationLogEntry {
   phonemeSource?: PhonemeSource;
   /** 2026-10-14：云音频库缺词、本次为现场合成（合成成功后会回传云端） */
   cloudMiss?: boolean;
+  /** 2026-10-18：用户主动「重新合成」的留痕 */
+  regenerate?: boolean;
 }
 
 /**
@@ -154,7 +156,7 @@ export function createOrchestrator(deps: OrchestratorDeps) {
     async getAudio(
       req: TTSRequest,
       wordId?: string,
-      opts?: { skipCloudRead?: boolean },
+      opts?: { skipCloudRead?: boolean; regenerate?: boolean },
     ): Promise<TTSResult> {
       // 先读配置：缓存 key 必须含 voice/model（v2），否则换音色不换 key、命中旧音频。
       // 多一次云端读仍在 <800ms 体验路径内，且只有未命中时才付这个代价。
@@ -206,6 +208,8 @@ export function createOrchestrator(deps: OrchestratorDeps) {
             success: true,
             fallbackUsed: false,
             wordId,
+            // 用户主动重新合成的留痕（regenerate 专属，便于事后核对是否真的重录了）
+            ...(opts?.regenerate ? { regenerate: true } : {}),
             // 本次是「云音频库缺词 → 现场合成」：留痕以便统计待补词量。
             // 没启用云音频库时**不写这个键**（保持旧日志形态，零回退）
             ...(cloudPath ? { cloudMiss: true } : {}),
@@ -260,8 +264,8 @@ export function createOrchestrator(deps: OrchestratorDeps) {
         await remote.remove(p);
       }
       // skipCloudRead：就算云删因网络抖动失败、旧文件还在，也绝不取回旧音频——
-      // 重新合成后 upsert（覆盖写）把云端换掉
-      return this.getAudio(req, wordId, { skipCloudRead: true });
+      // 重新合成后 upsert（覆盖写）把云端换掉；regenerate 标记进日志便于核对
+      return this.getAudio(req, wordId, { skipCloudRead: true, regenerate: true });
     },
   };
 }

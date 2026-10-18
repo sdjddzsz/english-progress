@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { LruAudioCache, pruneCacheStorage, recordingMemoryCache } from '../../src/offline/audioCacheManager';
+import { inMemoryAudioCache } from '../../src/tts/orchestrator';
 import { AUDIO_CACHE_BUDGET_BYTES } from '../../src/config/constants';
 
 function buf(bytes: number): ArrayBuffer {
@@ -58,6 +59,15 @@ describe('音频缓存 LRU', () => {
     expect(inner.keys()).toContain('a');
     expect(inner.keys()).not.toContain('b');
     expect(inner.keys()).toContain('c');
+  });
+
+  it('remove 后内层缓存也真的没了（regenerate 依赖它；2026-10-18 修复假删 bug）', async () => {
+    const inner = inMemoryAudioCache();
+    const cache = new LruAudioCache(inner, { budgetBytes: 10_000 });
+    await cache.put('k1', new ArrayBuffer(16), 'neural_tts');
+    await cache.remove('k1');
+    expect(await cache.get('k1')).toBeNull();
+    expect(await inner.get('k1')).toBeNull(); // 内层（CacheStorage）也必须没了
   });
 
   it('pruneCacheStorage：无 caches 环境（Node 测试）安全返回 0', async () => {
