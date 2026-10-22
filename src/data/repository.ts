@@ -102,6 +102,12 @@ export type Filter = CompareFilter | InFilter;
 
 export interface ListOptions {
   orderBy?: string;
+  /**
+   * 多列排序（按数组顺序依次 order()，PostgREST 语义为 `order=a.desc,b.asc`）。
+   * 与 orderBy 同时给时 orders 先生效、orderBy 追加在后（调用方二选一即可）。
+   * 用途：分页排序键必须唯一 ⇒ 展示序（如 tier.desc）+ 稳定键（id.asc）组合。
+   */
+  orders?: { column: string; ascending?: boolean }[];
   ascending?: boolean;
   limit?: number;
   offset?: number;
@@ -150,6 +156,7 @@ export class Repository<T extends { id: string }> {
   async list(filters: Filter[] = [], opts: ListOptions = {}): Promise<T[]> {
     let q = this.db.from(this.table).select('*');
     q = this.applyFilters(q, filters);
+    for (const o of opts.orders ?? []) q = q.order(o.column, { ascending: o.ascending ?? true });
     if (opts.orderBy) q = q.order(opts.orderBy, { ascending: opts.ascending ?? true });
     if (opts.offset != null || opts.limit != null) {
       const from = opts.offset ?? 0;

@@ -56,10 +56,13 @@ import { runOrQueue } from '../data/queue';
 import { describeWriteError } from '../data/errorText';
 import { useLongPress } from '../hooks/useLongPress';
 import WordNoteButton from '../components/notes/WordNoteButton';
-import LongPressSenseRow from '../components/word/LongPressSenseRow';
+import SenseListSection from '../components/word/SenseListSection';
+import WordExamplesSection from '../components/word/WordExamplesSection';
+import QuizTimerBadge from '../components/word/QuizTimerBadge';
 import SenseEditDialog from '../components/word/SenseEditDialog';
 import VoiceOverrideDialog from '../components/tts/VoiceOverrideDialog';
 import { voiceLabelOf } from '../tts/voiceOptions';
+import { useWordExamples } from '../hooks/useWordExamples';
 
 interface QuizItem {
   bookWord: BookWord;
@@ -77,6 +80,8 @@ interface QuizItem {
   verdict?: QuizVerdict;
   pickedKey?: string;
   askedAt?: number;
+  /** 答题那一刻的用时毫秒（用户 2026-10-19：答题后计时定格显示） */
+  elapsedMs?: number;
 }
 
 type Phase = 'loading' | 'quiz' | 'between' | 'done';
@@ -95,6 +100,10 @@ export default function QuizPage() {
   const [syncHint, setSyncHint] = useState('');
   // 长按释义编辑（用户 2026-10-18）：当前在编辑第几个义项
   const [senseEditIdx, setSenseEditIdx] = useState<number | null>(null);
+  // 「+ 增加词义」新增弹窗（用户 2026-10-19）：与编辑走同一个 SenseEditDialog（mode="add"）
+  const [senseAddOpen, setSenseAddOpen] = useState(false);
+  // 考查计时（用户 2026-10-19）：出题即走秒（useAnswerTimer），答题即定格
+  const [quizStartedAt, setQuizStartedAt] = useState(0);
   // 长按「重新合成」→ 模型/音色临换面板（用户 2026-10-18）
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const resynthLongPress = useLongPress(() => setVoicePickerOpen(true));
@@ -163,6 +172,7 @@ export default function QuizPage() {
             ...(s.verdict ? { verdict: s.verdict } : {}),
             ...(s.pickedKey ? { pickedKey: s.pickedKey } : {}),
             ...(s.askedAt ? { askedAt: s.askedAt } : {}),
+            ...(s.elapsedMs !== undefined ? { elapsedMs: s.elapsedMs } : {}),
           });
         }
         if (restored.length > 0) {
@@ -280,6 +290,23 @@ export default function QuizPage() {
 
   const current = items[idx] ?? null;
 
+  // 当前词的用户例句（用户 2026-10-22）：加载 / AI 生成 / 删除
+  const examplesApi = useWordExamples(current?.bookWord.wordId ?? null, current?.word.lemma ?? '');
+
+  /** 菜单「生成例句」：为第 senseIndex 个义项生成一条（追加，不覆盖） */
+  const handleGenerateExample = async (senseIndex: number): Promise<void> => {
+    if (!current) return;
+    const sense = displaySenses(current.word)[senseIndex];
+    if (!sense) return;
+    await examplesApi.generate(sense);
+  };
+
+  /** 例句朗读：走 TTS 主轨（AI 发音），与单词同一编排链 */
+  const speakExample = (en: string): void => {
+    if (!current) return;
+    void speak({ text: en, mode: 'sentence' }, current.bookWord.wordId);
+  };
+
   /** 出题：构建四选项 + 重置计时；已答过的题按原样恢复（供「上一题」回顾） */
   useEffect(() => {
     if (phase !== 'quiz' || !current) return;
@@ -291,6 +318,8 @@ export default function QuizPage() {
       setVerdict(current.verdict ?? null);
       setPickedKey(current.pickedKey ?? '');
       showAtRef.current = current.askedAt ?? 0;
+      // 已答 ⇒ 计时徽标定格显示当时的用时（elapsedMs），不重新走秒
+      setQuizStartedAt(current.askedAt ?? 0);
       return;
     }
     const built = buildQuestion(current, poolRef.current);
@@ -307,6 +336,8 @@ export default function QuizPage() {
     setPickedKey('');
     setSyncHint('');
     showAtRef.current = askedAt;
+    // 新题 ⇒ 计时从出题这一刻重新走秒
+    setQuizStartedAt(askedAt);
     // 自动发音（用户 2026-10-14，遵循设置页「自动发音」开关）：出题即朗读。
     // 用户 2026-10-15：发音必须按义项音标（espeak 按 arpabet 音素合成、主轨按音素注入），
     // 只传 text 会变成按词形拼读——archives 这类词就读错。
@@ -367,10 +398,13 @@ export default function QuizPage() {
       stage: sp.stage,
       stageStreak: sp.stageStreak,
     };
-    // 作答结果先写入本题缓存（「上一题」回顾的原样恢复依赖它）；released 供进度显示
+    // 作答结果先写入本题缓存（「上一题」回顾的原样恢复依赖它）；released 供进度显示；
+    // elapsedMs 定格本题用时（用户 2026-10-19：答题后计时停在几秒就显示几秒）
     setItems((its) =>
       its.map((it, i) =>
-        i === idx ? { ...it, bookWord: nextBw, verdict: v, pickedKey: key, released: release, promoted: graduated } : it,
+        i === idx
+          ? { ...it, bookWord: nextBw, verdict: v, pickedKey: key, elapsedMs: elapsed, released: release, promoted: graduated }
+          : it,
       ),
     );
     // 未放行的词排到队尾重来，直到达到「每轮过关挡位」才放行；
@@ -556,12 +590,7 @@ export default function QuizPage() {
     <Box p={2} pb={4} maxWidth={720} mx="auto">
       <Typography variant="h5">{STAGE_META[1].name}</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-        看单词选词义：3 秒内选对=熟练，3-5 秒=认识，5-7 秒=不熟，超时或选错=生词。
-        【轮标线】（放行线，档位取设置页「每轮过关挡位」=首见{thresholdLineLabel(quizDayThreshold)}）：
-        本轮第一次作答就达到挡位的词一遍过；没达到的即使答对也排到队尾重来（重刷不算首过），
-        连续达标 {QUIZ_DAY_PASS_COUNT} 次才放行（晋级立即放行）。
-        【毕业线】（晋级线，取设置页「阶段毕业条件」=首见{STAGE_GRADUATE_LABEL}，次数可配、判定固定）：
-        每轮第一次作答就是「{STAGE_GRADUATE_LABEL}」算一次首过，连续 {graduateStreak} 轮首过晋级阶段二；不限每天一轮，完成一轮可立即再来一轮。
+        判定：3秒内=熟练 · 3-5秒=认识 · 5-7秒=不熟 · 超时/错=生词。放行/晋级线取设置页配置；不限每天一轮。
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError('')}>
@@ -579,17 +608,47 @@ export default function QuizPage() {
       )}
 
       {phase === 'quiz' && current && senseOf && (
-        <Paper sx={{ mt: 3, p: 3 }}>
+        <Paper sx={{ mt: 3, p: 2 }}>
           <LinearProgress
             variant="determinate"
             value={(idx / Math.max(1, items.length)) * 100}
-            sx={{ mb: 3 }}
+            sx={{ mb: 1 }}
           />
-          {/* 单词一行、音标/喇叭/词性一行（用户 2026-10-15：窄屏挤成一团，长内容必须自动换行） */}
+          {/* 上一题/下一题（用户 2026-10-22：移到题卡上方——一屏能多显示内容；
+              原位置（释义下方）改放「例句」区块） */}
+          <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" sx={{ mb: 1 }}>
+            {/* 上一题（用户 2026-10-15：点错时回看上一词——恢复原选项与判定，不重摇不重判） */}
+            <Button
+              variant="outlined"
+              size="small"
+              disabled={idx === 0}
+              onClick={() => setIdx((i) => Math.max(0, i - 1))}
+            >
+              上一题
+            </Button>
+            {/* 手动下一题（quizAutoNext 关时显示，默认关——答完可看清对错与正确答案再走） */}
+            {!quizAutoNext && (
+              <Button
+                variant="contained"
+                size="small"
+                onClick={() => {
+                  if (idx + 1 >= items.length) setPhase('done');
+                  else setIdx((i) => i + 1);
+                }}
+              >
+                {idx + 1 >= items.length ? '看总结' : '下一题'}
+              </Button>
+            )}
+          </Stack>
+          {/* 单词+计时一行，音标/喇叭/词性一行（2026-10-20：计时贴单词旁；窄屏自动换行） */}
           <Stack spacing={0.5} alignItems="center" sx={{ width: '100%' }}>
-            <Typography variant="h4" sx={{ overflowWrap: 'anywhere', textAlign: 'center', maxWidth: '100%' }}>
-              {current.word.lemma}
-            </Typography>
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" flexWrap="wrap" useFlexGap sx={{ maxWidth: '100%' }}>
+              <Typography variant="h4" sx={{ overflowWrap: 'anywhere', textAlign: 'center', maxWidth: '100%' }}>
+                {current.word.lemma}
+              </Typography>
+              {/* 考查计时（2026-10-20：贴单词旁，不再跟在音标后；出题即走秒，答题即停） */}
+              <QuizTimerBadge startedAt={quizStartedAt} running={verdict === null} frozenMs={current?.elapsedMs ?? null} />
+            </Stack>
             <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" flexWrap="wrap" useFlexGap sx={{ maxWidth: '100%' }}>
               {/* 音标允许任意断行（音标是一整个无空格 token，必须 anywhere 才能换） */}
               {senseOf.ipa && (
@@ -668,12 +727,8 @@ export default function QuizPage() {
                   onClick={() => setVoicePickerOpen(true)}
                 />
               )}
-              {/* 读取中/合成中只放 Tooltip 等于看不见（自动朗读时无人悬停），明面显示 */}
-              {loading && (
-                <Typography variant="caption" color="text.secondary">
-                  {phaseLabel}
-                </Typography>
-              )}
+              {/* 读取中/合成中不再显示明面文字（2026-10-20：加载完成瞬间文字消失会导致
+                  整行回流、选项位移，答完瞬间点击就点错）——喇叭上的转圈+悬停提示足够 */}
               {multiSense && senseOf.pos && (
                 <Typography variant="body2" color="text.secondary">
                   {senseOf.pos}
@@ -689,10 +744,9 @@ export default function QuizPage() {
             </Stack>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, textAlign: 'center' }}>
-            今日考查 <strong>{stats.total}</strong> 词（按生疏度挑出，特种训练优先）
-            · 答错重排 <strong>{items.length - idx - 1}</strong> 题在后面 · 不限每天一轮
+            今日 {stats.total} 词 · 剩 {items.length - idx - 1} 题
           </Typography>
-          <Stack spacing={1.5} sx={{ mt: 3 }}>
+          <Stack spacing={1} sx={{ mt: 2 }}>
             {options.map((o) => {
               const isPicked = pickedKey === o.key;
               const isCorrect = o.key === correctKey;
@@ -772,75 +826,55 @@ export default function QuizPage() {
               <Stack direction="row" spacing={1} alignItems="center">
                 <Chip label={verdictLabel(verdict)} size="small" sx={verdictChipSx(verdict)} />
               </Stack>
-              {/* 双线进度（用户 2026-10-18 v2：紧凑格式；毕业线任何时候都显示，
-                  轮线达标只改轮线那句、不挤掉毕业线） */}
-              <Stack spacing={0.25} alignItems="center" sx={{ width: '100%' }}>
-                <Typography variant="body2" color="text.secondary">
-                  轮标线：{Math.min(current.bookWord.quizDayStreak ?? 0, QUIZ_DAY_PASS_COUNT)}/{QUIZ_DAY_PASS_COUNT}（{thresholdLineLabel(quizDayThreshold)}）
-                  {current.released
-                    ? current.promoted
-                      ? ' · 已晋级'
-                      : (current.bookWord.quizDayStreak ?? 0) >= QUIZ_DAY_PASS_COUNT
-                        ? ' · 已过关，不再出现'
-                        : ' · 首答即达标一遍过'
-                    : ''}
-                </Typography>
-                <Typography
-                  variant="body2"
-                  sx={{ color: current.promoted ? 'success.main' : 'text.secondary' }}
-                >
-                  毕业线：{current.promoted ? graduateStreak : current.bookWord.stageStreak}/{graduateStreak}（首见{STAGE_GRADUATE_LABEL}）
-                  {current.promoted ? ' · 已晋级，进入下一阶段（打满即毕业，新阶段从 0 起计）' : ''}
-                </Typography>
-              </Stack>
+              {/* 双线进度（2026-10-20：并成一行省屏） */}
+              <Typography
+                variant="body2"
+                sx={{
+                  width: '100%',
+                  textAlign: 'center',
+                  color: current.promoted ? 'success.main' : 'text.secondary',
+                }}
+              >
+                轮线 {Math.min(current.bookWord.quizDayStreak ?? 0, QUIZ_DAY_PASS_COUNT)}/{QUIZ_DAY_PASS_COUNT}（{thresholdLineLabel(quizDayThreshold)}）
+                {current.released
+                  ? current.promoted
+                    ? ' · 已晋级'
+                    : (current.bookWord.quizDayStreak ?? 0) >= QUIZ_DAY_PASS_COUNT
+                      ? ' · 已过关'
+                      : ' · 首答即达标一遍过'
+                  : ''}
+                {' '}· 毕业线 {current.promoted ? graduateStreak : current.bookWord.stageStreak}/{graduateStreak}（首见{STAGE_GRADUATE_LABEL}）
+                {current.promoted ? ' · 已晋级下一阶段' : ''}
+              </Typography>
               {/* 该词全部释义（用户 2026-10-15：多义词每次只抽一个义项考，
-                  出答案时必须完整显示——答对答错都一样，不然永远只看到被考的那个意思） */}
-              <Box sx={{ width: '100%', textAlign: 'left' }}>
-                <Typography variant="caption" color="text.secondary">
-                  {current.word.lemma} 的全部释义（本题考的是第 {current.senseIndex + 1} 个）：
-                </Typography>
-                <Stack spacing={0.25} sx={{ mt: 0.5 }}>
-                  {displaySenses(current.word).map((sd, i) => (
-                    <LongPressSenseRow
-                      key={sd.senseId}
-                      sense={sd}
-                      index={i}
-                      isCurrent={i === current.senseIndex}
-                      onLongPress={setSenseEditIdx}
-                    />
-                  ))}
-                </Stack>
-                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-                  长按任一释义可编辑 / 删除（电脑上直接右键也行；改动直接写回词书）
-                </Typography>
-              </Box>
+                  出答案时必须完整显示——答对答错都一样，不然永远只看到被考的那个意思；
+                  2026-10-18：长按/右键弹菜单（编辑义项/生成例句）；2026-10-19：可当场增加词义；
+                  2026-10-22：菜单加「生成例句」，每次生成追加一条、可删）。
+                  改动一律写回词书（SenseEditDialog → updateWordSenses 整行 upsert） */}
+              <SenseListSection
+                word={current.word}
+                currentSenseIndex={current.senseIndex}
+                onLongPress={setSenseEditIdx}
+                onAdd={() => setSenseAddOpen(true)}
+                onGenerateExample={(i) => void handleGenerateExample(i)}
+                genBusy={examplesApi.genBusy}
+              />
+              {/* 用户例句（用户 2026-10-22：AI 生成 / AI 朗读 / 可删）。
+                  占原上/下一题按钮位置——按钮已移到题卡上方 */}
+              <WordExamplesSection
+                word={current.word}
+                examples={examplesApi.examples}
+                genBusy={examplesApi.genBusy}
+                error={examplesApi.error}
+                speaking={loading}
+                onSpeak={speakExample}
+                onRemove={(id) => void examplesApi.remove(id)}
+              />
               {syncHint && (
                 <Typography variant="caption" color="text.secondary">
                   {syncHint}
                 </Typography>
               )}
-              <Stack direction="row" spacing={1} alignItems="center">
-                {/* 上一题（用户 2026-10-15：点错时回看上一词——恢复原选项与判定，不重摇不重判） */}
-                <Button
-                  variant="outlined"
-                  disabled={idx === 0}
-                  onClick={() => setIdx((i) => Math.max(0, i - 1))}
-                >
-                  上一题
-                </Button>
-                {/* 手动下一题（quizAutoNext 关时显示，默认关——答完可看清对错与正确答案再走） */}
-                {!quizAutoNext && (
-                  <Button
-                    variant="contained"
-                    onClick={() => {
-                      if (idx + 1 >= items.length) setPhase('done');
-                      else setIdx((i) => i + 1);
-                    }}
-                  >
-                    {idx + 1 >= items.length ? '看总结' : '下一题'}
-                  </Button>
-                )}
-              </Stack>
             </Stack>
           )}
           {/* 不会/想不起/不确定（用户 2026-10-14 第 2 次反馈：三个合成一个）：
@@ -862,7 +896,7 @@ export default function QuizPage() {
         <Paper sx={{ mt: 2, p: 2 }}>
           <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
             <Typography variant="body2" color="text.secondary">
-              问 AI（已带上当前单词「{current.word.lemma}」与释义上下文，直接问就行）
+              问 AI（自动带上当前词，直接问就行）
             </Typography>
             <FormControl size="small" sx={{ minWidth: 180 }}>
               <Select
@@ -985,6 +1019,7 @@ export default function QuizPage() {
       <SenseEditDialog
         word={current?.word ?? null}
         senseIndex={senseEditIdx}
+        mode="edit"
         onClose={() => setSenseEditIdx(null)}
         onSaved={(w) =>
           setItems((prev) =>
@@ -993,6 +1028,19 @@ export default function QuizPage() {
                 ? { ...it, word: w, senseIndex: clampSenseIndex(w, it.senseIndex) }
                 : it,
             ),
+          )
+        }
+      />
+      {/* 「+ 增加词义」（用户 2026-10-19）：词书漏义项当场补，保存即写回词书。
+          add 模式 open 由 word 非空推导 ⇒ 没打开时传 null，别让弹窗常驻 */}
+      <SenseEditDialog
+        word={senseAddOpen ? (current?.word ?? null) : null}
+        senseIndex={null}
+        mode="add"
+        onClose={() => setSenseAddOpen(false)}
+        onSaved={(w) =>
+          setItems((prev) =>
+            prev.map((it) => (it.word.id === w.id ? { ...it, word: w } : it)),
           )
         }
       />

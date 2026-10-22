@@ -522,6 +522,29 @@ export interface WordNote {
   updatedAt: string;
 }
 
+/**
+ * 用户例句（用户 2026-10-22：考查页长按任一释义「生成例句」，每次生成追加一条，可删）。
+ * 归属粒度 = senseId（`lemma#序号`）——例句是针对某个义项生成的；
+ * 朗读走 TTS 主轨（AI 发音），与单词发音同一编排链。
+ */
+export interface WordExample {
+  id: string;
+  userId: string;
+  wordId: string;
+  /** 归属义项（与 WordSense.senseId 同构） */
+  senseId: string;
+  /** 生成时的 lemma 快照 */
+  lemma: string;
+  /** 英文例句 */
+  en: string;
+  /** 中文翻译 */
+  zh: string;
+  /** 来源：ai = 模型生成（预留 manual 手工） */
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** AI 方案提案。硬约束 #6：reason 与 changes(diff) 必填，缺则拒绝落地 */
 export interface AIProposal {
   id: string;
@@ -559,7 +582,7 @@ export interface ToolCallLog {
   createdAt: string;
 }
 
-// ===== 集合清单（24 个，云文档数据库 / PostgREST 表）=====
+// ===== 集合清单（25 个，云文档数据库 / PostgREST 表）=====
 
 export const COLLECTIONS = [
   'users',
@@ -585,6 +608,7 @@ export const COLLECTIONS = [
   'mock_unlock_rules',
   'word_bookmarks',
   'word_notes',
+  'word_examples',
   'ai_proposals',
   'plan_versions',
   'tool_call_logs',
@@ -617,6 +641,7 @@ export interface CollectionDocMap {
   mock_unlock_rules: MockUnlockRule;
   word_bookmarks: WordBookmark;
   word_notes: WordNote;
+  word_examples: WordExample;
   ai_proposals: AIProposal;
   plan_versions: PlanVersion;
   tool_call_logs: ToolCallLog;

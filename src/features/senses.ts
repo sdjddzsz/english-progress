@@ -131,8 +131,9 @@ export function displaySenses(word: Word): WordSense[] {
   return out;
 }
 
-// ===== 用户长按编辑/删除义项（用户 2026-10-18：有些词的释义极其刁钻，要能改/删） =====
-// 纯函数：改哪个字段、删第几个、词级字段（senses 扁平串 / pos）怎么同步，都在这一个文件里定死，
+// ===== 用户长按编辑/删除/新增义项（用户 2026-10-18：有些词的释义极其刁钻，要能改/删；
+// 2026-10-19：词书漏义项要能补）=====
+// 纯函数：改哪个字段、删第几个、加一条、词级字段（senses 扁平串 / pos）怎么同步，都在这一个文件里定死，
 // 前端弹窗与测试共用；云端写入走 wordRepo.updateWordSenses（整行 upsert，lemma 冲突即更新）。
 
 /** 词级字段随义项列表同步：扁平 senses=各义项 zh、pos=首义项词性 */
@@ -161,6 +162,34 @@ export function applySenseEdit(
       : s,
   );
   return syncWordSenses(word, detail);
+}
+
+/**
+ * 在末尾新增一个义项（用户 2026-10-19：有些词书漏了义项，要能补）。
+ * 读音继承：新义项的 arpabet/ipa/pronunciationKey 取词级读音（无 sensesDetail 时取
+ * 首个义项的）—— 用户补的释义绝大多数就是该词本音的那个意思，留空会让
+ * normalizeSenses 判定成 NO_PRONUNCIATION 的另一个"词"、听音选词直接播不出。
+ * senseId 唯一化：取 `lemma#序号`，撞已有 id 就向后顺延（手写数据可能有非常规 id）。
+ */
+export function applySenseAdd(
+  word: Word,
+  patch: { pos?: string; zh?: string },
+): Word {
+  const detail = normalizeSenses(word).map((s) => ({ ...s }));
+  const used = new Set(detail.map((s) => s.senseId));
+  let n = detail.length;
+  while (used.has(`${word.lemma}#${n}`)) n += 1;
+  const base = detail[0];
+  const added: WordSense = {
+    senseId: `${word.lemma}#${n}`,
+    lemma: word.lemma,
+    pos: patch.pos?.trim() ?? '',
+    zh: patch.zh?.trim() ?? '',
+    pronunciationKey: base ? base.pronunciationKey : pronunciationKeyOf(word.arpabet ?? ''),
+    arpabet: base ? base.arpabet : (word.arpabet ?? ''),
+    ipa: base ? base.ipa : word.ipa,
+  };
+  return syncWordSenses(word, [...detail, added]);
 }
 
 /**

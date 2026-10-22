@@ -2,8 +2,12 @@
  * StageDetailPage —— 阶段词表（用户 2026-10-15 四阶段制）：
  * 某一阶段的词库列表（分页 100/页，T4 最上），每词标层/特训/上次考查；
  * 支持多选手动调阶段（联动：调阶后 stageStreak 清零，见 docs/联动清单.md）。
+ *
+ * 数据链路（用户 2026-10-22 改）：**服务端 stage 过滤 + 服务端分页 + 计数**。
+ * 旧实现拉整本 8296 行（9 个串行分页请求）再客户端按 stage 过滤，慢网络下
+ * 体感「词表打不开」；现在一页 = 1 次计数 + 1 次取页（整页 3 次请求）。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Alert,
@@ -20,6 +24,7 @@ import {
   Typography,
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import MenuBookIcon from '@mui/icons-material/MenuBook';
 import { getRepos, useAppStore } from '../store/useAppStore';
 import { STAGE_LABEL, STAGE_META, TIER_VERDICT_LABEL, type WordStage } from '../features/quiz/stages';
 import type { BookWord } from '../types/domain';
@@ -34,50 +39,93 @@ export default function StageDetailPage() {
   const navigate = useNavigate();
   const { activeBookId } = useAppStore();
 
+  // total = 本阶段词库总量（服务端计数）；rows = 当前页的 100 行（服务端分页）
+  const [total, setTotal] = useState(0);
   const [rows, setRows] = useState<BookWord[]>([]);
   const [lemmaMap, setLemmaMap] = useState<Record<string, string>>({});
   const [graduatedCount, setGraduatedCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
+  /** 调阶后强制刷新当前页（safePage 不变时也要重取） */
+  const [reloadKey, setReloadKey] = useState(0);
+  /** 计数是否已到达（用 ref：页面效果据此决定何时关转圈，放进 deps 会多发一次取页请求） */
+  const countsLoadedRef = useRef(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveTarget, setMoveTarget] = useState<number>(1);
   const [moveBusy, setMoveBusy] = useState(false);
 
-  const load = useCallback(async () => {
+  // 计数（本阶段总量 + 已彻底毕业量）：挂载/换阶段/换书/调阶后刷新
+  const loadCounts = useCallback(async () => {
     if (!stageNo || !activeBookId) return;
-    setLoading(true);
     try {
       const repos = getRepos();
-      const all = await repos.word.listBookWords(activeBookId);
-      setRows(all.filter((bw) => bw.stage === stageNo));
-      setGraduatedCount(all.filter((bw) => bw.stage === 0).length);
+      const [n, graduated] = await Promise.all([
+        repos.word.countBookWordsByStage(activeBookId, stageNo),
+        repos.word.countBookWordsByStage(activeBookId, 0),
+      ]);
+      setTotal(n);
+      setGraduatedCount(graduated);
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      countsLoadedRef.current = true;
       setLoading(false);
     }
   }, [stageNo, activeBookId]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!stageNo || !activeBookId) {
+      // 无词书/未知阶段：不再留无限转圈，直接给可操作提示（旧实现这里早返回，
+      // loading 永远停在 true——用户看到的就是「打不开」）
+      setLoading(false);
+      if (!activeBookId) setError('还没有选择词书');
+      return;
+    }
+    setLoading(true);
+    countsLoadedRef.current = false;
+    void loadCounts();
+  }, [stageNo, activeBookId, loadCounts]);
 
-  // 展示顺序 T4→T1；分页 100/页；词义只取当前页（同首页联动 #11）
-  const ordered = useMemo(() => {
-    const g: Record<number, BookWord[]> = { 1: [], 2: [], 3: [], 4: [] };
-    for (const bw of rows) g[bw.tier].push(bw);
-    return [...g[4], ...g[3], ...g[2], ...g[1]];
-  }, [rows]);
-  const pageCount = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
-  const pageRows = useMemo(
-    () => ordered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
-    [ordered, safePage],
-  );
+  const ordered = useMemo(() => rows, [rows]);
+  const pageRows = ordered;
 
+  // 调阶后总量变小 ⇒ page 越界时收敛回第 1 页（不收敛的话「上一页」要连点两次）
+  useEffect(() => {
+    if (total > 0 && page > Math.ceil(total / PAGE_SIZE)) setPage(1);
+  }, [total, page]);
+
+  // 当前页行：safePage 变化即取（counts 到达后的收敛也在内）
+  useEffect(() => {
+    if (!stageNo || !activeBookId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pageRowsFetched = await getRepos().word.listBookWordsPage(activeBookId, {
+          stage: stageNo,
+          offset: (safePage - 1) * PAGE_SIZE,
+          limit: PAGE_SIZE,
+        });
+        if (cancelled) return;
+        setRows(pageRowsFetched);
+        setError('');
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        // 计数也到达了才关转圈（计数通常比取页慢，等它以免头部闪「0 词」）
+        if (!cancelled && countsLoadedRef.current) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [stageNo, activeBookId, safePage, reloadKey]);
+
+  // 词义映射只取当前页（同首页联动 #11）
   useEffect(() => {
     if (pageRows.length === 0) return;
     let cancelled = false;
@@ -118,7 +166,9 @@ export default function StageDetailPage() {
       );
       setSelected(new Set());
       setMoveOpen(false);
-      await load();
+      // 计数 + 当前页一起刷新（移走后总量/本页内容都变了）
+      await loadCounts();
+      setReloadKey((k) => k + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -146,21 +196,35 @@ export default function StageDetailPage() {
           <Button
             variant="contained"
             startIcon={<PlayArrowIcon />}
-            disabled={ordered.length === 0}
+            disabled={total === 0}
             onClick={() => navigate(stageNo === 1 ? '/quiz' : `/stage-quiz/${stageNo}`)}
           >
-            开始刷（{ordered.length}）
+            开始刷（{total}）
           </Button>
         </Stack>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-        {meta.desc} · 本阶段词库 {rows.length} 词{stageNo !== 4 ? '' : '（写对一次即彻底毕业）'}
+        {meta.desc} · 本阶段词库 {total} 词{stageNo !== 4 ? '' : '（写对一次即彻底毕业）'}
         {graduatedCount > 0 ? ` · 全书已彻底毕业 ${graduatedCount} 词` : ''}
       </Typography>
-      {error && (
-        <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError('')}>
-          {error}
+      {!activeBookId ? (
+        <Alert
+          severity="info"
+          sx={{ mt: 2 }}
+          action={
+            <Button color="inherit" size="small" startIcon={<MenuBookIcon />} onClick={() => navigate('/book')}>
+              去词书页
+            </Button>
+          }
+        >
+          还没有选择词书——先到「词书」页选一本，阶段词表才有内容。
         </Alert>
+      ) : (
+        error && (
+          <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError('')}>
+            {error}
+          </Alert>
+        )
       )}
 
       {/* 多选调阶段工具条 */}
@@ -226,7 +290,7 @@ export default function StageDetailPage() {
                 上一页
               </Button>
               <Typography variant="caption" color="text.secondary">
-                第 {safePage} / {pageCount} 页 · 共 {ordered.length} 词
+                第 {safePage} / {pageCount} 页 · 共 {total} 词
               </Typography>
               <Button
                 size="small"

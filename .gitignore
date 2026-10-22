@@ -4,6 +4,7 @@ node_modules/
 # build output
 dist/
 dev-dist/
+dist-e2e/
 coverage/
 
 # env（云服务 publicConfig 由开通后填入，不入库）

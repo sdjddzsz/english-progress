@@ -43,6 +43,25 @@ export default function WordNoteButton({ wordId, lemma, source, senseIndex, size
     setExisting(null);
   }, [wordId]);
 
+  // 预载笔记状态（用户 2026-10-22：有笔记的词，笔记标志要一开始就金黄高亮）：
+  // 旧实现只有点开弹窗才加载，「有没有笔记」在图标上看不出来。这里挂载/换词即查一次
+  // （一词一记，getById 单请求；查失败静默——高亮是增强，不是必需品）。
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const note = await getRepos().note.getNote(userId, wordId);
+        if (!cancelled) setExisting(note);
+      } catch {
+        // 预载失败不阻断：点开弹窗时会再拉一次
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, wordId]);
+
   const openDialog = async (): Promise<void> => {
     if (!userId) return;
     setOpen(true);
@@ -108,7 +127,8 @@ export default function WordNoteButton({ wordId, lemma, source, senseIndex, size
             aria-label={`note ${lemma}`}
             disabled={!userId}
             onClick={() => void openDialog()}
-            sx={hasNote ? { color: 'warning.main' } : undefined}
+            // 有笔记 = 金黄色高亮（theme warning.main）；无笔记 = 淡灰——一眼可辨
+            sx={hasNote ? { color: 'warning.main' } : { color: 'text.disabled' }}
           >
             <EditNoteIcon fontSize={size === 'small' ? 'small' : 'inherit'} />
           </IconButton>

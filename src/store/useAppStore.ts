@@ -24,6 +24,7 @@ import { createFeedbackRepo, type FeedbackRepo } from '../data/repos/feedbackRep
 import { createConfigRepo, type ConfigRepo } from '../data/repos/configRepo';
 import { createTrainingRepo, type TrainingRepo } from '../data/repos/trainingRepo';
 import { createNoteRepo, type NoteRepo } from '../data/repos/noteRepo';
+import { createExampleRepo, type ExampleRepo } from '../data/repos/exampleRepo';
 import { decideProposal } from '../ai/authz';
 import type { ToolContext } from '../ai/tools/readTools';
 
@@ -37,6 +38,7 @@ export interface Repos {
   config: ConfigRepo;
   training: TrainingRepo;
   note: NoteRepo;
+  example: ExampleRepo;
 }
 
 let cachedRepos: Repos | null = null;
@@ -52,6 +54,7 @@ export function getRepos(): Repos {
       config: createConfigRepo(),
       training: createTrainingRepo(),
       note: createNoteRepo(),
+      example: createExampleRepo(),
     };
   }
   return cachedRepos;

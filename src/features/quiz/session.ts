@@ -27,6 +27,8 @@ export interface QuizItemSnapshot {
   verdict?: QuizVerdict;
   pickedKey?: string;
   askedAt?: number;
+  /** 答题那一刻的用时毫秒（恢复后定格显示本题计时；旧快照没有则未记录） */
+  elapsedMs?: number;
 }
 
 export interface QuizSessionSnapshot {
@@ -120,6 +122,8 @@ export interface SessionSourceItem {
   verdict?: QuizVerdict;
   pickedKey?: string;
   askedAt?: number;
+  /** 答题那一刻的用时毫秒（恢复后定格显示本题计时；旧快照没有则未记录） */
+  elapsedMs?: number;
 }
 
 export function toSnapshots(items: SessionSourceItem[]): QuizItemSnapshot[] {
@@ -135,5 +139,6 @@ export function toSnapshots(items: SessionSourceItem[]): QuizItemSnapshot[] {
     ...(it.verdict ? { verdict: it.verdict } : {}),
     ...(it.pickedKey ? { pickedKey: it.pickedKey } : {}),
     ...(it.askedAt ? { askedAt: it.askedAt } : {}),
+    ...(it.elapsedMs !== undefined ? { elapsedMs: it.elapsedMs } : {}),
   }));
 }

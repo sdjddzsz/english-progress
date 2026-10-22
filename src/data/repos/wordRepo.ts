@@ -41,7 +41,14 @@ export interface WordRepo {
   upsertBookWords(rows: (BookWord & Record<string, unknown>)[]): Promise<void>;
   listBookWords(
     bookId: string,
-    opts?: { tier?: Tier; listNo?: number; status?: WordStatus; onPage?: (loaded: number) => void },
+    opts?: {
+      tier?: Tier;
+      listNo?: number;
+      status?: WordStatus;
+      /** 四阶段制（2026-10-22）：按阶段过滤（服务端） */
+      stage?: BookWord['stage'];
+      onPage?: (loaded: number) => void;
+    },
   ): Promise<BookWord[]>;
   listWordsByIds(ids: string[]): Promise<Word[]>;
   updateWordTier(bookWordId: string, tier: Tier): Promise<BookWord | null>;
@@ -93,6 +100,24 @@ export interface WordRepo {
   updateWordStages(pairs: { bookWordId: string; stage: BookWord['stage'] }[]): Promise<number>;
   /** 词书总词量（**只数不读**：不要为了算一个比值把整本 8296 行拉下来） */
   countBookWords(bookId: string): Promise<number>;
+  /**
+   * 某阶段的词量（只数不读；阶段详情页头部「本阶段词库 N 词」/ 分页页数用）。
+   * stage=0 即「已彻底毕业」计数。
+   */
+  countBookWordsByStage(bookId: string, stage: BookWord['stage']): Promise<number>;
+  /**
+   * 阶段词表的**一页**行（服务端过滤 + 服务端分页，用户 2026-10-22）。
+   *
+   * 为什么必须服务端分页：阶段详情页原来走 `listBookWords(bookId)` 拉**整本** 8296 行
+   * （9 个串行分页请求）再在客户端按 stage 过滤——页面上只显示 100 行，却把 1.7MB
+   * 全拉下来；慢网络下用户体感就是「词表打不开」。
+   * 现在：filters 加 stage ⇒ 只回该阶段的行；orders = tier.desc + id.asc
+   * （展示序 T4→T1，同层内按主键稳定序，翻页不会重复/漏行）。
+   */
+  listBookWordsPage(
+    bookId: string,
+    opts: { stage: BookWord['stage']; offset: number; limit: number },
+  ): Promise<BookWord[]>;
   /**
    * 按 wordId 批量取词书行（分片 `in` 查询）。
    *
@@ -222,12 +247,32 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
       if (opts?.tier != null) filters.push({ column: 'tier', op: 'eq', value: opts.tier });
       if (opts?.listNo != null) filters.push({ column: 'listNo', op: 'eq', value: opts.listNo });
       if (opts?.status != null) filters.push({ column: 'status', op: 'eq', value: opts.status });
+      if (opts?.stage != null) filters.push({ column: 'stage', op: 'eq', value: opts.stage });
       // ⚠ 分页排序键**必须唯一**：listAll 靠 offset 翻页，而非唯一列会让 Postgres 不保证跨页稳定
       // （行重复出现 / 部分行永不出现）。原先用 `orderInList` —— 它在 listSize=50 的切分下
       // 8296 行里只有 166 个不同值，重复率极高，属于典型的「翻页排序键不唯一」错误。
       // 改为主键 id（唯一）。需要词频序的调用方请自行排序 —— `pickBookWordSample` 就是这么做的。
       return bookWords.listAll(filters, { orderBy: 'id', ascending: true, ...(opts?.onPage ? { onPage: opts.onPage } : {}) });
     },
+    /**
+     * 阶段词表的一页（服务端 stage 过滤 + 服务端分页，用户 2026-10-22）：
+     * 排序 = tier.desc（展示序 T4→T1）+ id.asc（主键稳定键，翻页不重不漏）。
+     * 单次 `list()`（不走 listAll 翻页循环）：offset/limit 由调用方按页算好。
+     */
+    listBookWordsPage: async (bookId, { stage, offset, limit }) =>
+      bookWords.list(
+        [
+          { column: 'bookId', op: 'eq', value: bookId },
+          { column: 'stage', op: 'eq', value: stage },
+        ],
+        { orders: [{ column: 'tier', ascending: false }, { column: 'id', ascending: true }], offset, limit },
+      ),
+    /** 某阶段词量（只数不读）；stage=0 = 已彻底毕业计数 */
+    countBookWordsByStage: (bookId, stage) =>
+      bookWords.count([
+        { column: 'bookId', op: 'eq', value: bookId },
+        { column: 'stage', op: 'eq', value: stage },
+      ]),
     /**
      * 按 id 批量取词 —— **必须分片**：入参可能上千（摸底页传入全书 8296 个 wordId），
      * 单次 `id=in.(…)` 的 URL 会达到 ~82KB，远超请求行上限 ⇒ 浏览器 `Failed to fetch`。

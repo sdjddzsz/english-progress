@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Word, WordSense } from '../../src/types/domain';
-import { applySenseDelete, applySenseEdit, clampSenseIndex, displaySenses, isDomainTag, normalizeSenses } from '../../src/features/senses';
+import { applySenseAdd, applySenseDelete, applySenseEdit, clampSenseIndex, displaySenses, isDomainTag, normalizeSenses } from '../../src/features/senses';
 
 function word(overrides: Partial<Word>, senses: Partial<WordSense>[]): Word {
   const base: Word = {
@@ -145,6 +145,77 @@ describe('义项长按编辑/删除（用户 2026-10-18）', () => {
     const next = applySenseEdit(word, 0, { zh: '记载' });
     expect(next).not.toBe(word);
     expect(word.sensesDetail?.[0].zh).toBe('记录');
+  });
+});
+
+describe('义项新增（用户 2026-10-19：词书漏义项要能补，写回词书）', () => {
+  const word: Word = {
+    id: 'w1',
+    lemma: 'record',
+    ipa: '/ˈrekɔːd/',
+    arpabet: 'R IH1 K AO2 D',
+    pos: 'n.',
+    frequency: 0,
+    tags: [],
+    senses: ['记录', '录制'],
+    sensesDetail: [
+      { senseId: 'record#0', lemma: 'record', pos: 'n.', zh: '记录', pronunciationKey: 'R IH1 K AO2 D', arpabet: 'R IH1 K AO2 D', ipa: '/ˈrekɔːd/' },
+      { senseId: 'record#1', lemma: 'record', pos: 'v.', zh: '录制', pronunciationKey: 'R IH1 K AO2 D', arpabet: 'R IH1 K AO2 D', ipa: '/ˈrekɔːd/' },
+    ],
+    examples: [],
+  };
+
+  it('追加到末尾：新义项带用户填的词性/释义，词级 senses 同步', () => {
+    const next = applySenseAdd(word, { pos: 'n.', zh: '最高纪录' });
+    expect(next.sensesDetail).toHaveLength(3);
+    expect(next.sensesDetail?.[2].zh).toBe('最高纪录');
+    expect(next.sensesDetail?.[2].pos).toBe('n.');
+    expect(next.senses).toEqual(['记录', '录制', '最高纪录']);
+    expect(next.sensesDetail?.[0].zh).toBe('记录'); // 原有义项不动
+  });
+
+  it('新义项 senseId 唯一，读音继承首义项（不留空——空读音会被判成另一个"词"）', () => {
+    const next = applySenseAdd(word, { zh: '唱片' });
+    const added = next.sensesDetail?.[2];
+    expect(added?.senseId).toBe('record#2');
+    expect(added?.arpabet).toBe('R IH1 K AO2 D');
+    expect(added?.pronunciationKey).toBe('R IH1 K AO2 D');
+    expect(added?.ipa).toBe('/ˈrekɔːd/');
+    // 新义项与首义项同判定身份 ⇒ 听音选词等按 pronunciationKey 的逻辑不会把它漏掉
+    expect(normalizeSenses(next).map((s) => s.senseId)).toEqual(['record#0', 'record#1', 'record#2']);
+  });
+
+  it('老词没有 sensesDetail（降级路径）也能加：新义项挂在降级义项后面', () => {
+    const legacy: Word = { ...word, senses: ['记录'], sensesDetail: undefined };
+    const next = applySenseAdd(legacy, { pos: 'v.', zh: '录制' });
+    expect(next.sensesDetail).toHaveLength(2);
+    expect(next.sensesDetail?.[1].zh).toBe('录制');
+    expect(next.senses).toEqual(['记录', '录制']);
+    expect(next.sensesDetail?.[1].arpabet).toBe('R IH1 K AO2 D');
+  });
+
+  it('senseId 撞已有 id 时向后顺延（手写数据可能有非常规 id）', () => {
+    const odd: Word = {
+      ...word,
+      sensesDetail: [
+        { senseId: 'record#0', lemma: 'record', pos: 'n.', zh: '记录', pronunciationKey: 'R IH1 K AO2 D', arpabet: 'R IH1 K AO2 D', ipa: '/ˈrekɔːd/' },
+        { senseId: 'record#2', lemma: 'record', pos: 'v.', zh: '录制', pronunciationKey: 'R IH1 K AO2 D', arpabet: 'R IH1 K AO2 D', ipa: '/ˈrekɔːd/' },
+      ],
+    };
+    const next = applySenseAdd(odd, { zh: '唱片' });
+    expect(next.sensesDetail?.[2].senseId).toBe('record#3');
+  });
+
+  it('新增后 clampSenseIndex 不动原题锚点（追加在末尾，不是插队）', () => {
+    const next = applySenseAdd(word, { zh: '唱片' });
+    expect(clampSenseIndex(next, 1)).toBe(1);
+  });
+
+  it('新增不改原对象', () => {
+    const next = applySenseAdd(word, { zh: '唱片' });
+    expect(next).not.toBe(word);
+    expect(next.sensesDetail).not.toBe(word.sensesDetail);
+    expect(word.senses).toEqual(['记录', '录制']);
   });
 });
 

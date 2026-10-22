@@ -8,8 +8,10 @@ export type Row = Record<string, unknown>;
 
 export class MockQuery implements PostgrestQuery {
   private filters: ((r: Row) => boolean)[] = [];
-  private orderCol: string | null = null;
-  private orderAsc = true;
+  // 多列排序（真实 PostgREST：`order=a.desc,b.asc`，按数组顺序依次比较）。
+  // 旧实现只记最后一列 ⇒ 多列排序的方法（如 listBookWordsPage 的 tier.desc+id.asc）
+  // 在测试里会静默退化成单列，真实缺陷被 mock 兜住。2026-10-22 修为累加。
+  private orders: { column: string; asc: boolean }[] = [];
   private limitN: number | null = null;
   private rangeFrom: number | null = null;
   private rangeTo: number | null = null;
@@ -38,7 +40,10 @@ export class MockQuery implements PostgrestQuery {
   lte(column: string, value: unknown): PostgrestQuery { this.filters.push((r) => (r[column] as number) <= (value as number)); return this; }
   in(column: string, values: unknown[]): PostgrestQuery { this.filters.push((r) => values.includes(r[column])); return this; }
   is(column: string, value: null): PostgrestQuery { this.filters.push((r) => r[column] === value); return this; }
-  order(column: string, opts?: { ascending?: boolean }): PostgrestQuery { this.orderCol = column; this.orderAsc = opts?.ascending ?? true; return this; }
+  order(column: string, opts?: { ascending?: boolean }): PostgrestQuery {
+    this.orders.push({ column, asc: opts?.ascending ?? true });
+    return this;
+  }
   limit(n: number): PostgrestQuery { this.limitN = n; return this; }
   range(from: number, to: number): PostgrestQuery { this.rangeFrom = from; this.rangeTo = to; return this; }
   single(): PostgrestQuery { this.singleMode = true; return this; }
@@ -131,13 +136,16 @@ export class MockQuery implements PostgrestQuery {
     }
     // select
     let out = [...filtered];
-    if (this.orderCol) {
-      const col = this.orderCol;
+    if (this.orders.length > 0) {
+      const orders = this.orders;
       out.sort((a, b) => {
-        const av = a[col] as string | number;
-        const bv = b[col] as string | number;
-        const cmp = av < bv ? -1 : av > bv ? 1 : 0;
-        return this.orderAsc ? cmp : -cmp;
+        for (const o of orders) {
+          const av = a[o.column] as string | number;
+          const bv = b[o.column] as string | number;
+          const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+          if (cmp !== 0) return o.asc ? cmp : -cmp;
+        }
+        return 0;
       });
     }
     if (this.rangeFrom != null) out = out.slice(this.rangeFrom, (this.rangeTo ?? out.length - 1) + 1);
