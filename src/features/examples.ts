@@ -24,17 +24,18 @@ export const EXAMPLE_SYSTEM_PROMPT =
   '2. 附一条准确通顺的中文翻译；\n' +
   '3. 只输出一行 JSON：{"en": "英语例句", "zh": "中文翻译"}，不要任何解释、不要代码块围栏。';
 
-/** 用户提示：词 + 义项上下文 */
-export function buildExampleUserPrompt(lemma: string, sense: WordSense): string {
+/** 用户提示：词 + 义项上下文（zhOverride = 逗号拆开后的单条子义项，用户 2026-10-23） */
+export function buildExampleUserPrompt(lemma: string, sense: WordSense, zhOverride?: string): string {
   const pos = sense.pos ? `（词性：${sense.pos}）` : '';
-  return `单词：${lemma}${pos}\n义项释义：${sense.zh || '（未填写）'}\n请为这个义项生成一条例句。`;
+  const zh = (zhOverride ?? sense.zh) || '（未填写）';
+  return `单词：${lemma}${pos}\n义项释义：${zh}\n请为这个义项生成一条例句。`;
 }
 
 /** 组装完整消息序列（messages[0] 必须是 system——SDK 强约束） */
-export function buildExampleMessages(lemma: string, sense: WordSense): ChatMessage[] {
+export function buildExampleMessages(lemma: string, sense: WordSense, zhOverride?: string): ChatMessage[] {
   return [
     { role: 'system', content: EXAMPLE_SYSTEM_PROMPT },
-    { role: 'user', content: buildExampleUserPrompt(lemma, sense) },
+    { role: 'user', content: buildExampleUserPrompt(lemma, sense, zhOverride) },
   ];
 }
 

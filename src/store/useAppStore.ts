@@ -106,6 +106,15 @@ export interface StageProgress {
   verdict: PaceVerdict;
 }
 
+/** 今日检测统计（当天有效；day = UTC 日串，跨天自动清零） */
+export interface TodayQuiz {
+  day: string;
+  /** 今天答过的不同 wordId */
+  words: string[];
+  /** 其中第一次出现（首答 attemptNo===1）的 wordId */
+  firstSeen: string[];
+}
+
 export interface AppState {
   userId: string | null;
   cloudReady: boolean;
@@ -120,6 +129,17 @@ export interface AppState {
   planValidation: ValidationResult | null;
   planFinish: string | null;
   stageProgress: StageProgress | null;
+  /**
+   * 今日检测统计（用户 2026-10-23）：今天答过的不同词 + 其中「第一次出现」（首答 attemptNo===1）的。
+   * - words：refreshToday 时用 lastQuizAt=今天 播种（云端权威，跨设备/刷新后仍计入）+ 本机当场作答累加；
+   * - firstSeen：只能来自本机当场作答（attemptNo 不落库；阶段二/三/四页刷新后不计，属已知缺口）；
+   * - 内存态，UTC 日变自动清零（当天有效，不跨天）。
+   */
+  todayQuiz: TodayQuiz;
+  /** 当场作答登记（两考查页 answer 时调；attemptNo===1 记 firstSeen） */
+  noteQuizAnswer(wordId: string, attemptNo: number): void;
+  /** 用云端 lastQuizAt 播种今天的已答词（refreshToday 内调；不动 firstSeen） */
+  seedTodayQuizWords(wordIds: string[]): void;
 
   todayHits: Hit[];
   todayPendingCount: number;
@@ -160,6 +180,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   planValidation: null,
   planFinish: null,
   stageProgress: null,
+  todayQuiz: { day: todayISO(), words: [], firstSeen: [] },
 
   todayHits: [],
   todayPendingCount: 0,
@@ -214,7 +235,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   setActiveBook: async (bookId) => {
-    set({ activeBookId: bookId, activePlan: null, planValidation: null, planFinish: null, stageProgress: null, todayHits: [], todayPendingCount: 0, wordMap: {} });
+    set({ activeBookId: bookId, activePlan: null, planValidation: null, planFinish: null, stageProgress: null, todayQuiz: { day: todayISO(), words: [], firstSeen: [] }, todayHits: [], todayPendingCount: 0, wordMap: {} });
     const { userId } = get();
     if (!userId) return;
     try {
@@ -238,6 +259,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const repos = getRepos();
       const book = await repos.word.getBook(activePlan.bookId);
       const bws = await repos.word.listBookWords(activePlan.bookId);
+      // 今日检测播种（用户 2026-10-23）：lastQuizAt=今天 的词——云端权威，
+      // 跨设备答的、刷新前答的都算进「今天检测」；firstSeen 只能本机当场作答补。
+      get().seedTodayQuizWords(bws.filter((bw) => bw.lastQuizAt?.slice(0, 10) === today).map((bw) => bw.wordId));
       const sorted = [...bws].sort((a, b) => a.listNo - b.listNo || a.orderInList - b.orderInList);
       const wordsByTier: Record<Tier, string[]> = { 1: [], 2: [], 3: [], 4: [] };
       const tierCounts: TierWordCounts = {};
@@ -312,6 +336,29 @@ export const useAppStore = create<AppState>()((set, get) => ({
     } catch (e) {
       set({ error: errMsg(e) });
     }
+  },
+
+  noteQuizAnswer: (wordId, attemptNo) => {
+    const day = todayISO();
+    set((s) => {
+      const cur = s.todayQuiz.day === day ? s.todayQuiz : { day, words: [], firstSeen: [] };
+      const words = cur.words.includes(wordId) ? cur.words : [...cur.words, wordId];
+      // 第一次出现 = 本轮第一次露面（attemptNo===1）；attemptNo 不落库，刷新后本机会话外不补
+      const firstSeen =
+        attemptNo === 1 && !cur.firstSeen.includes(wordId) ? [...cur.firstSeen, wordId] : cur.firstSeen;
+      return { todayQuiz: { day: cur.day, words, firstSeen } };
+    });
+  },
+
+  seedTodayQuizWords: (wordIds) => {
+    if (wordIds.length === 0) return;
+    const day = todayISO();
+    set((s) => {
+      const cur = s.todayQuiz.day === day ? s.todayQuiz : { day, words: [], firstSeen: [] };
+      const merged = new Set(cur.words);
+      for (const id of wordIds) merged.add(id);
+      return { todayQuiz: { day: cur.day, words: [...merged], firstSeen: cur.firstSeen } };
+    });
   },
 
   completeHit: async (hitId) => {

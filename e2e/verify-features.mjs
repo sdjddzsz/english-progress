@@ -78,6 +78,12 @@ async function main() {
       !homeText.includes('按当前参数完不成'),
     homeText.match(/剩余[^\n]*|近 14 天[^\n]*|预计完成日[^\n]*|按当前参数[^\n]*/g)?.slice(0, 3).join(' | ') ?? '',
   );
+  // 今日检测统计（用户 2026-10-23）：今天答过多少词 + 其中多少第一次出现
+  check(
+    '计划卡显示今日检测统计（检测 N 词 · 其中第一次出现 M 词）',
+    /今天：检测 \d+ 词（无论过没过）· 其中第一次出现 \d+ 词/.test(homeText),
+    homeText.match(/今天：检测[^\n]*/g)?.[0] ?? '(未找到)',
+  );
 
   // ===== A) 词表页 =====
   cloudLog.length = 0;
@@ -155,24 +161,33 @@ async function main() {
   const afterAnswer = await page.locator('body').innerText();
   check('作答后显示全部释义区', afterAnswer.includes('的全部释义'), '');
 
-  // 右键（=长按）第一条释义行 → 菜单
-  const senseText = page.getByText(/^\d+\.\s/).first();
-  await senseText.waitFor({ timeout: 6000 }).catch(() => {});
-  const senseBox = await senseText.boundingBox().catch(() => null);
-  if (senseBox) {
-    await page.mouse.click(senseBox.x + senseBox.width / 2, senseBox.y + senseBox.height / 2, { button: 'right' });
+  // 右键（=长按）**子义项**（用户 2026-10-23：逗号拆开后每条意思单独生成）
+  const subSpan = page.getByText('放弃', { exact: true }).last();
+  await subSpan.waitFor({ timeout: 6000 }).catch(() => {});
+  const subBox = await subSpan.boundingBox().catch(() => null);
+  if (subBox) {
+    await page.mouse.click(subBox.x + subBox.width / 2, subBox.y + subBox.height / 2, { button: 'right' });
   }
   await page.waitForTimeout(800);
-  const genItem = page.getByRole('menuitem', { name: '生成例句' });
+  const genItem = page.getByRole('menuitem', { name: '生成例句（放弃）' });
   const menuVisible = await genItem.isVisible().catch(() => false);
-  check('右键/长按释义弹出菜单（含「生成例句」）', menuVisible, menuVisible ? '' : `释义行定位=${Boolean(senseBox)} 页面文本片段=${afterAnswer.slice(0, 60)}`);
+  check('右键子义项弹出菜单（「生成例句（放弃）」——只含那一条意思）', menuVisible, menuVisible ? '' : `子义项定位=${Boolean(subBox)} 片段=${afterAnswer.slice(0, 60)}`);
+  const editBtn = page.locator('button[aria-label^="编辑义项"]').first();
+  check('义项编辑入口独立（行尾铅笔按钮，不与子义项长按冲突）', (await editBtn.count()) > 0, '');
   if (menuVisible) {
     await genItem.click();
     await page.waitForTimeout(5000);
     const afterGen = await page.locator('body').innerText();
     check('生成例句成功（LLM SSE → 例句块出现）', afterGen.includes('abandon the sinking ship') && afterGen.includes('他们决定弃船'), '');
-    // 临时模型联动断言：本次生成请求体的 model = 问答框选中的临时模型
+    // 子义项提示词：请求体里只带「放弃」这一条，不带兄弟义项「抛弃」
     const lastLlm = llmPosts[llmPosts.length - 1];
+    const userMsg = lastLlm?.messages?.find((m) => m.role === 'user')?.content ?? '';
+    check(
+      '生成提示词只含该子义项（义项释义：放弃，不含抛弃）',
+      userMsg.includes('义项释义：放弃') && !userMsg.includes('抛弃'),
+      userMsg.match(/义项释义：[^\n]*/)?.[0] ?? '(无)',
+    );
+    // 临时模型联动断言：本次生成请求体的 model = 问答框选中的临时模型
     check(
       '例句生成跟随问答框临时模型（model=step-6-turbo）',
       lastLlm?.model === 'step-6-turbo',

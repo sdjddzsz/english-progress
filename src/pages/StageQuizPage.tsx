@@ -94,7 +94,7 @@ export default function StageQuizPage() {
   useEffect(() => {
     if (stageParam === 1) navigate('/quiz', { replace: true });
   }, [stageParam, navigate]);
-  const { activeBookId, userId } = useAppStore();
+  const { activeBookId, userId, noteQuizAnswer } = useAppStore();
   const { autoSpeak, quizDailyLimit, stageGraduate, quizDayThreshold, firstPassThreshold } = useSettingsStore();
   const { speak, speakAuto, resynthesize, loading: ttsLoading, voiceOverride, setVoiceOverride, getEffectiveVoiceModel } = useTTS();
   const sfx = useSfx();
@@ -231,6 +231,8 @@ export default function StageQuizPage() {
     sfx(v === 'skilled' || v === 'recognized' ? 'correct' : 'wrong');
     setPicked(opt);
     setVerdict(v);
+    // 今日检测统计（用户 2026-10-23）：答过的词都计入；attemptNo===1 = 第一次出现
+    noteQuizAnswer(current.bookWord.wordId, current.attemptNo);
     const bw = current.bookWord;
     // 毕业线判定固定「熟练」（阶段毕业设置只配次数）——绝不传每轮挡位（2026-10-18 事故）
     const sp = applyStageChoiceResult(bw, v, stageGraduate[stageNo === 4 ? 3 : stageNo], new Date(), current.attemptNo);
@@ -286,6 +288,8 @@ export default function StageQuizPage() {
     const elapsed = Date.now() - showAtRef.current;
     sfx(correct ? 'correct' : 'wrong');
     setSpellVerdict(sv);
+    // 今日检测统计（用户 2026-10-23）：拼写页同样计入（无论写对写错）
+    noteQuizAnswer(current.bookWord.wordId, current.attemptNo);
     const bw = current.bookWord;
     const sp = applyStageSpellingResult(bw, correct, new Date());
     const graduated = sp.stage === 0;
@@ -337,12 +341,12 @@ export default function StageQuizPage() {
   // 当前词的用户例句（用户 2026-10-22）：加载 / AI 生成 / 删除
   const examplesApi = useWordExamples(current?.bookWord.wordId ?? null, current?.word.lemma ?? '');
 
-  /** 菜单「生成例句」：为第 senseIndex 个义项生成一条（追加，不覆盖） */
-  const handleGenerateExample = async (senseIndex: number): Promise<void> => {
+  /** 菜单「生成例句」：为第 senseIndex 个义项的第 subZh 条意思生成一条（追加，不覆盖） */
+  const handleGenerateExample = async (senseIndex: number, subZh?: string): Promise<void> => {
     if (!current) return;
     const s = displaySenses(current.word)[senseIndex];
     if (!s) return;
-    await examplesApi.generate(s);
+    await examplesApi.generate(s, subZh);
   };
 
   /** 例句朗读：走 TTS 主轨（AI 发音），与单词同一编排链 */
@@ -509,9 +513,10 @@ export default function StageQuizPage() {
                       2026-10-22：菜单加「生成例句」，每次生成追加一条、可删） */}
                   <SenseListSection
                     word={current.word}
-                    onLongPress={setSenseEditIdx}
+                    onEditSense={setSenseEditIdx}
+                    onDeleteSense={setSenseEditIdx}
                     onAdd={() => setSenseAddOpen(true)}
-                    onGenerateExample={(i) => void handleGenerateExample(i)}
+                    onGenerateExample={(i, subZh) => void handleGenerateExample(i, subZh)}
                     genBusy={examplesApi.genBusy}
                   />
                   {/* 用户例句（用户 2026-10-22：AI 生成 / AI 朗读 / 可删）。
@@ -595,9 +600,10 @@ export default function StageQuizPage() {
                   <SenseListSection
                     word={current.word}
                     currentSenseIndex={current.senseIndex}
-                    onLongPress={setSenseEditIdx}
+                    onEditSense={setSenseEditIdx}
+                    onDeleteSense={setSenseEditIdx}
                     onAdd={() => setSenseAddOpen(true)}
-                    onGenerateExample={(i) => void handleGenerateExample(i)}
+                    onGenerateExample={(i, subZh) => void handleGenerateExample(i, subZh)}
                     genBusy={examplesApi.genBusy}
                   />
                   {/* 用户例句（用户 2026-10-22：AI 生成 / AI 朗读 / 可删）。

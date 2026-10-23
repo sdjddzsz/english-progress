@@ -10,7 +10,7 @@
 import { Alert, Box, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Button, LinearProgress, Stack, Typography } from '@mui/material';
 import { useState } from 'react';
 import type { StudyPlan } from '../../types/domain';
-import type { StageProgress } from '../../store/useAppStore';
+import type { StageProgress, TodayQuiz } from '../../store/useAppStore';
 
 export interface PlanSummaryCardProps {
   plan: StudyPlan | null;
@@ -19,6 +19,8 @@ export interface PlanSummaryCardProps {
    * 那里的参数影响预览走自己的 tier 模型口径（预览块自带），不在这张卡上混。
    */
   progress?: StageProgress | null;
+  /** 今日检测统计（store.todayQuiz；用户 2026-10-23） */
+  todayQuiz?: TodayQuiz | null;
   /** 档位/参数调整入口（如跳计划编辑页） */
   onEditPlan?: () => void;
 }
@@ -52,7 +54,7 @@ const STATUS_HELP: Record<StudyPlan['status'], string> = {
   finished: '已完成：全部词都已过完，不会再排新任务。',
 };
 
-export default function PlanSummaryCard({ plan, progress, onEditPlan }: PlanSummaryCardProps) {
+export default function PlanSummaryCard({ plan, progress, todayQuiz, onEditPlan }: PlanSummaryCardProps) {
   const [help, setHelp] = useState<HelpKey | null>(null);
   if (!plan) {
     return (
@@ -93,6 +95,12 @@ export default function PlanSummaryCard({ plan, progress, onEditPlan }: PlanSumm
       <Typography variant="body2" sx={{ mt: 1 }}>
         窗口：{plan.startDate} → {plan.deadlineDate}（距六级考试窗口 {plan.sprintStartDate} 起为冲刺周）
       </Typography>
+      {todayQuiz && (
+        <Typography variant="body2" sx={{ mt: 0.5 }}>
+          今天：检测 <strong>{todayQuiz.words.length}</strong> 词（无论过没过）· 其中第一次出现{' '}
+          {todayQuiz.firstSeen.length} 词
+        </Typography>
+      )}
       {progress && (
         <>
           <Typography variant="body2">

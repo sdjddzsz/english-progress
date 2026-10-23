@@ -21,6 +21,8 @@ export interface ExampleRepo {
     userId: string;
     wordId: string;
     senseId: string;
+    /** 子义项文本（逗号拆开的单条意思；用户 2026-10-23） */
+    senseZh?: string;
     lemma: string;
     en: string;
     zh: string;
@@ -47,12 +49,13 @@ export function createExampleRepo(db: CloudDatabaseLike = getDb()): ExampleRepo 
       // 同一毫秒连续生成时 createdAt 相同 ⇒ 补 id 升序做稳定次序（同 noteRepo.listNotes 的思路）
       return rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
     },
-    addExample: async ({ userId, wordId, senseId, lemma, en, zh, source }) => {
+    addExample: async ({ userId, wordId, senseId, senseZh, lemma, en, zh, source }) => {
       const now = nowIso();
       return examples.insert({
         userId,
         wordId,
         senseId,
+        ...(senseZh ? { senseZh } : {}),
         lemma,
         en: en.trim(),
         zh: zh.trim(),

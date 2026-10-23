@@ -32,6 +32,7 @@ export default function StagePage() {
     userId,
     activePlan,
     stageProgress,
+    todayQuiz,
     activeBookId,
     refreshToday,
     bootstrap,
@@ -122,6 +123,7 @@ export default function StagePage() {
             <PlanSummaryCard
               plan={activePlan}
               progress={stageProgress}
+              todayQuiz={todayQuiz}
               onEditPlan={() => navigate('/plan-editor')}
             />
           </Paper>

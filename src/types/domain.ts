@@ -533,6 +533,11 @@ export interface WordExample {
   wordId: string;
   /** 归属义项（与 WordSense.senseId 同构） */
   senseId: string;
+  /**
+   * 归属**子义项**文本（用户 2026-10-23：一个义项里「放弃，抛弃」按逗号拆开，
+   * 例句针对单条意思生成）。老数据无此列 ⇒ 展示时回落整条释义。
+   */
+  senseZh?: string;
   /** 生成时的 lemma 快照 */
   lemma: string;
   /** 英文例句 */

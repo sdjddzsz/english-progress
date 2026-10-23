@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildExampleMessages, buildExampleUserPrompt, parseExampleReply } from '../../src/features/examples';
+import { splitSenseZh } from '../../src/features/senses';
 import type { WordSense } from '../../src/types/domain';
 
 const sense: WordSense = {
@@ -74,5 +75,35 @@ describe('parseExampleReply', () => {
   it('英文内部多余空白被压成单空格', () => {
     const raw = '{"en": "They  had   to abandon it.", "zh": "他们不得不放弃它。"}';
     expect(parseExampleReply(raw)?.en).toBe('They had to abandon it.');
+  });
+
+  it('子义项提示词：zhOverride 只带单条意思（用户 2026-10-23 逗号拆分）', () => {
+    const msgs = buildExampleMessages('abandon', sense, '放弃');
+    expect(msgs[1].content).toContain('义项释义：放弃');
+    expect(msgs[1].content).not.toContain('抛弃'); // 不带兄弟义项
+  });
+
+  it('不传 zhOverride 时仍用整条释义（兼容旧调用）', () => {
+    const msgs = buildExampleMessages('abandon', sense);
+    expect(msgs[1].content).toContain('义项释义：放弃，抛弃');
+  });
+});
+
+describe('splitSenseZh（义项按逗号/分号/顿号拆子义项）', () => {
+  it('中文逗号拆开并去空白', () => {
+    expect(splitSenseZh('放弃，抛弃')).toEqual(['放弃', '抛弃']);
+  });
+
+  it('中英逗号/分号/顿号混用也拆', () => {
+    expect(splitSenseZh('放弃, 抛弃；离弃、遗弃')).toEqual(['放弃', '抛弃', '离弃', '遗弃']);
+  });
+
+  it('单条意思原样返回（拆不出多条时长度 1，调用方按整条处理）', () => {
+    expect(splitSenseZh('放弃')).toEqual(['放弃']);
+  });
+
+  it('空串/纯分隔符 ⇒ 空数组', () => {
+    expect(splitSenseZh('')).toEqual([]);
+    expect(splitSenseZh('，；、')).toEqual([]);
   });
 });

@@ -23,8 +23,8 @@ export interface UseWordExamplesApi {
   genBusy: boolean;
   /** 生成/删除失败的明面文案 */
   error: string;
-  /** 为某个义项生成一条例句（追加，不覆盖） */
-  generate(sense: WordSense): Promise<WordExample | null>;
+  /** 为某个义项生成一条例句（追加，不覆盖）；senseZh = 逗号拆开的单条子义项（用户 2026-10-23） */
+  generate(sense: WordSense, senseZh?: string): Promise<WordExample | null>;
   /** 删除一条 */
   remove(id: string): Promise<void>;
 }
@@ -59,13 +59,13 @@ export function useWordExamples(wordId: string | null, lemma: string, tempModel?
   }, [userId, wordId]);
 
   const generate = useCallback(
-    async (sense: WordSense): Promise<WordExample | null> => {
+    async (sense: WordSense, senseZh?: string): Promise<WordExample | null> => {
       if (!userId || !wordId || genBusy) return null;
       setGenBusy(true);
       setError('');
       try {
         const { aiChannel, aiBaseUrl, aiModel } = useSettingsStore.getState();
-        const result = await chatTurn(buildExampleMessages(lemma, sense), {
+        const result = await chatTurn(buildExampleMessages(lemma, sense, senseZh), {
           model: tempModel || aiModel || 'step-5-preview',
           channel: aiChannel,
           ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}),
@@ -79,6 +79,7 @@ export function useWordExamples(wordId: string | null, lemma: string, tempModel?
           userId,
           wordId,
           senseId: sense.senseId,
+          ...(senseZh ? { senseZh } : {}),
           lemma,
           en: parsed.en,
           zh: parsed.zh,

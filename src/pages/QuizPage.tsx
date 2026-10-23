@@ -88,7 +88,7 @@ type Phase = 'loading' | 'quiz' | 'between' | 'done';
 
 export default function QuizPage() {
   const navigate = useNavigate();
-  const { activeBookId, userId, todayHits, completeHit } = useAppStore();
+  const { activeBookId, userId, todayHits, completeHit, noteQuizAnswer } = useAppStore();
   const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold, firstPassThreshold, quizDailyLimit, stageGraduate } =
     useSettingsStore();
   const graduateStreak = stageGraduate[1];
@@ -199,6 +199,11 @@ export default function QuizPage() {
           setTodayLeft(snap.todayLeft);
           setStats(snap.stats);
           setPhase('quiz');
+          // 今日检测统计补登（用户 2026-10-23）：快照里已作答的词刷新后仍算「今天检测过」
+          // （attemptNo===1 的才算第一次出现；lastQuizAt 播种只补得过词、补不了首答）
+          for (const it of restored) {
+            if (it.verdict !== undefined) noteQuizAnswer(it.bookWord.wordId, it.attemptNo);
+          }
           return;
         }
       }
@@ -294,12 +299,12 @@ export default function QuizPage() {
   // 生成模型跟随问答框的临时模型下拉（用户 2026-10-23：一处选择两处生效），空=设置页默认
   const examplesApi = useWordExamples(current?.bookWord.wordId ?? null, current?.word.lemma ?? '', sessionModel);
 
-  /** 菜单「生成例句」：为第 senseIndex 个义项生成一条（追加，不覆盖） */
-  const handleGenerateExample = async (senseIndex: number): Promise<void> => {
+  /** 菜单「生成例句」：为第 senseIndex 个义项的第 subZh 条意思生成一条（追加，不覆盖） */
+  const handleGenerateExample = async (senseIndex: number, subZh?: string): Promise<void> => {
     if (!current) return;
     const sense = displaySenses(current.word)[senseIndex];
     if (!sense) return;
-    await examplesApi.generate(sense);
+    await examplesApi.generate(sense, subZh);
   };
 
   /** 例句朗读：走 TTS 主轨（AI 发音），与单词同一编排链 */
@@ -366,6 +371,8 @@ export default function QuizPage() {
     sfx(v === 'skilled' || v === 'recognized' ? 'correct' : 'wrong');
     setPickedKey(key);
     setVerdict(v);
+    // 今日检测统计（用户 2026-10-23）：答过的词都计入；attemptNo===1 = 第一次出现
+    noteQuizAnswer(current.bookWord.wordId, current.attemptNo);
     const bw = current.bookWord;
     const now = new Date();
     const firstQuizOfDay = !isSameUtcDay(bw.lastQuizAt, now);
@@ -856,9 +863,10 @@ export default function QuizPage() {
               <SenseListSection
                 word={current.word}
                 currentSenseIndex={current.senseIndex}
-                onLongPress={setSenseEditIdx}
+                onEditSense={setSenseEditIdx}
+                onDeleteSense={setSenseEditIdx}
                 onAdd={() => setSenseAddOpen(true)}
-                onGenerateExample={(i) => void handleGenerateExample(i)}
+                onGenerateExample={(i, subZh) => void handleGenerateExample(i, subZh)}
                 genBusy={examplesApi.genBusy}
               />
               {/* 用户例句（用户 2026-10-22：AI 生成 / AI 朗读 / 可删）。

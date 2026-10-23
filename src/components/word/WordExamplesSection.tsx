@@ -29,11 +29,12 @@ interface Props {
   onRemove: (id: string) => void;
 }
 
-/** 例句归属义项的短标签（「v. 放弃，抛弃」） */
-function senseLabelOf(word: Word, senseId: string): string {
+/** 例句归属的短标签：子义项（逗号拆开的单条意思）优先，老数据回落整条释义 */
+function senseLabelOf(word: Word, senseId: string, senseZh?: string): string {
   const s = displaySenses(word).find((x) => x.senseId === senseId);
-  if (!s) return '';
-  return `${s.pos ? `[${s.pos}] ` : ''}${s.zh}`;
+  const pos = s?.pos ? `[${s.pos}] ` : '';
+  if (senseZh) return `${pos}${senseZh}`;
+  return s ? `${pos}${s.zh}` : '';
 }
 
 export default function WordExamplesSection({
@@ -72,7 +73,7 @@ export default function WordExamplesSection({
       )}
       <Stack spacing={1} sx={{ mt: 0.5 }}>
         {examples.map((ex) => {
-          const label = senseLabelOf(word, ex.senseId);
+          const label = senseLabelOf(word, ex.senseId, ex.senseZh);
           return (
             <Stack key={ex.id} direction="row" alignItems="flex-start" spacing={0.5}>
               <Tooltip title="朗读例句（AI 发音）">

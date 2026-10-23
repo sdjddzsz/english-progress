@@ -1,8 +1,10 @@
 /**
  * SenseListSection.tsx —— 题卡里的「全部释义」区块（2026-10-15：多义词出答案必须完整显示）。
- * 2026-10-18：长按/右键可编辑/删除；2026-10-19：可当场增加词义（写回词书）。
+ * 2026-10-18：义项可编辑/删除；2026-10-19：可当场增加词义（写回词书）。
  * 2026-10-20：标题与「+增加词义」并一行、删掉长操作提示——一屏装下。
- * 2026-10-22：长按改为弹出菜单——「编辑义项 / 生成例句」（用户：每个释义长按后多一个生成例句选项）。
+ * 2026-10-22：长按释义弹「生成例句」；2026-10-23（用户：同一个词性写了多条意思，
+ * 每条都要能单独生成例句）：每个**子义项**（逗号/分号拆开）独立长按 ⇒ 给那一条意思
+ * 生成例句；义项的编辑/删除搬进行尾铅笔按钮的菜单——两类手势分开，不再冲突。
  */
 import { useState } from 'react';
 import Button from '@mui/material/Button';
@@ -20,12 +22,14 @@ interface Props {
   word: Word;
   /** 本题正在考的义项序号（标注「← 本题」；不给则不标注，如阶段四纯展示） */
   currentSenseIndex?: number;
-  /** 菜单「编辑义项」→ 打开编辑弹窗 */
-  onLongPress: (index: number) => void;
+  /** 铅笔菜单「编辑义项」→ 打开编辑弹窗 */
+  onEditSense: (index: number) => void;
+  /** 铅笔菜单「删除义项」→ 打开编辑弹窗（删除在弹窗内确认） */
+  onDeleteSense: (index: number) => void;
   /** 「+ 增加词义」→ 打开新增弹窗 */
   onAdd: () => void;
-  /** 菜单「生成例句」→ 为该义项生成一条例句 */
-  onGenerateExample: (index: number) => void;
+  /** 子义项长按「生成例句」→ 为该条意思生成一条例句 */
+  onGenerateExample: (senseIndex: number, subZh: string) => void;
   /** 例句生成中（菜单项禁用 + 文案） */
   genBusy?: boolean;
 }
@@ -33,12 +37,14 @@ interface Props {
 export default function SenseListSection({
   word,
   currentSenseIndex,
-  onLongPress,
+  onEditSense,
+  onDeleteSense,
   onAdd,
   onGenerateExample,
   genBusy = false,
 }: Props) {
-  const [menu, setMenu] = useState<{ index: number; el: HTMLElement } | null>(null);
+  const [subMenu, setSubMenu] = useState<{ index: number; subZh: string; el: HTMLElement } | null>(null);
+  const [senseMenu, setSenseMenu] = useState<{ index: number; el: HTMLElement } | null>(null);
 
   return (
     <Box sx={{ width: '100%', textAlign: 'left' }}>
@@ -63,35 +69,55 @@ export default function SenseListSection({
             sense={sense}
             index={i}
             isCurrent={currentSenseIndex === i}
-            onLongPress={(index, el) => setMenu({ index, el })}
+            onLongPressSub={(index, subZh, el) => setSubMenu({ index, subZh, el })}
+            onEditSense={(index, el) => setSenseMenu({ index, el })}
           />
         ))}
       </Stack>
+      {/* 子义项菜单：只做一件事——给这一条意思生成例句 */}
       <Menu
-        anchorEl={menu?.el ?? null}
-        open={menu !== null}
-        onClose={() => setMenu(null)}
+        anchorEl={subMenu?.el ?? null}
+        open={subMenu !== null}
+        onClose={() => setSubMenu(null)}
+        anchorOrigin={{ vertical: 'center', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        <MenuItem
+          disabled={genBusy}
+          onClick={() => {
+            const m = subMenu;
+            setSubMenu(null);
+            if (m) onGenerateExample(m.index, m.subZh);
+          }}
+        >
+          {genBusy ? '生成中…' : `生成例句（${subMenu?.subZh ?? ''}）`}
+        </MenuItem>
+      </Menu>
+      {/* 义项级菜单：编辑 / 删除 */}
+      <Menu
+        anchorEl={senseMenu?.el ?? null}
+        open={senseMenu !== null}
+        onClose={() => setSenseMenu(null)}
         anchorOrigin={{ vertical: 'center', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
         <MenuItem
           onClick={() => {
-            const i = menu?.index;
-            setMenu(null);
-            if (i != null) onLongPress(i);
+            const i = senseMenu?.index;
+            setSenseMenu(null);
+            if (i != null) onEditSense(i);
           }}
         >
           编辑义项
         </MenuItem>
         <MenuItem
-          disabled={genBusy}
           onClick={() => {
-            const i = menu?.index;
-            setMenu(null);
-            if (i != null) onGenerateExample(i);
+            const i = senseMenu?.index;
+            setSenseMenu(null);
+            if (i != null) onDeleteSense(i);
           }}
         >
-          {genBusy ? '生成中…' : '生成例句'}
+          删除义项
         </MenuItem>
       </Menu>
     </Box>
