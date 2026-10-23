@@ -211,12 +211,12 @@ export default function PlanEditorPage() {
         </Alert>
       )}
 
-      {/* 当前生效参数概览 */}
+      {/* 当前生效参数概览（节奏/预估不在这张卡上——编辑器自己的影响预览在下方，走计划参数口径） */}
       <Paper sx={{ mt: 2, p: 2 }}>
         <Typography variant="h6" gutterBottom>
           当前生效
         </Typography>
-        <PlanSummaryCard plan={baseline} validation={preview ? preview.dailyMinutes : null} finishDate={preview?.newFinishDate} />
+        <PlanSummaryCard plan={baseline} />
       </Paper>
 
       {/* 参数表单 */}

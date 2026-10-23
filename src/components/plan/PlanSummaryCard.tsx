@@ -1,21 +1,24 @@
 /**
  * PlanSummaryCard.tsx —— 计划概览卡：
- * 档位 / 各层轮次 / 起止与预计完成日 / 日均任务量与时间预算校验（validatePlan 结果）。
- * 硬约束 #1 边界：只展示任务量与时间（"日均 N 个 · M 分钟"），不出现禁用词表任何概念。
+ * 档位 / 状态 / 降频标签（可点有解释）+ 窗口 + **四阶段进度与真实节奏**（用户 2026-10-23 选「方案 2」）。
  *
- * 用户 2026-10-15：四个标签（档位 / 状态 / 降频 / 欠账）必须可点、点了要有解释——
- * "看起来能点的就必须能点，点了就知道它是干嘛的"。故每个 chip 都接 Dialog 说明，
- * 档位与欠账还给到明确去向（计划编辑 / 欠账重排）。
+ * 历史：本卡中段原来显示 tier 模型预估（Σ词数×轮次 ÷ 窗口 × 秒数 → 日均量/预算/红警告）——
+ * 四阶段考查不计入 hits、词晋级即离池，那套数字对四阶段用户是持续误报（红线常年亮）。
+ * 现改为按真实数据算：剩余词（stage≠0）+ book_words.lastQuizAt 的近 14 天节奏 →
+ * 学习日均速/预计完成日/与窗口比对的速度判定。旧 validatePlan 仍供计划编辑页预览用。
  */
 import { Alert, Box, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Button, LinearProgress, Stack, Typography } from '@mui/material';
 import { useState } from 'react';
 import type { StudyPlan } from '../../types/domain';
-import type { ValidationResult } from '../../scheduler';
+import type { StageProgress } from '../../store/useAppStore';
 
 export interface PlanSummaryCardProps {
   plan: StudyPlan | null;
-  validation: ValidationResult | null;
-  finishDate?: string | null;
+  /**
+   * 四阶段进度与真实节奏（store.stageProgress）。首页传；计划编辑页不传——
+   * 那里的参数影响预览走自己的 tier 模型口径（预览块自带），不在这张卡上混。
+   */
+  progress?: StageProgress | null;
   /** 档位/参数调整入口（如跳计划编辑页） */
   onEditPlan?: () => void;
 }
@@ -49,15 +52,13 @@ const STATUS_HELP: Record<StudyPlan['status'], string> = {
   finished: '已完成：全部词都已过完，不会再排新任务。',
 };
 
-export default function PlanSummaryCard({ plan, validation, finishDate, onEditPlan }: PlanSummaryCardProps) {
+export default function PlanSummaryCard({ plan, progress, onEditPlan }: PlanSummaryCardProps) {
   const [help, setHelp] = useState<HelpKey | null>(null);
-  if (!plan || !validation) {
+  if (!plan) {
     return (
       <Alert severity="info">还没有生效中的计划——去「词书」页选择词书并创建计划。</Alert>
     );
   }
-
-  const minutesRatio = Math.min(100, (validation.dailyMinutes / Math.max(1, plan.dailyBudgetMin)) * 100);
 
   const close = () => setHelp(null);
 
@@ -90,42 +91,53 @@ export default function PlanSummaryCard({ plan, validation, finishDate, onEditPl
       </Stack>
 
       <Typography variant="body2" sx={{ mt: 1 }}>
-        窗口：{plan.startDate} → {plan.deadlineDate}
+        窗口：{plan.startDate} → {plan.deadlineDate}（距六级考试窗口 {plan.sprintStartDate} 起为冲刺周）
       </Typography>
-      <Typography variant="body2">
-        预计完成日：<strong>{finishDate ?? plan.deadlineDate}</strong> ｜ 距六级考试窗口{' '}
-        {plan.sprintStartDate} 起为冲刺周
-      </Typography>
-
-      <Box sx={{ mt: 1.5 }}>
-        <Stack direction="row" justifyContent="space-between">
+      {progress && (
+        <>
           <Typography variant="body2">
-            日均 {validation.dailyHits} 个 · 约 {validation.dailyMinutes.toFixed(1)} 分钟
+            剩余 <strong>{progress.remaining}</strong> 词 · 已彻底毕业 {progress.graduated} 词
           </Typography>
-          <Typography variant="body2" color="text.secondary">
-            预算 {plan.dailyBudgetMin} 分钟/天
-          </Typography>
-        </Stack>
-        <LinearProgress
-          variant="determinate"
-          value={minutesRatio}
-          color={validation.pass ? 'primary' : validation.critical ? 'warning' : 'error'}
-          sx={{ mt: 0.5, height: 8, borderRadius: 4 }}
-        />
-      </Box>
 
-      {validation.pass ? (
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          当前参数在时间预算内可完成（余量 {(validation.marginRatio * 100).toFixed(0)}%）。
-        </Typography>
-      ) : validation.critical ? (
-        <Alert severity="warning" sx={{ mt: 1 }}>
-          余量临界（差 {(Math.abs(validation.marginRatio) * 100).toFixed(0)}%）：接近每日预算上限，建议上调预算或改保底档。
-        </Alert>
-      ) : (
-        <Alert severity="error" sx={{ mt: 1 }}>
-          按当前参数完不成：日均需 {validation.dailyMinutes.toFixed(0)} 分钟，超出预算。可在「计划编辑」里上调预算、切保底档或冻结已掌握的层。
-        </Alert>
+          <Box sx={{ mt: 1.5 }}>
+            <Stack direction="row" justifyContent="space-between">
+              <Typography variant="body2">
+                近 {progress.pace.windowDays} 天：学习 {progress.pace.activeDays} 天 · 日均 {progress.pace.wordsPerDay}{' '}
+                词 · 约 {progress.pace.minutesPerDay.toFixed(0)} 分钟/学习日
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                预算 {plan.dailyBudgetMin} 分钟/天
+              </Typography>
+            </Stack>
+            <LinearProgress
+              variant="determinate"
+              value={Math.min(100, (progress.pace.minutesPerDay / Math.max(1, plan.dailyBudgetMin)) * 100)}
+              color={progress.pace.minutesPerDay <= plan.dailyBudgetMin ? 'primary' : 'error'}
+              sx={{ mt: 0.5, height: 8, borderRadius: 4 }}
+            />
+          </Box>
+
+          {progress.verdict.kind === 'finished' ? (
+            <Alert severity="success" sx={{ mt: 1 }}>
+              全部词已彻底毕业——四阶段走完，不会再排新内容。
+            </Alert>
+          ) : progress.verdict.kind === 'insufficient' ? (
+            <Alert severity="info" sx={{ mt: 1 }}>
+              近 {progress.pace.windowDays} 天只学了 {progress.verdict.activeDays} 天，节奏数据还不够——再学几天，这里会按你的真实速度给出预计完成日。
+            </Alert>
+          ) : progress.verdict.kind === 'ontrack' ? (
+            <Alert severity="success" sx={{ mt: 1 }}>
+              预计完成日：<strong>{progress.verdict.finishDate}</strong>（按当前节奏）——可在窗口内完成，余量{' '}
+              {progress.verdict.gapDays} 天。
+            </Alert>
+          ) : (
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              预计完成日：<strong>{progress.verdict.finishDate}</strong>（按当前节奏）——超出窗口{' '}
+              {progress.verdict.gapDays} 天。要按时完成需日均提到 {progress.verdict.neededPerDay} 词（约{' '}
+              {progress.verdict.neededMinutes.toFixed(0)} 分钟/天）；或去「计划编辑」改窗口/目标。
+            </Alert>
+          )}
+        </>
       )}
 
       {/* 标签说明弹窗（用户 2026-10-15：能点的都要有解释） */}

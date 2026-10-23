@@ -95,7 +95,8 @@ export const bookWords = words.map((w, i) => ({
   streak: 0,
   failStreak: 0,
   specialTraining: i % 37 === 0,
-  lastQuizAt: i % 5 === 0 ? iso(-1) : null,
+  // lastQuizAt 铺满近 14 天（约 1/3 的词有记录）⇒ 首页计划卡能算出真实节奏与预计完成日
+  lastQuizAt: i % 3 === 0 ? iso(-(i % 14)) : null,
   quiz_day_streak: 0,
   quiz_day_passed: false,
   quizDayStreak: 0,

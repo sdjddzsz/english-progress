@@ -68,6 +68,16 @@ async function main() {
   await page.waitForTimeout(3000);
   const homeText = await page.locator('body').innerText();
   check('首页渲染（四阶段卡片+词表按钮）', homeText.includes('词表') && homeText.includes('阶段一'), '');
+  // 计划卡改四阶段真实节奏（用户 2026-10-23）：不再有 tier 模型的「超出预算」红警告，
+  // 改为「剩余/已毕业 + 近 14 天节奏 + 预计完成日」三段式
+  check(
+    '计划卡显示四阶段真实节奏（剩余词+近14天节奏+预计完成日，无旧红警告）',
+    /剩余 \d+ 词 · 已彻底毕业 \d+ 词/.test(homeText) &&
+      /近 14 天：学习 \d+ 天/.test(homeText) &&
+      homeText.includes('预计完成日') &&
+      !homeText.includes('按当前参数完不成'),
+    homeText.match(/剩余[^\n]*|近 14 天[^\n]*|预计完成日[^\n]*|按当前参数[^\n]*/g)?.slice(0, 3).join(' | ') ?? '',
+  );
 
   // ===== A) 词表页 =====
   cloudLog.length = 0;

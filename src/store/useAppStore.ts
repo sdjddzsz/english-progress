@@ -27,6 +27,7 @@ import { createNoteRepo, type NoteRepo } from '../data/repos/noteRepo';
 import { createExampleRepo, type ExampleRepo } from '../data/repos/exampleRepo';
 import { decideProposal } from '../ai/authz';
 import type { ToolContext } from '../ai/tools/readTools';
+import { computeStagePace, paceVerdict, type PaceVerdict, type StagePace } from '../features/quiz/stagePace';
 
 // ===== 仓库与工具上下文（懒初始化，云未配置时由调用方捕获错误）=====
 
@@ -95,6 +96,15 @@ function planToParams(plan: StudyPlan, listSize: number): PlanParams {
 
 // ===== 状态 =====
 
+/** 四阶段进度 + 真实节奏（首页计划卡用；用户 2026-10-23 选「方案 2」） */
+export interface StageProgress {
+  /** 还在阶段一~四池里的词数 */
+  remaining: number;
+  /** 已彻底毕业（stage=0）的词数 */
+  graduated: number;
+  pace: StagePace;
+  verdict: PaceVerdict;
+}
 
 export interface AppState {
   userId: string | null;
@@ -109,6 +119,7 @@ export interface AppState {
   activePlan: StudyPlan | null;
   planValidation: ValidationResult | null;
   planFinish: string | null;
+  stageProgress: StageProgress | null;
 
   todayHits: Hit[];
   todayPendingCount: number;
@@ -148,6 +159,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   activePlan: null,
   planValidation: null,
   planFinish: null,
+  stageProgress: null,
 
   todayHits: [],
   todayPendingCount: 0,
@@ -202,7 +214,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   setActiveBook: async (bookId) => {
-    set({ activeBookId: bookId, activePlan: null, planValidation: null, planFinish: null, todayHits: [], todayPendingCount: 0, wordMap: {} });
+    set({ activeBookId: bookId, activePlan: null, planValidation: null, planFinish: null, stageProgress: null, todayHits: [], todayPendingCount: 0, wordMap: {} });
     const { userId } = get();
     if (!userId) return;
     try {
@@ -267,6 +279,21 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
       const validation = validatePlan({ params, tierCounts, steadyWords });
       const finish = planFinishDate(params, tierCounts);
+      // 四阶段进度与真实节奏（用户 2026-10-23）：剩余词 + lastQuizAt 分布，零额外请求
+      const remaining = bws.filter((bw) => bw.stage !== 0).length;
+      const pace = computeStagePace(bws, new Date(), 14, activePlan.avgHitSec);
+      const stageProgress: StageProgress = {
+        remaining,
+        graduated: bws.length - remaining,
+        pace,
+        verdict: paceVerdict({
+          remaining,
+          pace,
+          now: new Date(),
+          deadlineDate: activePlan.deadlineDate,
+          avgHitSec: activePlan.avgHitSec,
+        }),
+      };
       // 今日词卡数据
       const wordIds = [...new Set(entries.map((e) => e.wordId))];
       const words = await repos.word.listWordsByIds(wordIds);
@@ -279,6 +306,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         wordMap,
         planValidation: validation,
         planFinish: finish,
+        stageProgress,
         error: null,
       });
     } catch (e) {

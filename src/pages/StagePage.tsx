@@ -31,8 +31,7 @@ export default function StagePage() {
     cloudReady,
     userId,
     activePlan,
-    planValidation,
-    planFinish,
+    stageProgress,
     activeBookId,
     refreshToday,
     bootstrap,
@@ -118,12 +117,11 @@ export default function StagePage() {
         </Paper>
       ) : (
         <>
-          {/* 计划概览（计划制的输入面板，保留） */}
+          {/* 计划概览（档位/窗口标签 + 四阶段真实节奏与预计完成日，用户 2026-10-23） */}
           <Paper sx={{ mt: 2, p: 2 }}>
             <PlanSummaryCard
               plan={activePlan}
-              validation={planValidation}
-              finishDate={planFinish}
+              progress={stageProgress}
               onEditPlan={() => navigate('/plan-editor')}
             />
           </Paper>
