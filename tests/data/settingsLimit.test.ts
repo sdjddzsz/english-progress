@@ -32,3 +32,17 @@ describe('quizDailyLimit：默认 300，clamp 50–1000', () => {
     expect(useSettingsStore.getState().quizDailyLimit).toBe(QUIZ_DAILY_LIMIT_MAX);
   });
 });
+
+describe('firstPassThreshold：首答即过关挡位（用户 2026-10-23 拆线）', () => {
+  it('默认 = strict（首答熟练才算一遍过；旧设备无持久化字段时也落这条）', () => {
+    expect(useSettingsStore.getState().firstPassThreshold).toBe('strict');
+  });
+
+  it('可设置且与轮标线挡位互不影响', () => {
+    useSettingsStore.getState().setFirstPassThreshold('standard');
+    useSettingsStore.getState().setQuizDayThreshold('strict');
+    const s = useSettingsStore.getState();
+    expect(s.firstPassThreshold).toBe('standard');
+    expect(s.quizDayThreshold).toBe('strict');
+  });
+});

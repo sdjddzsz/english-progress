@@ -467,7 +467,7 @@ export default function SettingsPage() {
           </Stack>
 
           <Box>
-            <Typography variant="body2" gutterBottom>每轮过关挡位（考查）</Typography>
+            <Typography variant="body2" gutterBottom>每轮过关挡位（考查·轮标线）</Typography>
             <ToggleButtonGroup
               size="small"
               exclusive
@@ -481,20 +481,40 @@ export default function SettingsPage() {
               <ToggleButton value="strict">严格</ToggleButton>
             </ToggleButtonGroup>
             <Typography variant="caption" color="text.secondary" display="block">
-              <strong>当前生效：首答即「{thresholdLineLabel(settings.quizDayThreshold)}」</strong>
-              （下方选中项；改完立即生效，考查页题旁两行会跟着变）。
-              <br />
-              <strong>每轮首过 = 首答即达标</strong>（2026-10-18 定案）：一词在本轮第一次露面
-              就要达到挡位线才算这一轮「首过」——宽松=至少「不熟」、适当=至少「认识」、
-              严格=至少「熟练」。没达标即使答对也排到队尾重刷，重刷答对不算首过。
-              <br />
-              轮标线（放行线）：同一轮里连续 3 次达到挡位线才放行、本轮不再出现；
+              <strong>轮标线（放行线）</strong>：同一轮里连续 3 次达到这条挡位线才放行、本轮不再出现；
               一次没到线计数清零；跨天重新起算。已晋级/毕业的词立即放行。
+              当前挡位线=「{thresholdLineLabel(settings.quizDayThreshold)}」。
+              <br />
+              （原名「当天过关挡位」，2026-10-15 随放行机制改为按轮计算一并改名。）
+            </Typography>
+          </Box>
+
+          <Box>
+            <Typography variant="body2" gutterBottom>首答即过关挡位（考查·首答达标线）</Typography>
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={settings.firstPassThreshold}
+              onChange={(_, v) => {
+                if (v) settings.setFirstPassThreshold(v);
+              }}
+            >
+              <ToggleButton value="lenient">宽松</ToggleButton>
+              <ToggleButton value="standard">适当</ToggleButton>
+              <ToggleButton value="strict">严格</ToggleButton>
+            </ToggleButtonGroup>
+            <Typography variant="caption" color="text.secondary" display="block">
+              <strong>每轮首过 = 首答即达标</strong>（2026-10-18 定案；2026-10-23 起达标线独立设置）：
+              一词在本轮第一次露面就达到这条挡位线 ⇒ 「首答即达标一遍过」立即放行。
+              当前生效：首答达到「{thresholdLineLabel(settings.firstPassThreshold)}」即一遍过。
+              没达到这条线即使答对也排到队尾重刷，重刷作答不算首过、只按上面的轮标线挡位累计。
+              <br />
+              <strong>两条线独立（2026-10-23 拆线）</strong>：轮标线挡位管「连续 3 次放行」的计数线，
+              首答挡位只管第一答能否一遍过。例：轮标线=适当、首答=严格——首答「认识」会累计轮标线但不会一遍过。
               <br />
               毕业线：连续 3 轮首见达标才晋级/毕业——这词之前被重排刷过多少轮都不算，
-              没凑够连续 3 轮首见达标坚决不毕业。
+              没凑够连续 3 轮首见达标坚决不毕业，判定固定「熟练」（与上面两条挡位线都无关）。
               总计划（明天起的考查频率）只看当天第一次判定的熟悉度。
-              （原名「当天过关挡位」，2026-10-15 随放行机制改为按轮计算一并改名。）
             </Typography>
           </Box>
 

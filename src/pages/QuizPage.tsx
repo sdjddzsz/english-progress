@@ -89,7 +89,7 @@ type Phase = 'loading' | 'quiz' | 'between' | 'done';
 export default function QuizPage() {
   const navigate = useNavigate();
   const { activeBookId, userId, todayHits, completeHit } = useAppStore();
-  const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold, quizDailyLimit, stageGraduate } =
+  const { aiChannel, aiBaseUrl, aiModel, quizAutoNext, quizDayThreshold, firstPassThreshold, quizDailyLimit, stageGraduate } =
     useSettingsStore();
   const graduateStreak = stageGraduate[1];
   const { speakAuto, speak, resynthesize, loading, phaseLabel, voiceOverride, setVoiceOverride, getEffectiveVoiceModel } = useTTS();
@@ -380,6 +380,7 @@ export default function QuizPage() {
       verdict: v,
       prevStreak: bw.quizDayStreak ?? 0,
       threshold: quizDayThreshold,
+      firstPassThreshold,
       lastQuizAt: bw.lastQuizAt,
       leftStage: graduated,
       attemptNo: current.attemptNo,

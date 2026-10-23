@@ -213,17 +213,21 @@ export function isDayPassedToday(
  * 旧实现「答对一次就放行」，档位设置形同虚设。2026-10-17 增补首答规则）。
  *
  * 规则（阶段一~四一致）：
- *  - **本轮第一次作答就达到当前挡位线（首答即达标）⇒ 一遍过，立即放行**
- *    （用户 2026-10-18 定案：首过看的是「当前设置的挡位」——设首熟就要熟练，
- *     设首认识认识就行；旧实现硬编码「熟练」，档位设置对首过形同虚设）；
- *  - 其余词：连续 QUIZ_DAY_PASS_COUNT 次达到档位线 ⇒ 放行（本轮不再出现）；
+ *  - **本轮第一次作答就达到「首答即过关挡位」⇒ 一遍过，立即放行**
+ *    （用户 2026-10-23 拆线定案：首答达标线与轮标线挡位**解耦**——轮线挡位管连续计数，
+ *     首答挡位只管第一答能否一遍过，默认严格=首答熟练；旧实现两者共用一个挡位，
+ *     轮线设「认识」时首答认识也一遍过，用户点名纠正）；
+ *  - 其余词：连续 QUIZ_DAY_PASS_COUNT 次达到「轮标线挡位」⇒ 放行（本轮不再出现）；
  *  - 本次作答后离开本阶段（晋级/毕业）⇒ 立即放行（它已不属于本阶段的池）；
  *  - 连续计数跨天自动重新起算（lastQuizAt 不是今天 ⇒ 已累计次数作废）。
  */
 export function roundRelease(args: {
   verdict: QuizVerdict;
   prevStreak: number;
+  /** 轮标线挡位：连续计数的达标线（设置页「每轮过关挡位」） */
   threshold: QuizDayThreshold;
+  /** 首答即过关挡位（设置页「首答即过关挡位」）；缺省回落 threshold（兼容旧调用与测试） */
+  firstPassThreshold?: QuizDayThreshold;
   leftStage: boolean;
   /** 本轮内该词的第几次作答（1=第一次；不传按非第一次处理） */
   attemptNo?: number;
@@ -232,9 +236,12 @@ export function roundRelease(args: {
 }): { dayStreak: number; release: boolean } {
   const now = args.now ?? new Date();
   const carried = isSameUtcDay(args.lastQuizAt, now) ? args.prevStreak : 0;
+  // 轮标线计数：按「轮标线挡位」走（首答没过线也照样累计——它管的是连续 3 次放行）
   const dayStreak = quizDayStreakAfter(carried, args.verdict, args.threshold);
-  // 首答即达标：本轮第一次作答（attemptNo===1）就达到当前挡位线 ⇒ 一遍过
-  const firstTryOk = args.attemptNo === 1 && dayVerdictOk(args.verdict, args.threshold);
+  // 首答即达标：本轮第一次作答（attemptNo===1）就达到「首答即过关挡位」⇒ 一遍过
+  // （2026-10-23 拆线：不再用轮标线挡位判首答；未传回落 threshold 兼容旧调用）
+  const firstTryOk =
+    args.attemptNo === 1 && dayVerdictOk(args.verdict, args.firstPassThreshold ?? args.threshold);
   return {
     dayStreak,
     release: args.leftStage || firstTryOk || dayStreak >= QUIZ_DAY_PASS_COUNT,

@@ -95,7 +95,7 @@ export default function StageQuizPage() {
     if (stageParam === 1) navigate('/quiz', { replace: true });
   }, [stageParam, navigate]);
   const { activeBookId, userId } = useAppStore();
-  const { autoSpeak, quizDailyLimit, stageGraduate, quizDayThreshold } = useSettingsStore();
+  const { autoSpeak, quizDailyLimit, stageGraduate, quizDayThreshold, firstPassThreshold } = useSettingsStore();
   const { speak, speakAuto, resynthesize, loading: ttsLoading, voiceOverride, setVoiceOverride, getEffectiveVoiceModel } = useTTS();
   const sfx = useSfx();
 
@@ -241,6 +241,7 @@ export default function StageQuizPage() {
       verdict: v,
       prevStreak: bw.quizDayStreak ?? 0,
       threshold: quizDayThreshold,
+      firstPassThreshold,
       lastQuizAt: bw.lastQuizAt,
       leftStage: advanced,
       attemptNo: current.attemptNo,
@@ -294,6 +295,7 @@ export default function StageQuizPage() {
       verdict: correct ? 'skilled' : 'unknown',
       prevStreak: bw.quizDayStreak ?? 0,
       threshold: quizDayThreshold,
+      firstPassThreshold,
       lastQuizAt: bw.lastQuizAt,
       leftStage: graduated,
       attemptNo: current.attemptNo,

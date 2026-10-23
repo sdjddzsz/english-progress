@@ -278,6 +278,51 @@ describe('roundRelease：连续达标才放行，晋级/毕业立即放行', () 
     expect(r.release).toBe(true); // 首见达到当前挡位线 = 本轮首过
   });
 
+  // ===== 拆线（用户 2026-10-23）：首答达标线与轮标线挡位解耦 =====
+
+  it('拆线：轮线挡位=适当、首答挡位=严格 ⇒ 首答「认识」不放行，但轮线计数照走（用户截图场景）', () => {
+    const r = roundRelease({
+      verdict: 'recognized',
+      prevStreak: 0,
+      threshold: 'standard',
+      firstPassThreshold: 'strict',
+      leftStage: false,
+      attemptNo: 1,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r.dayStreak).toBe(1); // 轮线按「认识」累计（轮标线挡位管计数）
+    expect(r.release).toBe(false); // 首答挡位=熟练 ⇒ 认识不算一遍过
+  });
+
+  it('拆线：首答挡位=严格 ⇒ 首答「熟练」一遍过（轮线挡位=适当不影响首答判定）', () => {
+    const r = roundRelease({
+      verdict: 'skilled',
+      prevStreak: 0,
+      threshold: 'standard',
+      firstPassThreshold: 'strict',
+      leftStage: false,
+      attemptNo: 1,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r.release).toBe(true);
+    expect(r.dayStreak).toBe(1); // 熟练 ≥ 认识 ⇒ 轮线也累计
+  });
+
+  it('兼容：不传 firstPassThreshold 回落轮线挡位（旧行为不变）', () => {
+    const r = roundRelease({
+      verdict: 'recognized',
+      prevStreak: 0,
+      threshold: 'standard',
+      leftStage: false,
+      attemptNo: 1,
+      lastQuizAt: todayIso,
+      now,
+    });
+    expect(r.release).toBe(true); // 与上面「首答认识+适当档一遍过」同判定
+  });
+
   it('首见没达标（严格档下只到认识）→ 不放行，排到队尾刷次数', () => {
     const r = roundRelease({
       verdict: 'recognized',

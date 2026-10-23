@@ -37,9 +37,16 @@ export interface SettingsState {
   sfxEnabled: boolean;
   /** 考查答完是否自动进入下一题（用户 2026-10-14：默认关=手动点下一题） */
   quizAutoNext: boolean;
-  /** 每轮过关挡位（用户 2026-10-14 建制时叫「当天过关档位」，2026-10-15 改名：
-   *  放行机制按轮计算——连续达标 N 次才放行，字段名 quizDayThreshold 保持不变） */
+  /**
+   * 每轮过关挡位（轮标线）：同一轮里连续 3 次达到这条线才放行。
+   * 2026-10-23 起与「首答即过关挡位」解耦——本挡位只管轮标线计数，不再管首答一遍过。
+   */
   quizDayThreshold: QuizDayThreshold;
+  /**
+   * 首答即过关挡位（用户 2026-10-23 拆线）：本轮第一次露面就达到这条线 ⇒ 「首答即达标一遍过」
+   * 立即放行。默认 strict（首答熟练才算一遍过）；旧设备无此持久化字段时自动落到默认。
+   */
+  firstPassThreshold: QuizDayThreshold;
   /**
    * 每轮考查词量上限（用户 2026-10-15 拍板：默认 300，可调 50–1000）。
    * 只限"当天新铺的词"，答错重排不占额。
@@ -57,6 +64,7 @@ export interface SettingsState {
   setSfxEnabled(enabled: boolean): void;
   setQuizAutoNext(enabled: boolean): void;
   setQuizDayThreshold(threshold: QuizDayThreshold): void;
+  setFirstPassThreshold(threshold: QuizDayThreshold): void;
   setQuizDailyLimit(limit: number): void;
   setStageGraduate(stage: 1 | 2 | 3, count: number): void;
 }
@@ -77,6 +85,7 @@ export const useSettingsStore = create<SettingsState>()(
       sfxEnabled: true,
       quizAutoNext: false,
       quizDayThreshold: 'standard',
+      firstPassThreshold: 'strict',
       quizDailyLimit: QUIZ_DAILY_LIMIT_DEFAULT,
       stageGraduate: { 1: DEFAULT_STAGE_GRADUATE[1], 2: DEFAULT_STAGE_GRADUATE[2], 3: DEFAULT_STAGE_GRADUATE[3] },
 
@@ -90,6 +99,7 @@ export const useSettingsStore = create<SettingsState>()(
       setSfxEnabled: (sfxEnabled) => set({ sfxEnabled }),
       setQuizAutoNext: (quizAutoNext) => set({ quizAutoNext }),
       setQuizDayThreshold: (quizDayThreshold) => set({ quizDayThreshold }),
+      setFirstPassThreshold: (firstPassThreshold) => set({ firstPassThreshold }),
       setQuizDailyLimit: (quizDailyLimit) =>
         set({
           quizDailyLimit: Math.min(
