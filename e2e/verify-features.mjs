@@ -49,9 +49,17 @@ async function main() {
 
   // 记录 .cloud 请求（方法 + Prefer 头，计数请求靠它识别）
   const cloudLog = [];
+  const llmPosts = [];
   page.on('request', (r) => {
     if (r.url().includes('/.cloud/')) {
       cloudLog.push({ method: r.method(), url: r.url().replace(BASE, ''), prefer: r.headers()['prefer'] ?? '' });
+      if (r.url().includes('/.cloud/llm') && r.method() === 'POST') {
+        try {
+          llmPosts.push(JSON.parse(r.postData() ?? '{}'));
+        } catch {
+          /* ignore */
+        }
+      }
     }
   });
 
@@ -115,6 +123,20 @@ async function main() {
   );
 
   // ===== C) 例句 =====
+  // 临时模型联动（用户 2026-10-23）：问答框选临时模型 ⇒ 例句生成用同一模型
+  const modelSelect = page.locator('[aria-label="AI 模型（本轮临时选择）"]').first();
+  if ((await modelSelect.count()) > 0) {
+    await modelSelect.click();
+    await page.waitForTimeout(500);
+    const opt = page.getByRole('option', { name: 'step-6-turbo' });
+    if ((await opt.count()) > 0) {
+      await opt.click();
+      await page.waitForTimeout(400);
+      console.log('（已选临时模型 step-6-turbo）');
+    } else {
+      console.log('（模型下拉无 step-6-turbo 选项——mock models 端点可能没生效）');
+    }
+  }
   // 点第一个选项作答（揭示释义区）
   const optButtons = page.locator('button').filter({ hasText: /放弃|抛弃|放任|沉溺|离开|遗弃/ });
   if ((await optButtons.count()) > 0) await optButtons.first().click().catch(() => {});
@@ -139,6 +161,13 @@ async function main() {
     await page.waitForTimeout(5000);
     const afterGen = await page.locator('body').innerText();
     check('生成例句成功（LLM SSE → 例句块出现）', afterGen.includes('abandon the sinking ship') && afterGen.includes('他们决定弃船'), '');
+    // 临时模型联动断言：本次生成请求体的 model = 问答框选中的临时模型
+    const lastLlm = llmPosts[llmPosts.length - 1];
+    check(
+      '例句生成跟随问答框临时模型（model=step-6-turbo）',
+      lastLlm?.model === 'step-6-turbo',
+      `请求体 model=${lastLlm?.model ?? '(无)'}`,
+    );
     const playBtn = page.locator('button[aria-label^="play example"]').first();
     check('例句带 AI 朗读按钮', (await playBtn.count()) > 0, '');
     // 例句块位置：页面下半部（原按钮位置）——删之前测

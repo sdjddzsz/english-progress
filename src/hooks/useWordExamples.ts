@@ -4,6 +4,8 @@
  * - 加载：挂载/换词即拉该词全部例句（一词多条，按生成时间升序）；
  * - 生成：chatTurn（走设置页 AI 通道/模型）→ parseExampleReply → exampleRepo 落库 → 本地追加；
  *   每次调用只生成一条（用户：每次生成可以增加一个例句）；
+ *   模型优先用调用方传入的**临时模型**（用户 2026-10-23：问答框的临时模型下拉同时管例句生成，
+ *   一处选择两处生效）；没传回落设置页默认；
  * - 删除：按 id 删，RLS 保证只能删自己的。
  * 写失败/解析失败都在明面给文案（genError），不静默。
  */
@@ -27,7 +29,7 @@ export interface UseWordExamplesApi {
   remove(id: string): Promise<void>;
 }
 
-export function useWordExamples(wordId: string | null, lemma: string): UseWordExamplesApi {
+export function useWordExamples(wordId: string | null, lemma: string, tempModel?: string): UseWordExamplesApi {
   const userId = useAppStore((s) => s.userId);
   const [examples, setExamples] = useState<WordExample[]>([]);
   const [loading, setLoading] = useState(false);
@@ -64,7 +66,7 @@ export function useWordExamples(wordId: string | null, lemma: string): UseWordEx
       try {
         const { aiChannel, aiBaseUrl, aiModel } = useSettingsStore.getState();
         const result = await chatTurn(buildExampleMessages(lemma, sense), {
-          model: aiModel || 'step-5-preview',
+          model: tempModel || aiModel || 'step-5-preview',
           channel: aiChannel,
           ...(aiBaseUrl ? { baseUrl: aiBaseUrl } : {}),
         });
@@ -90,7 +92,7 @@ export function useWordExamples(wordId: string | null, lemma: string): UseWordEx
         setGenBusy(false);
       }
     },
-    [userId, wordId, lemma, genBusy],
+    [userId, wordId, lemma, genBusy, tempModel],
   );
 
   const remove = useCallback(

@@ -290,8 +290,9 @@ export default function QuizPage() {
 
   const current = items[idx] ?? null;
 
-  // 当前词的用户例句（用户 2026-10-22）：加载 / AI 生成 / 删除
-  const examplesApi = useWordExamples(current?.bookWord.wordId ?? null, current?.word.lemma ?? '');
+  // 当前词的用户例句（用户 2026-10-22）：加载 / AI 生成 / 删除。
+  // 生成模型跟随问答框的临时模型下拉（用户 2026-10-23：一处选择两处生效），空=设置页默认
+  const examplesApi = useWordExamples(current?.bookWord.wordId ?? null, current?.word.lemma ?? '', sessionModel);
 
   /** 菜单「生成例句」：为第 senseIndex 个义项生成一条（追加，不覆盖） */
   const handleGenerateExample = async (senseIndex: number): Promise<void> => {
@@ -896,7 +897,7 @@ export default function QuizPage() {
         <Paper sx={{ mt: 2, p: 2 }}>
           <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
             <Typography variant="body2" color="text.secondary">
-              问 AI（自动带上当前词，直接问就行）
+              问 AI（自动带上当前词，直接问就行）· 临时模型同时用于「生成例句」
             </Typography>
             <FormControl size="small" sx={{ minWidth: 180 }}>
               <Select

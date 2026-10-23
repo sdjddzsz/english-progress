@@ -183,8 +183,16 @@ async function handleCloudRest(req, res, url) {
   return json(res, { data: null, error: { message: 'mock: method not handled' } }, 405);
 }
 
-/** /.cloud/llm/**：聊天补全——SDK 强制 stream:true，必须回 SSE 帧（data: … + [DONE]） */
+/** /.cloud/llm/**：模型列表（GET /models）+ 聊天补全（SDK 强制 stream:true，必须回 SSE 帧） */
 async function handleLlm(req, res, url) {
+  if (req.method === 'GET' && url.pathname.endsWith('/models')) {
+    // 与真实形状对齐：数组或 {data:[...]} 均可，SDK 会归一化
+    return json(res, [
+      { id: 'step-5-preview', name: 'Step 5 Preview' },
+      { id: 'step-6-turbo', name: 'Step 6 Turbo' },
+      { id: 'step-7-mini', name: 'Step 7 Mini' },
+    ]);
+  }
   if (req.method === 'POST') {
     const chunks = [];
     for await (const c of req) chunks.push(c);
