@@ -7,8 +7,13 @@
  *  E. 音标长按编辑（2026-10-24：词书里 fine 的音标错了，要能就地修）：右键题卡音标 →
  *     「编辑读音」弹窗 → 改 IPA 实时派生 ARPAbet（主轨合成真源）→ 坏 IPA 拦截 →
  *     保存 → 题卡/释义行即时刷新 + words 表 sensesDetail 三字段同换（首义项还同步词级）。
+ *  F. 今日检测「第一次出现」口径（2026-10-24：本机/云端统一「有史以来首露」）：把当前
+ *     题词的 bookWord firstSeenAt 拨到昨天 → 重载 quiz 页 → 作答。旧实现（本机按
+ *     attemptNo===1 判「本轮首露」）会把它算进 firstSeen、云端（firstSeenAt=昨天）不算。
+ *  G. 首页卡片对账（承 F）：SPA 回首页记卡片「检测 N · 第一次出现 M」→ 整页重载再记 →
+ *     两次必须一致且与云端 RPC 一致（旧实现在 F 布置下重载后 M 少 1 ⇒ 刷新回落）。
  *
- * 前置：mock-server.mjs（4173）+ e2e 构建（dist-e2e）。
+ * 前置：mock-server.mjs（4173，**每次跑前重启**——内存数据跨运行累积）+ e2e 构建（dist-e2e）。
  * 用法：node e2e/verify-features.mjs
  */
 import pw from 'file:///C:/Users/Administrator/.workbuddy/binaries/node/workspace/node_modules/playwright/index.js';
@@ -274,6 +279,44 @@ async function main() {
     }
   }
 
+  // ===== F) 今日检测 firstSeen 口径（用户 2026-10-24：统一「有史以来首露」）=====
+  // 首页计划卡「今天：检测 N 词 · 其中第一次出现 M 词」。firstSeen 曾按「本轮第一次露面
+  // （attemptNo===1）」在本机算，而云端按 firstSeenAt（有史以来首露，10-24 起落库）——
+  // 昨天首答的词今天新一轮再露面：本机算、云端不算 ⇒ 刷新后数字跳水（用户实报）。
+  // 修法：本机口径改为「答题前 firstSeenAt 为空」，与云端写 firstSeenAt 的条件同源。
+  // e2e 布置：把当前题词的 bookWord firstSeenAt 拨到昨天（mock REST 直改）→ 重载 quiz 页
+  // （start() 重新拉 book_words，本地副本带着「昨天首见」进队列）→ C 段作答时判定。
+  if (quizLemma) {
+    const yestIso = new Date(Date.now() - 86_400_000).toISOString();
+    const fWordRows = await (await fetch(`${BASE}/.cloud/database/rest/words?lemma=eq.${encodeURIComponent(quizLemma)}`)).json();
+    const fWordId = fWordRows?.[0]?.id;
+    const fBwRows = fWordId
+      ? await (await fetch(`${BASE}/.cloud/database/rest/book_words?wordId=eq.${encodeURIComponent(fWordId)}`)).json()
+      : [];
+    const fBw = Array.isArray(fBwRows) ? fBwRows[0] : null;
+    const fPatched = fBw
+      ? await (
+          await fetch(`${BASE}/.cloud/database/rest/book_words?id=eq.${encodeURIComponent(fBw.id)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ firstSeenAt: yestIso }),
+          })
+        ).json()
+      : [];
+    check(
+      'e2e 布置：题词 bookWord firstSeenAt 拨到昨天（mock REST）',
+      Array.isArray(fPatched) && fPatched.length === 1 && fPatched[0]?.firstSeenAt === yestIso,
+      `wordId=${fWordId ?? '(无)'} bookWordId=${fBw?.id ?? '(无)'}`,
+    );
+    // 重载 quiz 页：会话快照当天有效 ⇒ 原题原进度恢复（B/C 段选择器不受影响）；
+    // 未作答的题带 options 恢复 ⇒ 走「回顾」分支不重摇选项、不自动朗读。
+    await page.goto(page.url(), { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+    await page.waitForSelector('h4', { timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(2500);
+    const reloadedLemma = (await page.locator('h4').first().innerText().catch(() => '')).trim();
+    check('重载后恢复同一道题（快照续做）', reloadedLemma === quizLemma, `期望=${quizLemma} 实际=${reloadedLemma || '(无)'}`);
+  }
+
   // ===== B) 笔记高亮 =====
   const noteBtn = page.locator('button[aria-label^="note"]').first();
   await noteBtn.waitFor({ timeout: 8000 }).catch(() => {});
@@ -382,6 +425,35 @@ async function main() {
       check('例句可删除', !afterDel.includes('abandon the sinking ship'), '');
     }
   }
+
+  // ===== G) 首页卡片对账：刷新不回落（承 F；用户 2026-10-24）=====
+  // F 段把作答词的 firstSeenAt 布置成昨天 ⇒ 本机（答题前 firstSeenAt 非空）与云端都不算
+  // firstSeen。SPA 回首页（store 不清）看到的卡片数必须等于整页重载后（store 清空、
+  // 全靠云端播种）的数；旧 attemptNo===1 实现这里重载后 M 会少 1。
+  const cardLine = (text) => text.match(/今天：检测 \d+ 词（无论过没过）· 其中第一次出现 \d+ 词/)?.[0] ?? '';
+  await page.getByRole('button', { name: '阶段' }).first().click(); // 底部导航回首页（SPA 跳转，不清 store）
+  await page.waitForTimeout(4500);
+  const cardSpa = cardLine(await page.locator('body').innerText());
+  await page.goto(BASE, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {}); // 整页重载：本机累加全丢
+  await page.waitForTimeout(4500);
+  const cardReloaded = cardLine(await page.locator('body').innerText());
+  const rpcToday2 = await (
+    await fetch(`${BASE}/.cloud/database/rest/rpc/ep_today_quiz`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_book_id: 'e2e-book-1', p_today: new Date().toISOString().slice(0, 10) }),
+    })
+  ).json();
+  check(
+    '今日检测卡片：刷新前后一致（firstSeen 不跳水）',
+    Boolean(cardSpa) && cardSpa === cardReloaded,
+    `SPA=${cardSpa || '(未找到)'} | 重载=${cardReloaded || '(未找到)'}`,
+  );
+  check(
+    '今日检测卡片：与云端聚合一致（重载后 = 纯云端口径）',
+    cardReloaded.includes(`检测 ${rpcToday2.words} 词`) && cardReloaded.includes(`第一次出现 ${rpcToday2.firstSeen} 词`),
+    `云端 words=${rpcToday2.words} / firstSeen=${rpcToday2.firstSeen}`,
+  );
 
   check('全程无页面 JS 错误', pageErrors.length === 0, pageErrors.slice(0, 2).join(' ||| '));
 

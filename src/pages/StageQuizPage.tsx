@@ -234,9 +234,10 @@ export default function StageQuizPage() {
     sfx(v === 'skilled' || v === 'recognized' ? 'correct' : 'wrong');
     setPicked(opt);
     setVerdict(v);
-    // 今日检测统计（用户 2026-10-23）：答过的词都计入；attemptNo===1 = 第一次出现
-    noteQuizAnswer(current.bookWord.wordId, current.attemptNo);
+    // 今日检测统计（用户 2026-10-23）：答过的词都计入；firstSeen = 有史以来第一次露面
+    // （答题前 firstSeenAt 为空——与云端写 firstSeenAt 的条件同源，刷新后不回落）
     const bw = current.bookWord;
+    noteQuizAnswer(current.bookWord.wordId, !bw.firstSeenAt);
     // 毕业线判定固定「熟练」（阶段毕业设置只配次数）——绝不传每轮挡位（2026-10-18 事故）
     const sp = applyStageChoiceResult(bw, v, stageGraduate[stageNo === 4 ? 3 : stageNo], new Date(), current.attemptNo);
     const advanced = sp.stage !== bw.stage && sp.stage > (bw.stage as number);
@@ -297,9 +298,10 @@ export default function StageQuizPage() {
     const elapsed = Date.now() - showAtRef.current;
     sfx(correct ? 'correct' : 'wrong');
     setSpellVerdict(sv);
-    // 今日检测统计（用户 2026-10-23）：拼写页同样计入（无论写对写错）
-    noteQuizAnswer(current.bookWord.wordId, current.attemptNo);
+    // 今日检测统计（用户 2026-10-23）：拼写页同样计入（无论写对写错）；
+    // firstSeen = 有史以来第一次露面（答题前 firstSeenAt 为空，与云端写 firstSeenAt 同源）
     const bw = current.bookWord;
+    noteQuizAnswer(current.bookWord.wordId, !bw.firstSeenAt);
     const sp = applyStageSpellingResult(bw, correct, new Date());
     const graduated = sp.stage === 0;
     // 写对=彻底毕业（离开本阶段）→ 立即放行；写错 → 排到队尾重来。

@@ -204,9 +204,10 @@ export default function QuizPage() {
           setStats(snap.stats);
           setPhase('quiz');
           // 今日检测统计补登（用户 2026-10-23）：快照里已作答的词刷新后仍算「今天检测过」
-          // （attemptNo===1 的才算第一次出现；lastQuizAt 播种只补得过词、补不了首答）
+          // （firstSeen 口径同作答路径：答题前该词 firstSeenAt 为空 = 有史以来第一次露面；
+          // 恢复出的 bookWord 是 start() 刚从云端拉的，firstSeenAt 是新鲜值）
           for (const it of restored) {
-            if (it.verdict !== undefined) noteQuizAnswer(it.bookWord.wordId, it.attemptNo);
+            if (it.verdict !== undefined) noteQuizAnswer(it.bookWord.wordId, !it.bookWord.firstSeenAt);
           }
           return;
         }
@@ -375,9 +376,10 @@ export default function QuizPage() {
     sfx(v === 'skilled' || v === 'recognized' ? 'correct' : 'wrong');
     setPickedKey(key);
     setVerdict(v);
-    // 今日检测统计（用户 2026-10-23）：答过的词都计入；attemptNo===1 = 第一次出现
-    noteQuizAnswer(current.bookWord.wordId, current.attemptNo);
+    // 今日检测统计（用户 2026-10-23）：答过的词都计入；firstSeen = 有史以来第一次露面
+    // （答题前 firstSeenAt 为空——与云端写 firstSeenAt 的条件同源，刷新后不回落）
     const bw = current.bookWord;
+    noteQuizAnswer(current.bookWord.wordId, !bw.firstSeenAt);
     const now = new Date();
     const firstQuizOfDay = !isSameUtcDay(bw.lastQuizAt, now);
     // ★ 四阶段制（用户 2026-10-15）：阶段走向是唯一权威（晋级/特训/层升降都在 stages.ts 引擎里）

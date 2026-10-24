@@ -110,7 +110,7 @@ export interface TodayQuiz {
   day: string;
   /** 今天答过的不同 wordId */
   words: string[];
-  /** 其中第一次出现（首答 attemptNo===1）的 wordId */
+  /** 其中第一次出现（有史以来首次露面，自 2026-10-24 firstSeenAt 数据起）的 wordId */
   firstSeen: string[];
 }
 
@@ -129,14 +129,17 @@ export interface AppState {
   planFinish: string | null;
   stageProgress: StageProgress | null;
   /**
-   * 今日检测统计（用户 2026-10-23）：今天答过的不同词 + 其中「第一次出现」（首答 attemptNo===1）的。
+   * 今日检测统计（用户 2026-10-23）：今天答过的不同词 + 其中「第一次出现」的。
    * - words：refreshToday 时用 lastQuizAt=今天 播种（云端权威，跨设备/刷新后仍计入）+ 本机当场作答累加；
-   * - firstSeen：只能来自本机当场作答（attemptNo 不落库；阶段二/三/四页刷新后不计，属已知缺口）；
+   * - firstSeen：云端 firstSeenAt=今天 播种 + 本机当场补。口径 = **有史以来第一次露面
+   *   （自 2026-10-24 firstSeenAt 数据起）**，与云端写 firstSeenAt 的条件同源：
+   *   答题前该词 firstSeenAt 为空才算。昨天首答的词今天新一轮再露面，本机与云端都不算
+   *   （2026-10-24 修：旧实现按 attemptNo===1 判「本轮首露」，刷新后被云端口径顶掉 ⇒ 数字回落）。
    * - 内存态，UTC 日变自动清零（当天有效，不跨天）。
    */
   todayQuiz: TodayQuiz;
-  /** 当场作答登记（两考查页 answer 时调；attemptNo===1 记 firstSeen） */
-  noteQuizAnswer(wordId: string, attemptNo: number): void;
+  /** 当场作答登记（两考查页 answer 时调；firstEver=答题前该词尚无 firstSeenAt） */
+  noteQuizAnswer(wordId: string, firstEver: boolean): void;
   /** 用云端 lastQuizAt 播种今天的已答词（refreshToday 内调；不动 firstSeen） */
   seedTodayQuiz(seed: { wordIds: string[]; firstSeenIds: string[] }): void;
 
@@ -349,17 +352,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
-  noteQuizAnswer: (wordId, attemptNo) => {
+  noteQuizAnswer: (wordId, firstEver) => {
     // 本机当场累加（即时反馈）：云端播种（seedTodayQuiz） + 本机累加两个集合合并去重。
-    // firstSeen 自 2026-10-24 起云端有 firstSeenAt 列可算；本机 attemptNo===1 仍即时补一笔
-    // （首答完不用等下次 refreshToday 就看到数字涨）——已播进 firstSeen 集合的词不会双算。
+    // firstSeen 口径（2026-10-24 统一）：firstEver=答题前该词 firstSeenAt 为空
+    // = 有史以来第一次露面（自 10-24 数据起）——与云端写 firstSeenAt 的条件同源，
+    // 刷新后与云端 firstSeenIds 对得上，不再回落（旧实现用 attemptNo===1 判「本轮首露」，
+    // 昨天首答的词今天新一轮再露面会本机算、云端不算）。
     const day = todayISO();
     set((s) => {
       const cur = s.todayQuiz.day === day ? s.todayQuiz : { day, words: [], firstSeen: [] };
       const words = cur.words.includes(wordId) ? cur.words : [...cur.words, wordId];
-      // 第一次出现 = 本轮第一次露面（attemptNo===1）；attemptNo 不落库，刷新后本机会话外不补
+      // 同词本轮多次露面（attemptNo 2/3…）或已播过 ⇒ 集合去重，不双算
       const firstSeen =
-        attemptNo === 1 && !cur.firstSeen.includes(wordId) ? [...cur.firstSeen, wordId] : cur.firstSeen;
+        firstEver && !cur.firstSeen.includes(wordId) ? [...cur.firstSeen, wordId] : cur.firstSeen;
       return { todayQuiz: { day: cur.day, words, firstSeen } };
     });
   },
