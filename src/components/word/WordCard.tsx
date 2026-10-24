@@ -14,6 +14,7 @@ import type { Word, WordSense } from '../../types/domain';
 import { useTTS } from '../../hooks/useTTS';
 import { describeSenses, senseLabel } from '../../features/senses';
 import { useSettingsStore } from '../../store/useSettingsStore';
+import PressableIpa from './PressableIpa';
 
 export interface WordCardProps {
   word: Word | null;
@@ -26,6 +27,10 @@ export interface WordCardProps {
   compact?: boolean;
   /** 限定展示某一个义项（学习流按判定单位给词时传进来）；不给则展示全部义项 */
   sense?: WordSense;
+  /** 长按顶部词级音标 → 编辑词级读音（用户 2026-10-24）；不给则音标不可点 */
+  onEditWordPron?: () => void;
+  /** 长按某个义项的音标 → 编辑该义项读音；不给则义项音标不可点 */
+  onEditSensePron?: (index: number) => void;
 }
 
 const TIER_LABEL: Record<number, string> = { 1: 'T1 已掌握', 2: 'T2 熟词', 3: 'T3 半熟', 4: 'T4 生词' };
@@ -38,6 +43,8 @@ export default function WordCard({
   tier,
   compact = false,
   sense,
+  onEditWordPron,
+  onEditSensePron,
 }: WordCardProps) {
   const { speak, speakAuto, loading, phaseLabel } = useTTS();
   const autoSpeak = useSettingsStore((s) => s.autoSpeak);
@@ -95,11 +102,14 @@ export default function WordCard({
         )}
         {!hideText && sense && <Typography variant="body1" color="text.secondary">{senseLabel(sense)}</Typography>}
         {/* 音标挨着词形：限定义项时用该义项的读音，否则用单词级读音 */}
-        {!hideText && targetIpa && (
-          <Typography variant={compact ? 'body2' : 'body1'} color="text.secondary">
-            /{targetIpa.replace(/^\/|\/$/g, '')}/
-          </Typography>
-        )}
+        {!hideText && targetIpa &&
+          (onEditWordPron ? (
+            <PressableIpa ipa={targetIpa} onEdit={onEditWordPron} variant={compact ? 'body2' : 'body1'} />
+          ) : (
+            <Typography variant={compact ? 'body2' : 'body1'} color="text.secondary">
+              /{targetIpa.replace(/^\/|\/$/g, '')}/
+            </Typography>
+          ))}
         {multiPron && !hideText && (
           <Chip size="small" color="warning" variant="outlined" label={`${entries.length} 种读音/词性`} />
         )}
@@ -152,12 +162,20 @@ export default function WordCard({
                         原来写 `s.zh || s.pos` 等于只在释义缺失时才顺带露出词性。 */}
                     {s.pos ? `${s.pos} ${s.zh}`.trim() : s.zh}
                   </Typography>
-                  {/* 读音列：与该义项绑定（不是单词级那一个） */}
-                  {s.ipa && (
-                    <Typography variant="body2" color={multiPron ? 'warning.dark' : 'text.secondary'}>
-                      /{s.ipa.replace(/^\/|\/$/g, '')}/
-                    </Typography>
-                  )}
+                  {/* 读音列：与该义项绑定（不是单词级那一个）；长按可改（用户 2026-10-24） */}
+                  {s.ipa &&
+                    (onEditSensePron ? (
+                      <PressableIpa
+                        ipa={s.ipa}
+                        onEdit={() => onEditSensePron(i)}
+                        color={multiPron ? 'warning.dark' : 'text.secondary'}
+                        hint={`长按修改第 ${i + 1} 个义项的读音`}
+                      />
+                    ) : (
+                      <Typography variant="body2" color={multiPron ? 'warning.dark' : 'text.secondary'}>
+                        /{s.ipa.replace(/^\/|\/$/g, '')}/
+                      </Typography>
+                    ))}
                   {multiPron && (
                     <IconButton
                       size="small"

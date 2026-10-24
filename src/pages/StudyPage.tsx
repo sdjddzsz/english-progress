@@ -24,12 +24,13 @@ import { useFeedback } from '../hooks/useFeedback';
 import type { FeedbackPanelSubmit } from '../components/feedback/FeedbackPanel';
 import { useTTS } from '../hooks/useTTS';
 import WordCard from '../components/word/WordCard';
+import IpaEditDialog from '../components/word/IpaEditDialog';
 import FeedbackPanel from '../components/feedback/FeedbackPanel';
 import { describeSenses, hasMultiplePronunciations } from '../features/senses';
 
 export default function StudyPage() {
   const navigate = useNavigate();
-  const { todayHits, wordMap, completeHit } = useAppStore();
+  const { todayHits, wordMap, completeHit, patchWord } = useAppStore();
   const { submit, startSession, finishSession } = useFeedback();
   const { speak } = useTTS();
 
@@ -41,6 +42,8 @@ export default function StudyPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const hitStartRef = useRef<number>(performance.now());
+  /** 长按音标 → 编辑读音（用户 2026-10-24）：word=词级；sense=第 index 个义项 */
+  const [pronEdit, setPronEdit] = useState<{ mode: 'sense' | 'word'; index: number | null } | null>(null);
 
   const current = pending[idx] ?? null;
 
@@ -147,6 +150,8 @@ export default function StudyPage() {
           tier={current.tier}
           roundNo={current.roundNo}
           lastSeen={current.explain.lastSeen}
+          onEditWordPron={() => setPronEdit({ mode: 'word', index: null })}
+          onEditSensePron={(i) => setPronEdit({ mode: 'sense', index: i })}
         />
 
         {/* 多读音提示：背词主流程里也要提前告诉用户「这个词有几种读音」，
@@ -185,6 +190,16 @@ export default function StudyPage() {
           </Box>
         )}
       </Paper>
+
+      {/* 长按音标 → 编辑读音（用户 2026-10-24）。云端由弹窗内 updateWordSenses 落库，
+          这里换掉 store wordMap 里的旧词，词卡立即刷新 */}
+      <IpaEditDialog
+        word={pronEdit ? word : null}
+        senseIndex={pronEdit?.index ?? null}
+        mode={pronEdit?.mode ?? 'sense'}
+        onClose={() => setPronEdit(null)}
+        onSaved={(w) => patchWord(w.id, w)}
+      />
     </Box>
   );
 }

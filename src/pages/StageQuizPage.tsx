@@ -46,6 +46,7 @@ import SenseListSection from '../components/word/SenseListSection';
 import WordExamplesSection from '../components/word/WordExamplesSection';
 import QuizTimerBadge from '../components/word/QuizTimerBadge';
 import SenseEditDialog from '../components/word/SenseEditDialog';
+import IpaEditDialog from '../components/word/IpaEditDialog';
 import VoiceOverrideDialog from '../components/tts/VoiceOverrideDialog';
 import { voiceLabelOf } from '../tts/voiceOptions';
 import { useWordExamples } from '../hooks/useWordExamples';
@@ -94,7 +95,7 @@ export default function StageQuizPage() {
   useEffect(() => {
     if (stageParam === 1) navigate('/quiz', { replace: true });
   }, [stageParam, navigate]);
-  const { activeBookId, userId, noteQuizAnswer } = useAppStore();
+  const { activeBookId, userId, noteQuizAnswer, patchWord } = useAppStore();
   const { autoSpeak, quizDailyLimit, stageGraduate, quizDayThreshold, firstPassThreshold } = useSettingsStore();
   const { speak, speakAuto, resynthesize, loading: ttsLoading, voiceOverride, setVoiceOverride, getEffectiveVoiceModel } = useTTS();
   const sfx = useSfx();
@@ -103,6 +104,8 @@ export default function StageQuizPage() {
   const [error, setError] = useState('');
   // 长按释义编辑（用户 2026-10-18）：当前在编辑第几个义项
   const [senseEditIdx, setSenseEditIdx] = useState<number | null>(null);
+  // 长按音标编辑读音（用户 2026-10-24）：当前在改第几个义项的读音
+  const [pronEditIdx, setPronEditIdx] = useState<number | null>(null);
   // 「+ 增加词义」新增弹窗（用户 2026-10-19）：与编辑走同一个 SenseEditDialog（mode="add"）
   const [senseAddOpen, setSenseAddOpen] = useState(false);
   // 长按「重新合成」→ 模型/音色临换面板（用户 2026-10-18）
@@ -529,6 +532,7 @@ export default function StageQuizPage() {
                     onDeleteSense={setSenseEditIdx}
                     onAdd={() => setSenseAddOpen(true)}
                     onGenerateExample={(i, subZh) => void handleGenerateExample(i, subZh)}
+                    onEditSensePron={setPronEditIdx}
                     genBusy={examplesApi.genBusy}
                   />
                   {/* 用户例句（用户 2026-10-22：AI 生成 / AI 朗读 / 可删）。
@@ -616,6 +620,7 @@ export default function StageQuizPage() {
                     onDeleteSense={setSenseEditIdx}
                     onAdd={() => setSenseAddOpen(true)}
                     onGenerateExample={(i, subZh) => void handleGenerateExample(i, subZh)}
+                    onEditSensePron={setPronEditIdx}
                     genBusy={examplesApi.genBusy}
                   />
                   {/* 用户例句（用户 2026-10-22：AI 生成 / AI 朗读 / 可删）。
@@ -725,6 +730,17 @@ export default function StageQuizPage() {
             prev.map((it) => (it.word.id === w.id ? { ...it, word: w } : it)),
           )
         }
+      />
+      {/* 长按音标 → 编辑读音（用户 2026-10-24）：保存即写回词书，
+          换掉内存里的旧 Word（界面立即刷新），并同步 store wordMap 供背词/听词联想用 */}
+      <IpaEditDialog
+        word={pronEditIdx !== null ? (current?.word ?? null) : null}
+        senseIndex={pronEditIdx}
+        onClose={() => setPronEditIdx(null)}
+        onSaved={(w) => {
+          setItems((prev) => prev.map((it) => (it.word.id === w.id ? { ...it, word: w } : it)));
+          patchWord(w.id, w);
+        }}
       />
       {/* 模型/音色临换面板（用户 2026-10-18：长按重新合成按钮打开）。
           确定后立即用新设定重录当前词——setVoiceOverride 先写 ref，

@@ -4,6 +4,9 @@
  *  B. 笔记高亮：当前词有笔记 ⇒ 笔记图标金黄（warning.main #ed6c02），无笔记 ⇒ 淡灰；
  *  C. 例句：右键（=长按）释义 → 菜单「生成例句」→ LLM mock SSE → 例句块出现 → 删除消失；
  *  D. 布局：上一题/下一题在题卡上方（按钮 y < 单词 y），例句块在原按钮位置（页面下半部）。
+ *  E. 音标长按编辑（2026-10-24：词书里 fine 的音标错了，要能就地修）：右键题卡音标 →
+ *     「编辑读音」弹窗 → 改 IPA 实时派生 ARPAbet（主轨合成真源）→ 坏 IPA 拦截 →
+ *     保存 → 题卡/释义行即时刷新 + words 表 sensesDetail 三字段同换（首义项还同步词级）。
  *
  * 前置：mock-server.mjs（4173）+ e2e 构建（dist-e2e）。
  * 用法：node e2e/verify-features.mjs
@@ -190,6 +193,87 @@ async function main() {
   const wordBox = await page.locator('h4').first().boundingBox().catch(() => null);
   check('上一题/下一题在页面上方（按钮 y < 单词 y）', Boolean(btnBox && wordBox && btnBox.y < wordBox.y), `按钮 y=${btnBox?.y?.toFixed(0)} 单词 y=${wordBox?.y?.toFixed(0)}`);
 
+  // ===== E) 音标长按编辑（用户 2026-10-24：词书里 fine 的音标是错的，要能就地修）=====
+  // 作答前先改：此刻全页只有一个音标（「全部释义」区答完才渲染），右键定位不会撞车。
+  // 右键 = 长按同路径（useLongPress 同时挂 onContextMenu；C 段子义项断言已证明右键交互可用）。
+  const quizLemma = (await page.locator('h4').first().innerText().catch(() => '')).trim();
+  // 新音标：重音从首音节 ə 挪到 æ —— 派生结果与旧值逐字符不同，断言不会假阳
+  const NEW_IPA = '/ˈæbændən/';
+  const NEW_ARPABET = 'AE1 B AE0 N D AH0 N'; // ipaToArpabet('/ˈæbændən/') 真值（tests/tts 同源钉死）
+  let pronEdited = false;
+  let editedSenseNo = null; // 弹窗标题「第 N / M 个义项」⇒ N-1 = senseIndex
+  const ipaTarget = page.getByText('/əˈbændən/', { exact: true }).first();
+  await ipaTarget.waitFor({ timeout: 6000 }).catch(() => {});
+  await ipaTarget.scrollIntoViewIfNeeded().catch(() => {});
+  const ipaBox = await ipaTarget.boundingBox().catch(() => null);
+  if (ipaBox) {
+    await page.mouse.click(ipaBox.x + ipaBox.width / 2, ipaBox.y + ipaBox.height / 2, { button: 'right' });
+  }
+  await page.waitForTimeout(800);
+  const ipaDialogTitle = page.getByText(`编辑读音 · ${quizLemma}`, { exact: false }).first();
+  const ipaDialogOpen = await ipaDialogTitle.isVisible().catch(() => false);
+  check('长按（右键）题卡音标弹出「编辑读音」', ipaDialogOpen, ipaDialogOpen ? '' : `定位=${Boolean(ipaBox)}`);
+  if (ipaDialogOpen) {
+    const titleText = await ipaDialogTitle.innerText().catch(() => '');
+    const titleM = /第 (\d+) \/ (\d+) 个义项/.exec(titleText);
+    editedSenseNo = titleM ? Number(titleM[1]) : null;
+    const ipaField = page.getByRole('dialog').getByRole('textbox');
+    // 实时派生预览：改 IPA 的瞬间就看到合成音素（DashScope 主轨按 ARPAbet 合成，不是 IPA）
+    await ipaField.fill(NEW_IPA);
+    await page.waitForTimeout(400);
+    const previewText = await page.locator('body').innerText();
+    check(
+      `ARPAbet 实时派生预览（合成音素（ARPAbet）：${NEW_ARPABET}）`,
+      previewText.includes(`合成音素（ARPAbet）：${NEW_ARPABET}`),
+      previewText.match(/合成音素（ARPAbet）：[^\n]*/)?.[0] ?? '(无)',
+    );
+    // 试听按钮可用性（派生成功后启用；loading 期间禁用——轮询几秒避开自动朗读尾流）
+    let trialEnabled = false;
+    for (let i = 0; i < 10 && !trialEnabled; i += 1) {
+      trialEnabled = await page.getByRole('dialog').getByRole('button', { name: '试听' }).isEnabled().catch(() => false);
+      if (!trialEnabled) await page.waitForTimeout(300);
+    }
+    check('派生成功后试听按钮可用', trialEnabled, '');
+    // 坏 IPA 不许落库：派生失败 ⇒ 预览报错 + 保存禁用
+    await ipaField.fill('/xyz!/');
+    await page.waitForTimeout(300);
+    const badText = await page.locator('body').innerText();
+    check(
+      '无法合成的字符被拦截（预览提示 + 保存禁用）',
+      badText.includes('不认识的字符') &&
+        !(await page.getByRole('dialog').getByRole('button', { name: '保存' }).isEnabled().catch(() => true)),
+      badText.match(/无法合成[^\n]*/)?.[0] ?? '(无)',
+    );
+    // 改回有效值并保存
+    await ipaField.fill(NEW_IPA);
+    await page.waitForTimeout(300);
+    await page.getByRole('dialog').getByRole('button', { name: '保存' }).click();
+    await page.waitForTimeout(2000);
+    const afterPronText = await page.locator('body').innerText();
+    pronEdited =
+      afterPronText.includes(NEW_IPA) && !(await page.getByText('编辑读音').first().isVisible().catch(() => false));
+    check('保存后题卡音标即时更新且弹窗关闭', pronEdited, `含新音标=${afterPronText.includes(NEW_IPA)}`);
+    if (pronEdited) {
+      // 云端回写：words 表应收到整行 upsert（sensesDetail 目标义项三字段同换）
+      const pronRows = await (await fetch(`${BASE}/.cloud/database/rest/words?lemma=eq.${encodeURIComponent(quizLemma)}`)).json();
+      const pronRow = pronRows?.[0];
+      const pronSenses = Array.isArray(pronRow?.sensesDetail) ? pronRow.sensesDetail : [];
+      const hit = pronSenses.find((s) => s.ipa === NEW_IPA);
+      check(
+        '音标改动落库（words 表 sensesDetail：IPA + 派生 ARPAbet + pronunciationKey 三字段同换）',
+        Boolean(hit && hit.arpabet === NEW_ARPABET && hit.pronunciationKey === NEW_ARPABET),
+        pronSenses.map((s) => `${s.senseId}:${s.ipa}/${s.arpabet}`).join(' | ') || '(无 sensesDetail)',
+      );
+      if (editedSenseNo === 1) {
+        check(
+          '首义项改动同步词级读音（列表展示/兜底合成跟着变）',
+          pronRow?.ipa === NEW_IPA && pronRow?.arpabet === NEW_ARPABET,
+          `词级 ipa=${pronRow?.ipa} arpabet=${pronRow?.arpabet}`,
+        );
+      }
+    }
+  }
+
   // ===== B) 笔记高亮 =====
   const noteBtn = page.locator('button[aria-label^="note"]').first();
   await noteBtn.waitFor({ timeout: 8000 }).catch(() => {});
@@ -226,6 +310,31 @@ async function main() {
   await page.waitForTimeout(1500);
   const afterAnswer = await page.locator('body').innerText();
   check('作答后显示全部释义区', afterAnswer.includes('的全部释义'), '');
+
+  // 音标长按编辑的界面联动：保存时换了内存里的 Word ⇒ 本题行（← 本题）显示新音标，另一条义项保持旧值
+  if (pronEdited) {
+    const newIpaCount = await page.getByText(NEW_IPA, { exact: true }).count();
+    const oldIpaCount = await page.getByText('/əˈbændən/', { exact: true }).count();
+    check(
+      '全部释义区读音同步（题卡 + 本题行新音标，另一条义项旧音标）',
+      newIpaCount === 2 && oldIpaCount === 1,
+      `新=${newIpaCount} 旧=${oldIpaCount}`,
+    );
+    // 第三类长按目标：释义行内音标（与子义项长按、铅笔菜单互不打架——用户 2026-10-24）
+    const rowIpa = page.getByText(NEW_IPA, { exact: true }).last();
+    await rowIpa.scrollIntoViewIfNeeded().catch(() => {});
+    const rowIpaBox = await rowIpa.boundingBox().catch(() => null);
+    if (rowIpaBox) {
+      await page.mouse.click(rowIpaBox.x + rowIpaBox.width / 2, rowIpaBox.y + rowIpaBox.height / 2, { button: 'right' });
+    }
+    await page.waitForTimeout(800);
+    const rowDialogOpen = await page.getByText(/编辑读音 · .+（第 \d+ \/ 2 个义项）/).first().isVisible().catch(() => false);
+    check('释义行内音标长按弹出编辑（标题带「第 N / 2 个义项」）', rowDialogOpen, rowDialogOpen ? '' : `定位=${Boolean(rowIpaBox)}`);
+    if (rowDialogOpen) {
+      await page.getByRole('dialog').getByRole('button', { name: '取消' }).click();
+      await page.waitForTimeout(600);
+    }
+  }
 
   // 右键（=长按）**子义项**（用户 2026-10-23：逗号拆开后每条意思单独生成）
   const subSpan = page.getByText('放弃', { exact: true }).last();

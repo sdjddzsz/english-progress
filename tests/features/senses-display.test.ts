@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Word, WordSense } from '../../src/types/domain';
-import { applySenseAdd, applySenseDelete, applySenseEdit, clampSenseIndex, displaySenses, isDomainTag, normalizeSenses } from '../../src/features/senses';
+import { applySenseAdd, applySenseDelete, applySenseEdit, applySensePronEdit, applyWordPronEdit, clampSenseIndex, displaySenses, hasMultiplePronunciations, isDomainTag, normalizeSenses } from '../../src/features/senses';
 
 function word(overrides: Partial<Word>, senses: Partial<WordSense>[]): Word {
   const base: Word = {
@@ -239,5 +239,76 @@ describe('clampSenseIndex：删义项后题目锚点收敛（用户 2026-10-18�
   it('没删当前词 / 编辑不改数量 ⇒ 锚点原样', () => {
     expect(clampSenseIndex(word, 1)).toBe(1);
     expect(clampSenseIndex(applySenseEdit(word, 0, { zh: '记载' }), 1)).toBe(1);
+  });
+});
+
+describe('读音长按编辑（用户 2026-10-24：fine 音标数据错了要能就地修）', () => {
+  /** fine 云端真值（修正前）：6 个义项，#1/#3/#5 的音标是坏的 /ˈfɪ.nə/ */
+  const fine = (): Word =>
+    word({ lemma: 'fine', ipa: '/ˈfaɪn/', arpabet: 'F AY1 N', pos: 'n.' }, [
+      { pos: 'n.', zh: '罚款, 罚金', ipa: '/ˈfaɪn/', arpabet: 'F AY1 N', pronunciationKey: 'F AY1 N' },
+      { pos: 'adj.', zh: '好的', ipa: '/ˈfɪ.nə/', arpabet: 'F IH1 N AH0', pronunciationKey: 'F IH1 N AH0' },
+      { pos: 'vt.', zh: '罚款', ipa: '/ˈfaɪn/', arpabet: 'F AY1 N', pronunciationKey: 'F AY1 N' },
+      { pos: 'vi.', zh: '变清', ipa: '/ˈfɪ.nə/', arpabet: 'F IH1 N AH0', pronunciationKey: 'F IH1 N AH0' },
+      { pos: 'adv.', zh: '很好', ipa: '/ˈfaɪn/', arpabet: 'F AY1 N', pronunciationKey: 'F AY1 N' },
+      { pos: '[计]', zh: '精细', ipa: '/ˈfɪ.nə/', arpabet: 'F IH1 N AH0', pronunciationKey: 'F IH1 N AH0' },
+    ]);
+
+  it('applySensePronEdit：义项 ipa/arpabet/pronunciationKey 三字段一起换', () => {
+    const next = applySensePronEdit(fine(), 1, { ipa: '/ˈfaɪn/', arpabet: 'F AY1 N' });
+    const s = next.sensesDetail![1];
+    expect(s.ipa).toBe('/ˈfaɪn/');
+    expect(s.arpabet).toBe('F AY1 N');
+    expect(s.pronunciationKey).toBe('F AY1 N');
+  });
+
+  it('applySensePronEdit：只碰目标义项，其它义项与 senseId 原样', () => {
+    const before = fine();
+    const next = applySensePronEdit(before, 3, { ipa: '/ˈfaɪn/', arpabet: 'F AY1 N' });
+    expect(next.sensesDetail!.map((s) => s.senseId)).toEqual(before.sensesDetail!.map((s) => s.senseId));
+    expect(next.sensesDetail![0]).toEqual(before.sensesDetail![0]);
+    expect(next.sensesDetail![5]).toEqual(before.sensesDetail![5]);
+    // 释义/词性不动
+    expect(next.sensesDetail![3].zh).toBe('变清');
+    expect(next.sensesDetail![3].pos).toBe('vi.');
+  });
+
+  it('applySensePronEdit：修正后 6 个义项并回同一档读音（多读音标识消失）', () => {
+    let w = fine();
+    for (const i of [1, 3, 5]) w = applySensePronEdit(w, i, { ipa: '/ˈfaɪn/', arpabet: 'F AY1 N' });
+    const keys = new Set(w.sensesDetail!.map((s) => s.pronunciationKey));
+    expect(keys.size).toBe(1);
+    expect(hasMultiplePronunciations(w)).toBe(false);
+  });
+
+  it('applySensePronEdit：改第 0 个义项时同步词级 ipa/arpabet（兼容口径）', () => {
+    const w = word({ lemma: 'read', ipa: '/riːd/', arpabet: 'R IY1 D', pos: 'v.' }, [
+      { pos: 'v.', zh: '阅读', ipa: '/riːd/', arpabet: 'R IY1 D', pronunciationKey: 'R IY1 D' },
+      { pos: 'adj.', zh: '博学的', ipa: '/rɛd/', arpabet: 'R EH1 D', pronunciationKey: 'R EH1 D' },
+    ]);
+    const next = applySensePronEdit(w, 1, { ipa: '/red/', arpabet: 'R EH0 D' });
+    // 改的是第 1 个 ⇒ 词级不动
+    expect(next.ipa).toBe('/riːd/');
+    expect(next.arpabet).toBe('R IY1 D');
+    const next0 = applySensePronEdit(w, 0, { ipa: '/riːd/', arpabet: 'R IY0 D' });
+    // 改的是第 0 个 ⇒ 词级跟着走
+    expect(next0.ipa).toBe('/riːd/');
+    expect(next0.arpabet).toBe('R IY0 D');
+  });
+
+  it('applyWordPronEdit：只换词级读音，义项数据原样', () => {
+    const before = fine();
+    const next = applyWordPronEdit(before, { ipa: '/ˈfaɪn/', arpabet: 'F AY1 N' });
+    expect(next.ipa).toBe('/ˈfaɪn/');
+    expect(next.arpabet).toBe('F AY1 N');
+    expect(next.sensesDetail).toEqual(before.sensesDetail);
+  });
+
+  it('senseId 不变 ⇒ 学习进度锚点不受影响（判定单位稳定）', () => {
+    const before = fine();
+    const next = applySensePronEdit(before, 1, { ipa: '/ˈfaɪn/', arpabet: 'F AY1 N' });
+    expect(next.sensesDetail![1].senseId).toBe('fine#1');
+    // 题卡锚的是 senseIndex，义项数量没变 ⇒ clamp 原样
+    expect(clampSenseIndex(next, 1)).toBe(1);
   });
 });

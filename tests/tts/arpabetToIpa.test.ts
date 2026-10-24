@@ -25,7 +25,7 @@
  *   ''/'   '     ''
  */
 import { describe, expect, it } from 'vitest';
-import { arpabetToIpa, isArpabetVowel, splitArpabetSyllables, stripArpabetStress } from '../../src/tts/arpabetToIpa';
+import { arpabetToIpa, ipaToArpabet, isArpabetVowel, splitArpabetSyllables, stripArpabetStress } from '../../src/tts/arpabetToIpa';
 
 describe('arpabetToIpa：锚点词表 12 行逐条覆盖', () => {
   it('academy：AH0→ə；主重音前移过起辅音 K；最大首辅音分点（D 归后音节起首）', () => {
@@ -155,5 +155,85 @@ describe('isArpabetVowel', () => {
     expect(isArpabetVowel('K')).toBe(false);
     expect(isArpabetVowel('CH')).toBe(false);
     expect(isArpabetVowel('NG')).toBe(false);
+  });
+});
+
+describe('ipaToArpabet：arpabetToIpa 的逆向（音标人工修正的写路径）', () => {
+  it('12 个锚点词全量 round-trip：ipaToArpabet(arpabetToIpa(x)) === x', () => {
+    // 逆向存在的意义：用户长按音标改完 IPA，DashScope 主轨要拿到配套的 ARPAbet
+    // （主轨按 cmu 音素合成，只改 IPA 音频还是旧的）。锚点即上方正向那张表的同一批词。
+    const anchors = [
+      'AH0 K AE1 D AH0 M IY0', // academy
+      'B ER1 D', // bird
+      'S T R EH1 NG TH', // strength
+      'K AE1 M ER0 AH0', // camera
+      'R IY0 AE1 K T', // react
+      'W IH1 L F AH0 L', // wilful
+      'IY1 G AH0 L', // eagle
+      'K AA2 M P R AH0 HH EH1 N S IH0 V', // comprehensive
+      'AH0 N N AE1 CH ER0 AH0 L', // annual
+      'HH AH0 L OW1', // hello
+      'P R AA1 G R EH2 S', // progress（设置页试听探针）
+      'F AY1 N', // fine（2026-10-24 数据修正对象：任何词性都读 /ˈfaɪn/）
+    ];
+    for (const a of anchors) {
+      expect(ipaToArpabet(arpabetToIpa(a))).toBe(a);
+    }
+  });
+
+  it('fine 修正实例：正确 IPA /ˈfaɪn/ → F AY1 N', () => {
+    expect(ipaToArpabet('/ˈfaɪn/')).toBe('F AY1 N');
+  });
+
+  it('复现污染数据：错误 IPA /ˈfɪ.nə/ → F IH1 N AH0（音节点切分 + 重音挂首元音）', () => {
+    // word_fine 三个义项的原值；逆向映射能精确复现 ⇒ 坏数据是从坏 ARPAbet 派生的
+    expect(ipaToArpabet('/ˈfɪ.nə/')).toBe('F IH1 N AH0');
+  });
+
+  it('元音必带重音位（CMUdict 惯例）：无标记按 0，防 pronunciationKey 假裂', () => {
+    expect(ipaToArpabet('/faɪn/')).toBe('F AY0 N');
+    expect(ipaToArpabet('/kæt/')).toBe('K AE0 T');
+  });
+
+  it('AH 特殊：ə→AH0、ʌ→AH1；显式重音符可改写', () => {
+    expect(ipaToArpabet('/ə/')).toBe('AH0');
+    expect(ipaToArpabet('/ʌ/')).toBe('AH1');
+    expect(ipaToArpabet('/ˈʌ/')).toBe('AH1');
+    expect(ipaToArpabet('/ˌʌ/')).toBe('AH2');
+  });
+
+  it('双字符音素优先：aɪ/eɪ/oʊ/ɔɪ/aʊ/tʃ/dʒ/ɜr', () => {
+    expect(ipaToArpabet('/deɪt/')).toBe('D EY0 T');
+    expect(ipaToArpabet('/tʃiːp/')).toBe('CH IY0 P');
+    expect(ipaToArpabet('/dʒʌmp/')).toBe('JH AH1 M P');
+    expect(ipaToArpabet('/ˈbɜrd/')).toBe('B ER1 D');
+  });
+
+  it('兼容 ECDICT 英式拼写：ɒ→AO、əʊ→OW、ɜ→ER、e→EH、a→AE、ɫ→L', () => {
+    expect(ipaToArpabet('/kɒt/')).toBe('K AO0 T');
+    expect(ipaToArpabet('/həʊ/')).toBe('HH OW0');
+    // ɜr 是双字符音素（ER 已含 r，与 CMUdict 的 B ER1 D 同语义）；
+    // 打 "F ER0 R" 的正向是 /fɜrr/（两个 r），不是 /fɜr/
+    expect(ipaToArpabet('/fɜr/')).toBe('F ER0');
+    expect(ipaToArpabet('/bed/')).toBe('B EH0 D');
+    expect(ipaToArpabet('/kat/')).toBe('K AE0 T');
+  });
+
+  it('长音符 ː 与排版符（- | 空格）丢弃：ARPAbet 无长度位', () => {
+    expect(ipaToArpabet('/ˈfɑːðə/')).toBe('F AA1 DH AH0');
+    expect(ipaToArpabet('/ˈfɑː-ðə/')).toBe('F AA1 DH AH0');
+  });
+
+  it('无法识别的字符抛 Error（消息带出问题字符；坏 IPA 不许落库）', () => {
+    expect(() => ipaToArpabet('/ˈfɪn.x/')).toThrow('ipaToArpabet: unsupported character "x"');
+    // h/e/l 都在表内（英式拼写兼容），第一个不识别的是 o
+    expect(() => ipaToArpabet('hello')).toThrow('ipaToArpabet: unsupported character "o"');
+  });
+
+  it('空串 / 纯斜杠 / 纯空白 → 空串', () => {
+    expect(ipaToArpabet('')).toBe('');
+    expect(ipaToArpabet('   ')).toBe('');
+    expect(ipaToArpabet('/')).toBe('');
+    expect(ipaToArpabet('//')).toBe('');
   });
 });

@@ -218,6 +218,53 @@ export function applySenseDelete(word: Word, senseIndex: number): Word | null {
 }
 
 /**
+ * 编辑第 senseIndex 个义项的**读音**（用户 2026-10-24：fine 三个义项的音标数据是错的，
+ * 要能就地修；配套 UI = 长按音标弹编辑窗）。
+ *
+ * 与 applySenseEdit 的分工：那个只改词性/释义（读音即判定身份，绝不顺手改）；
+ * 这个专职改读音——**身份随之更新**。这是用户明知的修正操作（数据错了），
+ * 不是浏览时误触：弹窗里有明文警告，且 pronunciationKey 的变化在预览里可见。
+ *
+ * 同步规则：
+ *  - pronunciationKey 由新 arpabet 重算（该义项是否还和同词其它义项同档，取决于新值本身；
+ *    fine 修正后 6 个义项全部并回同一档，多读音标识消失——这正是修正想要的结果）；
+ *  - senseId 不变（lemma#序号）⇒ 已记录的学习进度/轮次/命中都挂 senseId，不受影响；
+ *  - 改第 0 个义项时**同步词级 ipa/arpabet**：词级读音 = 首义项读音的兼容口径
+ *    （domain.ts 注释、sampling.ts 的 `first.ipa || w.ipa`、normalizeSenses 降级都依赖它），
+ *    首义项修好了词级还挂旧值，列表页（词表/生词本/查词）会继续显示错的。
+ */
+export function applySensePronEdit(
+  word: Word,
+  senseIndex: number,
+  patch: { ipa: string; arpabet: string },
+): Word {
+  const detail = normalizeSenses(word).map((s, i) =>
+    i === senseIndex
+      ? {
+          ...s,
+          ipa: patch.ipa,
+          arpabet: patch.arpabet,
+          pronunciationKey: pronunciationKeyOf(patch.arpabet),
+        }
+      : s,
+  );
+  const next = syncWordSenses(word, detail);
+  // 词级读音跟随首义项（兼容口径）：首义项读音变了，词级展示/兜底合成必须跟着变
+  if (senseIndex === 0 && detail[0]) {
+    return { ...next, ipa: detail[0].ipa, arpabet: detail[0].arpabet };
+  }
+  return next;
+}
+
+/**
+ * 编辑**词级**读音（词卡顶部 / 无义项数据的老词）。不动 sensesDetail——
+ * 义项级读音是另一份数据，要改请走 applySensePronEdit（弹窗里会提示这个分工）。
+ */
+export function applyWordPronEdit(word: Word, patch: { ipa: string; arpabet: string }): Word {
+  return { ...word, ipa: patch.ipa, arpabet: patch.arpabet };
+}
+
+/**
  * 删除/编辑义项后，把题目锚定的 senseIndex 收回到有效范围（用户 2026-10-18）。
  * 背景：删掉正在考的那个义项（或它前面的义项）后 senseIndex 越界 ⇒ 主卡片渲染条件
  * `senseOf` 为空 ⇒ 整块题卡消失，用户以为「题页没了 / 单词被连删」——实际词还在

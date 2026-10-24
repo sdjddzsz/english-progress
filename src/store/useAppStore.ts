@@ -144,6 +144,13 @@ export interface AppState {
   todayPendingCount: number;
   /** 今日队列词卡数据（wordId → Word） */
   wordMap: Record<string, Word>;
+  /**
+   * 就地改词条（音标修正等，用户 2026-10-24）：只换 wordMap 里的这一个词。
+   * 云端已由调用方落库（updateWordSenses 整行 upsert），这里纯本机刷新——
+   * 背词页/听词联想的 items 都由 wordMap 派生，改完当场生效，不用等 refreshToday。
+   * 词不在 map 里（今日队列外）时静默 no-op：页面各自持有自己的 items 状态。
+   */
+  patchWord(id: string, patch: Partial<Word>): void;
 
 
   /**
@@ -384,6 +391,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
         h.id === hitId ? { ...h, status: 'done' as const, completedAt } : h,
       );
       return { todayHits, todayPendingCount: todayHits.filter((h) => h.status === 'pending').length };
+    });
+  },
+
+  patchWord: (id, patch) => {
+    set((s) => {
+      const cur = s.wordMap[id];
+      if (!cur) return {}; // 今日队列外的词：页面自己管状态，store 不硬造
+      return { wordMap: { ...s.wordMap, [id]: { ...cur, ...patch } } };
     });
   },
 

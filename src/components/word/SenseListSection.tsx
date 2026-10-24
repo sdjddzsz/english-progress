@@ -5,6 +5,8 @@
  * 2026-10-22：长按释义弹「生成例句」；2026-10-23（用户：同一个词性写了多条意思，
  * 每条都要能单独生成例句）：每个**子义项**（逗号/分号拆开）独立长按 ⇒ 给那一条意思
  * 生成例句；义项的编辑/删除搬进行尾铅笔按钮的菜单——两类手势分开，不再冲突。
+ * 2026-10-24（用户：音标也做成长按可编辑）：行内展示各义项读音，长按音标 ⇒ 编辑读音；
+ * 铅笔菜单补「编辑读音」入口（长按是隐藏手势，给一个显式按钮兜底）。
  */
 import { useState } from 'react';
 import Button from '@mui/material/Button';
@@ -30,6 +32,8 @@ interface Props {
   onAdd: () => void;
   /** 子义项长按「生成例句」→ 为该条意思生成一条例句 */
   onGenerateExample: (senseIndex: number, subZh: string) => void;
+  /** 长按音标「编辑读音」→ 打开读音编辑弹窗（用户 2026-10-24） */
+  onEditSensePron: (senseIndex: number) => void;
   /** 例句生成中（菜单项禁用 + 文案） */
   genBusy?: boolean;
 }
@@ -41,6 +45,7 @@ export default function SenseListSection({
   onDeleteSense,
   onAdd,
   onGenerateExample,
+  onEditSensePron,
   genBusy = false,
 }: Props) {
   const [subMenu, setSubMenu] = useState<{ index: number; subZh: string; el: HTMLElement } | null>(null);
@@ -70,6 +75,7 @@ export default function SenseListSection({
             index={i}
             isCurrent={currentSenseIndex === i}
             onLongPressSub={(index, subZh, el) => setSubMenu({ index, subZh, el })}
+            onEditSensePron={(index) => onEditSensePron(index)}
             onEditSense={(index, el) => setSenseMenu({ index, el })}
           />
         ))}
@@ -109,6 +115,15 @@ export default function SenseListSection({
           }}
         >
           编辑义项
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            const i = senseMenu?.index;
+            setSenseMenu(null);
+            if (i != null) onEditSensePron(i);
+          }}
+        >
+          编辑读音
         </MenuItem>
         <MenuItem
           onClick={() => {

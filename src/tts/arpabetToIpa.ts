@@ -15,8 +15,9 @@
  *  5. 空串/空白 → ''；token 不在 39 音素表或重音数字非 0/1/2 → throw Error
  *     （调用方按未命中处理）。
  *
- * 纯函数：零 import、零 IO / React / DOM 依赖（T2 验收③）。
+ * 纯函数：零 IO / React / DOM 依赖（T2 验收③；仅允许 import 同目录纯函数模块）。
  */
+import { stripIpaSlashes } from './ipaMap';
 
 /** 15 个元音音素（ARPAbet 基础形式，不含重音数字） */
 const ARPABET_VOWELS: ReadonlySet<string> = new Set([
@@ -153,4 +154,98 @@ export function arpabetToIpa(arpabet: string): string {
     parts.push(phonemeToIpa(p));
   });
   return `/${parts.join('')}/`;
+}
+
+// ===== IPA → ARPAbet（arpabetToIpa 的逆向；用户 2026-10-24：音标数据错了要能就地改）=====
+//
+// 用途：长按音标改正后，**同步派生 ARPAbet**。为什么必须派生：DashScope 主轨按
+// ARPAbet（<phoneme alphabet="cmu">）合成，Azure 轨才用 IPA；只改 IPA 不改 ARPAbet，
+// 显示修好了、音频还是旧的那一版（fine 三个义项正是「IPA 错 + ARPAbet 也错」）。
+//
+// 与正向规则逐条对应：
+//  1. 去斜杠/空白；长音符 ː 与排版符（- |）丢弃（ARPAbet 无长度位）；
+//  2. 按 '.' 切音节；每音节内 ˈ→主重音(1)、ˌ→次重音(2)，挂在**该音节首个元音**上
+//     （正向：标记插在音节起首簇最左侧 ⇒ 逆向即「元音前挂着的标记」）；
+//  3. 音素逆向映射，双字符优先；ʌ→AH1、ə→AH0（自带默认重音位，显式重音符可改写）；
+//     其余元音**必带重音位**（0/1/2，CMUdict 惯例——不带数字会让 pronunciationKey
+//     与同词其它义项对不上，多读音分组会假裂）；
+//  4. 兼容 ECDICT 英式拼写（ɒ→AO、əʊ→OW、ɜ→ER、e→EH、a→AE、ɫ→L）；
+//  5. 无法识别的字符 → throw Error（调用方拦截提示，坏 IPA 不许落库）。
+//
+// ⚠ 已知有损（人工修正场景可接受）：AH2→ʌ→AH1（次重音 schwa 化塌缩）；
+//    重音符不在音节起首时尽力而为；用户 IPA 省略音节点时按单音节处理。
+//    空串/纯斜杠/纯空白 → ''。
+
+/** IPA → ARPAbet 音素表（查找时双字符键优先） */
+const IPA_TO_ARPABET: Record<string, string> = {
+  // 双字符：正向的 AW/AY/EY/OW/OY/CH/JH/ER 输出 + ECDICT 英式变体
+  aʊ: 'AW', aɪ: 'AY', eɪ: 'EY', oʊ: 'OW', ɔɪ: 'OY', əʊ: 'OW',
+  tʃ: 'CH', dʒ: 'JH', ɜr: 'ER', ɜː: 'ER',
+  // 元音（AH 两个特殊值自带重音位）
+  ɑ: 'AA', æ: 'AE', ɔ: 'AO', ɒ: 'AO', ɛ: 'EH', e: 'EH',
+  ɪ: 'IH', i: 'IY', ʊ: 'UH', u: 'UW', ə: 'AH0', ʌ: 'AH1', a: 'AE',
+  // 辅音
+  b: 'B', d: 'D', ð: 'DH', f: 'F', ɡ: 'G', g: 'G', h: 'HH', j: 'Y',
+  k: 'K', l: 'L', ɫ: 'L', m: 'M', n: 'N', ŋ: 'NG', p: 'P',
+  r: 'R', ɹ: 'R', ɾ: 'T', s: 'S', ʃ: 'SH', t: 'T', θ: 'TH',
+  v: 'V', w: 'W', z: 'Z', ʒ: 'ZH',
+  // ER 的单字符形态（正向只输出 ɜr；用户单独打 ɜ 时按 ER 收）
+  ɜ: 'ER',
+};
+
+/** 音节内重音挂载状态：ˈ/ˌ 只作用于本音节内首个元音，跨音节不继承 */
+function emitArpabetToken(tokens: string[], base: string, pending: 0 | 1 | 2): 0 | 1 | 2 {
+  const ah = /^AH([012])$/.exec(base);
+  if (ah) {
+    // ə/ʌ 的默认重音位（AH0/AH1）；显式 ˈ/ˌ 优先改写
+    tokens.push(pending !== 0 ? `AH${pending}` : base);
+    return 0;
+  }
+  if (ARPABET_VOWELS.has(base)) {
+    tokens.push(`${base}${pending}`); // 元音必带重音位（CMUdict 惯例）
+    return 0;
+  }
+  tokens.push(base);
+  return pending; // 辅音不吃重音：等后面的元音
+}
+
+/**
+ * IPA → ARPAbet（arpabetToIpa 的逆向，人工修正音标的写路径）。
+ * 输入：ECDICT 风格 IPA（可带/不带斜杠与音节点）；输出：CMUdict 风格 ARPAbet。
+ * 无法识别的字符抛 Error（消息里带出问题字符，界面直接展示给用户）。
+ */
+export function ipaToArpabet(ipa: string): string {
+  const src = stripIpaSlashes(ipa).replace(/[ː\s\-|]/g, '');
+  if (!src) return '';
+  const tokens: string[] = [];
+  for (const syl of src.split('.')) {
+    let pending: 0 | 1 | 2 = 0;
+    for (let i = 0; i < syl.length; ) {
+      const ch = syl[i];
+      if (ch === 'ˈ') {
+        pending = 1;
+        i += 1;
+        continue;
+      }
+      if (ch === 'ˌ') {
+        pending = 2;
+        i += 1;
+        continue;
+      }
+      const two = IPA_TO_ARPABET[syl.slice(i, i + 2)];
+      if (two !== undefined) {
+        pending = emitArpabetToken(tokens, two, pending);
+        i += 2;
+        continue;
+      }
+      const one = IPA_TO_ARPABET[ch];
+      if (one !== undefined) {
+        pending = emitArpabetToken(tokens, one, pending);
+        i += 1;
+        continue;
+      }
+      throw new Error(`ipaToArpabet: unsupported character "${ch}"`);
+    }
+  }
+  return tokens.join(' ');
 }
