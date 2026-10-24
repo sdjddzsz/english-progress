@@ -5,13 +5,12 @@
  * 页面与组件只读 store / hooks，不含调度逻辑（架构文档边界铁律）。
  */
 import { create } from 'zustand';
-import type { Book, Hit, StudyPlan, Tier, Word } from '../types/domain';
+import type { Book, Hit, StudyPlan, Word } from '../types/domain';
 import {
   expandDayForWords,
   planFinishDate,
   validatePlan,
   type PlanParams,
-  type TierWordCounts,
   type ValidationResult,
   type WordSteadiness,
 } from '../scheduler';
@@ -139,7 +138,7 @@ export interface AppState {
   /** 当场作答登记（两考查页 answer 时调；attemptNo===1 记 firstSeen） */
   noteQuizAnswer(wordId: string, attemptNo: number): void;
   /** 用云端 lastQuizAt 播种今天的已答词（refreshToday 内调；不动 firstSeen） */
-  seedTodayQuizWords(wordIds: string[]): void;
+  seedTodayQuiz(seed: { wordIds: string[]; firstSeenIds: string[] }): void;
 
   todayHits: Hit[];
   todayPendingCount: number;
@@ -249,8 +248,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   /**
    * 今日队列刷新（真实词表路径，批 2 验收点）：
-   * bookWords(list/order 排序) → wordsByTier → expandDayForWords → 确定性 ID 增量 upsert → 当日镜像。
+   * 云端聚合（ep_home_summary 一次拿 tierCounts + 各 tier 有序 wordId + 节奏原料）
+   * → expandDayForWords → 确定性 ID 增量 upsert → 当日镜像。
    * 已存在（done/deferred/overdue）的 hit 不被覆盖（先查 existing 再补齐缺口）。
+   *
+   * 2026-10-24：统计改云端算（用户：云资源拥挤、客户端拉全表 9 个分页请求常失败）——
+   * 原 `listBookWords` 全表 8296 行（1.7MB）删除，改两个 RPC 小请求。
    */
   refreshToday: async (today = todayISO()) => {
     const { userId, activePlan } = get();
@@ -258,17 +261,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const repos = getRepos();
       const book = await repos.word.getBook(activePlan.bookId);
-      const bws = await repos.word.listBookWords(activePlan.bookId);
-      // 今日检测播种（用户 2026-10-23）：lastQuizAt=今天 的词——云端权威，
-      // 跨设备答的、刷新前答的都算进「今天检测」；firstSeen 只能本机当场作答补。
-      get().seedTodayQuizWords(bws.filter((bw) => bw.lastQuizAt?.slice(0, 10) === today).map((bw) => bw.wordId));
-      const sorted = [...bws].sort((a, b) => a.listNo - b.listNo || a.orderInList - b.orderInList);
-      const wordsByTier: Record<Tier, string[]> = { 1: [], 2: [], 3: [], 4: [] };
-      const tierCounts: TierWordCounts = {};
-      for (const bw of sorted) {
-        wordsByTier[bw.tier].push(bw.wordId);
-        tierCounts[bw.tier] = (tierCounts[bw.tier] ?? 0) + 1;
-      }
+      // 云端聚合：一个请求拿全部统计原料（替代原全表拉取 + 客户端聚合）
+      const [summary, todayQuiz] = await Promise.all([
+        repos.word.homeSummary(activePlan.bookId),
+        repos.word.todayQuizSummary(activePlan.bookId, today),
+      ]);
+      // 今日检测播种（用户 2026-10-23 起，2026-10-24 改云端）：
+      // 云端权威——跨设备答的、刷新前答的都算；firstSeen 自 10-24 起也落库（firstSeenAt 列），
+      // 老数据没有 firstSeenAt ⇒ firstSeenIds 为空，由本机当场补（noteQuizAnswer）。
+      get().seedTodayQuiz({ wordIds: todayQuiz.wordIds, firstSeenIds: todayQuiz.firstSeenIds });
+      const wordsByTier = summary.wordsByTier;
+      const tierCounts = summary.tierCounts;
 
       // 稳固信号：近 30 天反馈聚合（驱动降频与冻结预览）
       const since = new Date(Date.now() - 30 * 86400000).toISOString();
@@ -303,12 +306,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
       const validation = validatePlan({ params, tierCounts, steadyWords });
       const finish = planFinishDate(params, tierCounts);
-      // 四阶段进度与真实节奏（用户 2026-10-23）：剩余词 + lastQuizAt 分布，零额外请求
-      const remaining = bws.filter((bw) => bw.stage !== 0).length;
-      const pace = computeStagePace(bws, new Date(), 14, activePlan.avgHitSec);
+      // 四阶段进度与真实节奏（用户 2026-10-23 立项，2026-10-24 改云端聚合）：
+      // remaining/graduated/近14天答题分布全部由 ep_home_summary 算好，这里只做纯函数推算
+      const remaining = summary.remaining;
+      const pace = computeStagePace(summary.dailyCounts, new Date(), 14, activePlan.avgHitSec);
       const stageProgress: StageProgress = {
         remaining,
-        graduated: bws.length - remaining,
+        graduated: summary.graduated,
         pace,
         verdict: paceVerdict({
           remaining,
@@ -339,6 +343,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   noteQuizAnswer: (wordId, attemptNo) => {
+    // 本机当场累加（即时反馈）：云端播种（seedTodayQuiz） + 本机累加两个集合合并去重。
+    // firstSeen 自 2026-10-24 起云端有 firstSeenAt 列可算；本机 attemptNo===1 仍即时补一笔
+    // （首答完不用等下次 refreshToday 就看到数字涨）——已播进 firstSeen 集合的词不会双算。
     const day = todayISO();
     set((s) => {
       const cur = s.todayQuiz.day === day ? s.todayQuiz : { day, words: [], firstSeen: [] };
@@ -350,14 +357,21 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
-  seedTodayQuizWords: (wordIds) => {
-    if (wordIds.length === 0) return;
+  /**
+   * 今日检测播种（2026-10-24 起云端版）：refreshToday 用 ep_today_quiz 的结果铺底——
+   * wordIds=今天答过的不同词、firstSeenIds=其中第一次出现的（firstSeenAt 列，10-24 起落库）。
+   * 本机当场作答仍走 noteQuizAnswer 即时累加（两个集合合并去重，不会双算）。
+   */
+  seedTodayQuiz(seed: { wordIds: string[]; firstSeenIds: string[] }): void {
+    if (seed.wordIds.length === 0 && seed.firstSeenIds.length === 0) return;
     const day = todayISO();
     set((s) => {
       const cur = s.todayQuiz.day === day ? s.todayQuiz : { day, words: [], firstSeen: [] };
-      const merged = new Set(cur.words);
-      for (const id of wordIds) merged.add(id);
-      return { todayQuiz: { day: cur.day, words: [...merged], firstSeen: cur.firstSeen } };
+      const words = new Set(cur.words);
+      for (const id of seed.wordIds) words.add(id);
+      const firstSeen = new Set(cur.firstSeen);
+      for (const id of seed.firstSeenIds) firstSeen.add(id);
+      return { todayQuiz: { day: cur.day, words: [...words], firstSeen: [...firstSeen] } };
     });
   },
 

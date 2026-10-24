@@ -193,15 +193,25 @@ describe('applyStageSpellingResult（阶段四）', () => {
   });
 });
 
-describe('stageStats', () => {
-  it('彻底毕业不计入任何阶段；待刷=词库量（不限一轮）', () => {
-    const all = [bw({ stage: 1 }), bw({ stage: 1, specialTraining: true }), bw({ stage: 2 }), bw({ stage: 0 })];
-    const s = stageStats(all, NOW);
+describe('stageStats（原料 = 云端聚合计数 byStage/specialByStage，2026-10-24 起不再拉全表）', () => {
+  const counts = (byStage: Record<number, number>, specialByStage: Record<number, number> = {}) => ({
+    byStage: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, ...byStage },
+    specialByStage: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, ...specialByStage },
+  });
+
+  it('彻底毕业（byStage[0]）不计入任何阶段；待刷=词库量（不限一轮）', () => {
+    const s = stageStats(counts({ 0: 1, 1: 2, 2: 1 }, { 1: 1 }));
     expect(s[1].total).toBe(2);
     expect(s[1].due).toBe(2);
     expect(s[1].special).toBe(1);
     expect(s[2].total).toBe(1);
     expect(s[3].total).toBe(0);
+    expect(s[4].total).toBe(0);
+  });
+
+  it('缺键（云端 json_object_agg 不会有该 stage）⇒ 0，不是 undefined', () => {
+    const s = stageStats({ byStage: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 }, specialByStage: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 } });
+    expect(s[1]).toEqual({ total: 0, due: 0, special: 0, graduated: 0 });
     expect(s[4].total).toBe(0);
   });
 });

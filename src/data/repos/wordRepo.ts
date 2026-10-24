@@ -5,6 +5,114 @@
 import type { Book, BookWord, Tier, Word, WordBookmark, WordStatus } from '../../types/domain';
 import { getDb } from '../cloud';
 import { Repository, type CloudDatabaseLike, type Filter } from '../repository';
+import type { WordStage } from '../../features/quiz/stages';
+
+// ===== 云端聚合返回类型（PG 函数 ep_home_summary / ep_today_quiz，2026-10-24）=====
+
+/** 节奏原料：某 UTC 日答过的不同词数 */
+export interface DailyCount {
+  date: string;
+  count: number;
+}
+
+export interface HomeSummary {
+  /** 还在阶段一~四池里的词数（stage≠0） */
+  remaining: number;
+  /** 已彻底毕业（stage=0） */
+  graduated: number;
+  /** 近 14 天每天答题去重词数（按 UTC 日升序） */
+  dailyCounts: DailyCount[];
+  /** 各 tier 词量 */
+  tierCounts: Record<Tier, number>;
+  /** 各 tier 的有序 wordId（expandDayForWords 的原料；序 = listNo, orderInList, id） */
+  wordsByTier: Record<Tier, string[]>;
+}
+
+export interface TodayQuizSummary {
+  /** 今天答过的不同词数 */
+  words: number;
+  /** 其中第一次出现的词数（firstSeenAt=今天） */
+  firstSeen: number;
+  /** 今天答过的不同 wordId（客户端本机累加去重用） */
+  wordIds: string[];
+  /** 其中第一次出现的 wordId */
+  firstSeenIds: string[];
+}
+
+/**
+ * 阶段统计聚合原料（PG 函数 ep_stage_stats，2026-10-24）：
+ * 各 stage（0=已毕业 / 1~4=阶段一~四）的词数，及各阶段中特种训练的词数。
+ * 键统一规范成数字 WordStage（json_object_agg 的 key 是字符串）。
+ */
+export interface StageStatsSummary {
+  byStage: Record<WordStage, number>;
+  specialByStage: Record<WordStage, number>;
+}
+
+/** json_object_agg 的 key 是字符串（"1".."4"）——转回数字 Tier 键，缺键给默认值 */
+function tierKeyed<V>(obj: Record<string, V> | undefined, fallback: V): Record<Tier, V> {
+  const out = {} as Record<Tier, V>;
+  for (const t of [1, 2, 3, 4] as Tier[]) {
+    out[t] = obj?.[String(t)] ?? fallback;
+  }
+  return out;
+}
+
+/** 阶段计数键（json_object_agg 的 key 是字符串 "0".."4"）——规范成数字 WordStage 键 */
+function stageKeyed(obj: Record<string, number> | undefined): Record<WordStage, number> {
+  const out = {} as Record<WordStage, number>;
+  for (const s of [0, 1, 2, 3, 4] as WordStage[]) {
+    out[s] = Number(obj?.[String(s)] ?? 0);
+  }
+  return out;
+}
+
+/**
+ * 拆 RPC 信封（与 Repository.unwrap 同语义：error 抛出、取 data）。
+ * ⚠ SDK 的 rpc() await 得到的是 processResponse 的信封
+ *    `{success, error, data, count, status, statusText}`，不是裸函数结果——
+ *    少了这一步，云端聚合的字段会全部读成 undefined（统计全 0 且不报错）。
+ */
+async function rpcData<T>(db: CloudDatabaseLike, fn: string, args: Record<string, unknown>): Promise<T> {
+  const env = await db.rpc(fn, args);
+  if (env.error) {
+    throw new Error(`[rpc:${fn}] ${env.error.message}${env.error.code ? ` (code=${env.error.code})` : ''}`);
+  }
+  return env.data as T;
+}
+
+function normalizeHomeSummary(raw: HomeSummaryRaw): HomeSummary {
+  return {
+    remaining: raw.remaining ?? 0,
+    graduated: raw.graduated ?? 0,
+    dailyCounts: (raw.dailyCounts ?? []).map((d) => ({ date: d.date, count: Number(d.count) })),
+    tierCounts: tierKeyed(raw.tierCounts, 0),
+    // ⚠ wordsByTier 缺 tier 必须是空数组（不能是 undefined）——expandDayForWords 直接下标取用
+    wordsByTier: tierKeyed(raw.wordsByTier, [] as string[]),
+  };
+}
+
+/** PG 侧原始形状（json_object_agg key 为字符串、count 可能为字符串） */
+interface HomeSummaryRaw {
+  remaining?: number;
+  graduated?: number;
+  dailyCounts?: DailyCount[];
+  tierCounts?: Record<string, number>;
+  wordsByTier?: Record<string, string[]>;
+}
+
+interface TodayQuizSummaryRaw {
+  words?: number;
+  firstSeen?: number;
+  wordIds?: string[];
+  firstSeenIds?: string[];
+}
+
+/** PG 侧原始形状（json_object_agg key 为字符串 "0".."4"） */
+interface StageStatsRaw {
+  byStage?: Record<string, number>;
+  specialByStage?: Record<string, number>;
+}
 
 export interface WordRepo {
   readonly books: Repository<Book>;
@@ -71,6 +179,11 @@ export interface WordRepo {
       /** 四阶段制（用户 2026-10-15）：阶段与阶段内连续熟练次数一并落库 */
       stage?: BookWord['stage'];
       stageStreak?: number;
+      /**
+       * 本轮第一次露面时间（用户 2026-10-24）：仅首答（attemptNo===1 且该词尚无 firstSeenAt）
+       * 时带上；答题的写回本来就要发生，不增加请求数。之后任何作答都不覆盖它。
+       */
+      firstSeenAt?: string;
     },
   ): Promise<BookWord | null>;
   updateBookWordStatus(bookWordId: string, status: WordStatus): Promise<BookWord | null>;
@@ -105,6 +218,24 @@ export interface WordRepo {
    * stage=0 即「已彻底毕业」计数。
    */
   countBookWordsByStage(bookId: string, stage: BookWord['stage']): Promise<number>;
+  /**
+   * 云端聚合（用户 2026-10-24）：首页计划卡的统计改由云端 PG 函数算好返回——
+   * remaining/graduated、近 14 天每天答题去重词数（节奏原料）、tierCounts、
+   * 以及 expandDayForWords 需要的各 tier 有序 wordId 数组。
+   * 替代原「拉全表 8296 行（9 个串行分页请求）再客户端算」。
+   */
+  homeSummary(bookId: string): Promise<HomeSummary>;
+  /**
+   * 云端聚合（用户 2026-10-24）：今日考查统计——今天答过的不同词（lastQuizAt=今天）
+   * 与其中第一次出现的（firstSeenAt=今天），连 id 集合一起回（客户端本机累加要去重）。
+   */
+  todayQuizSummary(bookId: string, today: string): Promise<TodayQuizSummary>;
+  /**
+   * 云端聚合（用户 2026-10-24）：首页四阶段卡片的统计——各 stage 词量 +
+   * 各阶段特种训练词量（PG 函数 ep_stage_stats）。
+   * 原实现拉全表 8296 行只为数 6 个数（stageStats 纯计数），云拥挤时同样常失败。
+   */
+  stageStatsSummary(bookId: string): Promise<StageStatsSummary>;
   /**
    * 阶段词表的**一页**行（服务端过滤 + 服务端分页，用户 2026-10-22）。
    *
@@ -273,6 +404,34 @@ export function createWordRepo(db: CloudDatabaseLike = getDb()): WordRepo {
         { column: 'bookId', op: 'eq', value: bookId },
         { column: 'stage', op: 'eq', value: stage },
       ]),
+    /**
+     * 云端聚合（2026-10-24）：走 PG 函数 ep_home_summary（函数体内 owner_id=auth.uid() 过滤，
+     * 看不到别人的书）。⚠ 每次只调一个函数——云管理驱动的 exec-pgsql 一次一条命令的限制
+     * 就是逼着把聚合拆成 ep_home_summary + ep_today_quiz 两个函数的原因（单条 SQL 有长度上限）。
+     */
+    homeSummary: async (bookId) => {
+      const raw = await rpcData<HomeSummaryRaw>(db, 'ep_home_summary', { p_book_id: bookId });
+      return normalizeHomeSummary(raw);
+    },
+    todayQuizSummary: async (bookId, today) => {
+      const raw = await rpcData<TodayQuizSummaryRaw>(db, 'ep_today_quiz', {
+        p_book_id: bookId,
+        p_today: today,
+      });
+      return {
+        words: raw.words ?? 0,
+        firstSeen: raw.firstSeen ?? 0,
+        wordIds: raw.wordIds ?? [],
+        firstSeenIds: raw.firstSeenIds ?? [],
+      };
+    },
+    stageStatsSummary: async (bookId) => {
+      const raw = await rpcData<StageStatsRaw>(db, 'ep_stage_stats', { p_book_id: bookId });
+      return {
+        byStage: stageKeyed(raw.byStage),
+        specialByStage: stageKeyed(raw.specialByStage),
+      };
+    },
     /**
      * 按 id 批量取词 —— **必须分片**：入参可能上千（摸底页传入全书 8296 个 wordId），
      * 单次 `id=in.(…)` 的 URL 会达到 ~82KB，远超请求行上限 ⇒ 浏览器 `Failed to fetch`。

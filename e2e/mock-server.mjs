@@ -100,6 +100,98 @@ function applyFilters(rows, params) {
   return out;
 }
 
+/**
+ * /.cloud/database/rest/rpc/<fn> —— PG 函数 RPC（2026-10-24 云端聚合）。
+ *
+ * 忠实复刻线上两个函数的聚合语义（SQL 见 docs/交接-2026-10-24.md）：
+ *  - owner_id = auth.uid() 过滤（mock 侧 = USER_ID）
+ *  - dailyCounts：近 14 天、UTC 日、每天 distinct wordId、升序
+ *  - wordsByTier：按 tier 分组，组内 listNo → orderInList → id 排序
+ *  - ep_today_quiz：lastQuizAt / firstSeenAt 的 UTC 日 = p_today
+ * HTTP 层回**裸函数结果**（PostgREST 语义）；{data,error} 信封是 SDK 客户端加的。
+ */
+async function handleRpc(req, res, fn) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  let args = {};
+  try {
+    args = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    /* ignore */
+  }
+  const bookId = String(args.p_book_id ?? '');
+  const rows = (tables.book_words ?? []).filter((r) => r.bookId === bookId && r.owner_id === USER_ID);
+  const utcDate = (iso) => (typeof iso === 'string' ? iso.slice(0, 10) : '');
+
+  if (fn === 'ep_home_summary') {
+    const remaining = rows.filter((r) => r.stage > 0).length;
+    const graduated = rows.filter((r) => r.stage === 0).length;
+    const cutoff = Date.now() - 14 * 86400000;
+    const perDay = new Map();
+    for (const r of rows) {
+      const at = r.lastQuizAt;
+      if (typeof at !== 'string' || new Date(at).getTime() < cutoff) continue;
+      const d = utcDate(at);
+      let set = perDay.get(d);
+      if (!set) {
+        set = new Set();
+        perDay.set(d, set);
+      }
+      set.add(String(r.wordId));
+    }
+    const dailyCounts = [...perDay.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .map(([date, set]) => ({ date, count: set.size }));
+    const byTier = new Map();
+    for (const r of rows) {
+      const t = r.tier;
+      let arr = byTier.get(t);
+      if (!arr) {
+        arr = [];
+        byTier.set(t, arr);
+      }
+      arr.push(r);
+    }
+    const tierCounts = {};
+    const wordsByTier = {};
+    for (const [t, arr] of byTier) {
+      arr.sort(
+        (a, b) =>
+          a.listNo - b.listNo || a.orderInList - b.orderInList || String(a.id).localeCompare(String(b.id)),
+      );
+      tierCounts[String(t)] = arr.length;
+      wordsByTier[String(t)] = arr.map((r) => String(r.wordId));
+    }
+    return json(res, { remaining, graduated, dailyCounts, tierCounts, wordsByTier });
+  }
+
+  if (fn === 'ep_today_quiz') {
+    const today = String(args.p_today ?? '');
+    const todayRows = rows.filter((r) => utcDate(r.lastQuizAt) === today);
+    const firstSeenRows = rows.filter((r) => utcDate(r.firstSeenAt) === today);
+    return json(res, {
+      words: todayRows.length,
+      firstSeen: firstSeenRows.length,
+      wordIds: todayRows.map((r) => String(r.wordId)),
+      firstSeenIds: firstSeenRows.map((r) => String(r.wordId)),
+    });
+  }
+
+  if (fn === 'ep_stage_stats') {
+    const byStage = {};
+    const specialByStage = {};
+    for (const r of rows) {
+      const s = String(r.stage);
+      byStage[s] = (byStage[s] ?? 0) + 1;
+      if (r.specialTraining) specialByStage[s] = (specialByStage[s] ?? 0) + 1;
+    }
+    return json(res, { byStage, specialByStage });
+  }
+
+  // PostgREST 对不存在的函数回 404 + JSON 错误体（SDK 不 throw，交给调用方拆信封）
+  return json(res, { message: `mock: unknown function ${fn}`, code: '404' }, 404);
+}
+
 async function handleCloudRest(req, res, url) {
   const m = /^\/\.cloud\/database\/rest\/([a-zA-Z_]+)$/.exec(url.pathname);
   if (!m) return json(res, { data: null, error: { message: `mock: unknown rest path ${url.pathname}` } }, 404);
@@ -254,6 +346,11 @@ async function serveStatic(req, res, url) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   try {
+    const rpcMatch = /^\/\.cloud\/database\/rest\/rpc\/([a-zA-Z_]+)$/.exec(url.pathname);
+    if (rpcMatch) {
+      await handleRpc(req, res, rpcMatch[1]);
+      return;
+    }
     if (url.pathname.startsWith('/.cloud/database/rest')) {
       await handleCloudRest(req, res, url);
       return;

@@ -13,8 +13,12 @@
  *  - 判定：预计完成日 vs 计划窗口截止日（deadlineDate）——来得及/差几天/要提到多少。
  *
  * 纯函数、零 IO、零 React 依赖（store 调它，测试可直跑）。
+ *
+ * 2026-10-24 起原料改由云端算好（PG 函数 ep_home_summary 的 dailyCounts：
+ * 近 14 天每天答过的不同词数，按 UTC 日）——首页不再拉全表 book_words，
+ * 本模块只负责「原料 → 节奏/预估/判定」的纯计算（测试仍全覆盖）。
  */
-import type { BookWord } from '../../types/domain';
+import type { DailyCount } from '../../data/repos/wordRepo';
 
 const DAY_MS = 86_400_000;
 
@@ -49,26 +53,21 @@ export type PaceVerdict =
   | { kind: 'behind'; finishDate: string; gapDays: number; neededPerDay: number; neededMinutes: number };
 
 /**
- * 真实节奏：近 windowDays 天（含今天）内，按 UTC 日汇总 lastQuizAt。
+ * 真实节奏：近 windowDays 天（含今天）内，按 UTC 日汇总答题去重词数。
+ * dailyCounts = 云端 ep_home_summary 的聚合原料（date='YYYY-MM-DD'，UTC 日）。
  * avgHitSec 用于把词数量折算成分钟（计划参数，默认 12 秒/词）。
  */
-export function computeStagePace(bws: BookWord[], now: Date, windowDays = 14, avgHitSec = 12): StagePace {
+export function computeStagePace(dailyCounts: DailyCount[], now: Date, windowDays = 14, avgHitSec = 12): StagePace {
   const todayDay = utcDay(now.toISOString());
-  const perDay = new Map<number, Set<string>>();
-  for (const bw of bws) {
-    if (!bw.lastQuizAt) continue;
-    const d = utcDay(bw.lastQuizAt);
-    if (d > todayDay || todayDay - d >= windowDays) continue;
-    let set = perDay.get(d);
-    if (!set) {
-      set = new Set();
-      perDay.set(d, set);
-    }
-    set.add(bw.wordId);
+  const perDay = new Map<number, number>();
+  for (const d of dailyCounts) {
+    const day = utcDay(`${d.date}T00:00:00Z`);
+    if (day > todayDay || todayDay - day >= windowDays) continue;
+    perDay.set(day, (perDay.get(day) ?? 0) + (d.count || 0));
   }
   const activeDays = perDay.size;
   let touched = 0;
-  for (const s of perDay.values()) touched += s.size;
+  for (const c of perDay.values()) touched += c;
   const wordsPerDay = activeDays > 0 ? Math.round(touched / activeDays) : 0;
   return {
     windowDays,

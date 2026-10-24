@@ -61,9 +61,10 @@ export default function DashboardPage() {
       setLoading(true);
       try {
         const repos = getRepos();
-        const bws = await repos.word.listBookWords(activePlan.bookId);
-        const counts: Record<number, number> = {};
-        for (const bw of bws) counts[bw.tier] = (counts[bw.tier] ?? 0) + 1;
+        // 各层词量：4 个 count 并发（只回数字）——原实现拉整本 8296 行只为数 4 个数
+        // （2026-10-24 云端聚合批次顺带修掉，与首页统计改造同一动因：云资源拥挤时
+        //  9 个串行全表分页请求正是「数据更新常常出错」的失败面）。
+        const counts = await repos.word.countBookWordsByTier(activePlan.bookId);
         const params = {
           tierRounds: activePlan.tierRounds,
           planMode: activePlan.planMode,

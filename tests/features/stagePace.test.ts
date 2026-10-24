@@ -1,82 +1,56 @@
 /**
- * stagePace.test.ts —— 四阶段真实节奏与完成预估（用户 2026-10-23 选「方案 2」）。
+ * stagePace.test.ts —— 四阶段真实节奏与完成预估（用户 2026-10-23 选「方案 2」，
+ * 2026-10-24 起原料改云端聚合）。
  *
  * 背景：首页计划卡原来显示 tier 模型预估（Σ词数×轮次 ÷ 窗口 × 秒数），四阶段用户身上
- * 是持续误报（红线常年亮）。改为按 book_words.lastQuizAt 的真实节奏推算。
- * 数据源事实：每次答题都写 lastQuizAt（考查页也写），refreshToday 已拉全表，零额外请求。
+ * 是持续误报（红线常年亮）。改为按真实答题节奏推算。
+ * 数据源事实：2026-10-24 起 dailyCounts 由云端 PG 函数 ep_home_summary 算好
+ * （每天答过的不同词数，UTC 日分组 + distinct）——「同日多答只算一次」的
+ * distinct 口径由 mockDb.rpc 的测试钉死（tests/data/homeSummaryRpc.test.ts），
+ * 这里只测「原料 → 节奏/预估/判定」的纯计算。
  */
 import { describe, expect, it } from 'vitest';
 import { computeStagePace, paceVerdict, projectStageFinish } from '../../src/features/quiz/stagePace';
-import type { BookWord } from '../../src/types/domain';
+import type { DailyCount } from '../../src/data/repos/wordRepo';
 
 const NOW = new Date('2026-10-23T10:00:00.000Z');
 const DAY = 86_400_000;
 
-function bw(id: string, stage: BookWord['stage'], lastQuizAt: string | null): BookWord {
-  return {
-    id,
-    bookId: 'b1',
-    wordId: `w-${id}`,
-    listNo: 1,
-    orderInList: 0,
-    tier: 2,
-    tierUpdatedAt: '2026-10-01T00:00:00.000Z',
-    status: 'normal',
-    streak: 0,
-    failStreak: 0,
-    specialTraining: false,
-    quizDayStreak: 0,
-    quizDayPassed: false,
-    stage,
-    stageStreak: 0,
-    ...(lastQuizAt ? { lastQuizAt } : {}),
-  };
+/** UTC 日字符串（N 天前） */
+function dayStr(n: number): string {
+  return new Date(NOW.getTime() - n * DAY).toISOString().slice(0, 10);
 }
 
-/** 近 N 天里，有几天在学习、每天答多少词 */
-function daysAgo(n: number, hour = 9): string {
-  return new Date(NOW.getTime() - n * DAY).toISOString().slice(0, 10) + `T${String(hour).padStart(2, '0')}:00:00.000Z`;
+/** 云端 dailyCounts 原料的一行：N 天前答过 count 个不同的词 */
+function dc(n: number, count: number): DailyCount {
+  return { date: dayStr(n), count };
 }
 
 describe('computeStagePace', () => {
   it('14 天窗口内按 UTC 日汇总；学习日均速 = 去重词数 ÷ 学习日', () => {
-    const rows = [
-      ...Array.from({ length: 30 }, (_, i) => bw(`d0-${i}`, 1, daysAgo(0))), // 今天 30 词
-      ...Array.from({ length: 10 }, (_, i) => bw(`d1-${i}`, 1, daysAgo(1))), // 昨天 10 词
-    ];
-    const pace = computeStagePace(rows, NOW);
+    const pace = computeStagePace([dc(0, 30), dc(1, 10)], NOW);
     expect(pace.activeDays).toBe(2);
     expect(pace.touchedWords).toBe(40);
     expect(pace.wordsPerDay).toBe(20); // 40 ÷ 2
     expect(pace.minutesPerDay).toBeCloseTo((20 * 12) / 60, 5); // 4 分钟
   });
 
-  it('同一个词一天内答多次只算一次（lastQuizAt 是最后答题时间）', () => {
-    const rows = [bw('a', 1, daysAgo(0)), bw('b', 1, daysAgo(0)), bw('c', 1, daysAgo(1))];
-    const pace = computeStagePace(rows, NOW);
-    expect(pace.activeDays).toBe(2);
-    expect(pace.touchedWords).toBe(3);
-    expect(pace.wordsPerDay).toBe(2); // 3 词分布在 2 天
-  });
-
-  it('窗口外（15 天前）与无 lastQuizAt 的都不计入', () => {
-    const rows = [bw('old', 1, daysAgo(15)), bw('never', 1, null), bw('fresh', 1, daysAgo(13))];
-    const pace = computeStagePace(rows, NOW);
+  it('窗口外（15 天前）的条目不计入', () => {
+    const pace = computeStagePace([dc(15, 5), dc(13, 3)], NOW);
     expect(pace.activeDays).toBe(1);
-    expect(pace.touchedWords).toBe(1);
+    expect(pace.touchedWords).toBe(3);
   });
 
   it('自定义窗口天数与 avgHitSec 生效', () => {
-    const rows = [bw('a', 1, daysAgo(6)), bw('b', 1, daysAgo(1))];
-    const pace = computeStagePace(rows, NOW, 7, 20);
+    const pace = computeStagePace([dc(6, 1), dc(1, 1)], NOW, 7, 20);
     expect(pace.windowDays).toBe(7);
     expect(pace.activeDays).toBe(2);
     expect(pace.wordsPerDay).toBe(1);
     expect(pace.minutesPerDay).toBeCloseTo((1 * 20) / 60, 5);
   });
 
-  it('没有任何学习记录 ⇒ 全 0', () => {
-    const pace = computeStagePace([bw('a', 1, null)], NOW);
+  it('没有任何学习记录（空原料）⇒ 全 0', () => {
+    const pace = computeStagePace([], NOW);
     expect(pace).toMatchObject({ activeDays: 0, wordsPerDay: 0, minutesPerDay: 0, touchedWords: 0 });
   });
 });

@@ -174,8 +174,113 @@ export class MockDb implements CloudDatabaseLike {
   static readonly SERVER_MAX_ROWS = 1000;
   tables = new Map<string, Row[]>();
   seq = 1;
+  /** 当前会话的 owner（对应云端 auth.uid()；PG 函数体内按它过滤，见 ep_home_summary SQL） */
+  ownerId = 'u1';
   from(table: string): PostgrestQuery {
     if (!this.tables.has(table)) this.tables.set(table, []);
     return new MockQuery(this, table);
+  }
+
+  /**
+   * RPC（用户 2026-10-24 云端聚合）：忠实实现云端两个 PG 函数的聚合语义
+   * （ep_home_summary / ep_today_quiz，SQL 见迁移记录与交接文档）——
+   * owner_id 过滤、UTC 日分组、每天 distinct wordId、排序键（listNo,orderInList,id）
+   * 全部照 SQL 翻译，**不是兜底桩**：mock 与云端语义不一致 = 测试放生真实缺陷。
+   *
+   * ⚠ 返回形状必须照 SDK 的 processResponse：**信封** `{success, error, data, ...}`，
+   *    不是裸聚合结果。2026-10-24 踩坑：mock 回裸值 ⇒ wordRepo 不拆信封也全绿，
+   *    真 SDK 回信封 ⇒ 线上统计全 0。信封对不上，mock 就是在给真实缺陷兜底。
+   *    未知函数照 PostgREST 回 404 错误信封（SDK 不抛，交给调用方 unwrap 抛）。
+   */
+  async rpc(fn: string, args: Record<string, unknown> = {}): Promise<Envelope<unknown>> {
+    const errEnvelope = (message: string): Envelope<unknown> => ({
+      data: null,
+      error: { message, code: '404', details: null, hint: null },
+      count: null,
+      status: 404,
+      statusText: 'Not Found',
+    });
+    const bookId = String(args.p_book_id ?? '');
+    const rows = (this.tables.get('book_words') ?? []).filter(
+      (r) => r.bookId === bookId && r.owner_id === this.ownerId,
+    );
+    const utcDate = (iso: unknown): string => (typeof iso === 'string' ? iso.slice(0, 10) : '');
+
+    if (fn === 'ep_home_summary') {
+      // remaining/graduated：stage>0 / stage=0
+      const remaining = rows.filter((r) => (r.stage as number) > 0).length;
+      const graduated = rows.filter((r) => (r.stage as number) === 0).length;
+      // dailyCounts：近 14 天（UTC 日）每天答过的不同词数，升序
+      const cutoff = Date.now() - 14 * 86_400_000;
+      const perDay = new Map<string, Set<string>>();
+      for (const r of rows) {
+        const at = r.lastQuizAt;
+        if (typeof at !== 'string' || new Date(at).getTime() < cutoff) continue;
+        const d = utcDate(at);
+        let set = perDay.get(d);
+        if (!set) {
+          set = new Set();
+          perDay.set(d, set);
+        }
+        set.add(String(r.wordId));
+      }
+      const dailyCounts = [...perDay.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([date, set]) => ({ date, count: set.size }));
+      // tierCounts / wordsByTier：分组 + 组内按 listNo,orderInList,id 排序
+      const byTier = new Map<number, Row[]>();
+      for (const r of rows) {
+        const t = r.tier as number;
+        let arr = byTier.get(t);
+        if (!arr) {
+          arr = [];
+          byTier.set(t, arr);
+        }
+        arr.push(r);
+      }
+      const tierCounts: Record<string, number> = {};
+      const wordsByTier: Record<string, string[]> = {};
+      for (const [t, arr] of byTier) {
+        arr.sort(
+          (a, b) =>
+            (a.listNo as number) - (b.listNo as number) ||
+            (a.orderInList as number) - (b.orderInList as number) ||
+            String(a.id).localeCompare(String(b.id)),
+        );
+        tierCounts[String(t)] = arr.length;
+        wordsByTier[String(t)] = arr.map((r) => String(r.wordId));
+      }
+      return { success: true, data: { remaining, graduated, dailyCounts, tierCounts, wordsByTier }, error: null };
+    }
+
+    if (fn === 'ep_today_quiz') {
+      const today = String(args.p_today ?? '');
+      const todayRows = rows.filter((r) => utcDate(r.lastQuizAt) === today);
+      const firstSeenRows = rows.filter((r) => utcDate(r.firstSeenAt) === today);
+      return {
+        success: true,
+        data: {
+          words: todayRows.length,
+          firstSeen: firstSeenRows.length,
+          wordIds: todayRows.map((r) => String(r.wordId)),
+          firstSeenIds: firstSeenRows.map((r) => String(r.wordId)),
+        },
+        error: null,
+      };
+    }
+
+    if (fn === 'ep_stage_stats') {
+      // byStage：各 stage（含 0=已毕业）计数；specialByStage：各阶段特种训练计数
+      const byStage: Record<string, number> = {};
+      const specialByStage: Record<string, number> = {};
+      for (const r of rows) {
+        const s = String(r.stage);
+        byStage[s] = (byStage[s] ?? 0) + 1;
+        if (r.specialTraining) specialByStage[s] = (specialByStage[s] ?? 0) + 1;
+      }
+      return { success: true, data: { byStage, specialByStage }, error: null };
+    }
+
+    return errEnvelope(`[rpc] unknown function: ${fn}`);
   }
 }

@@ -273,7 +273,13 @@ export default function StageQuizPage() {
       advanced: s.advanced + (advanced ? 1 : 0),
       total: s.total,
     }));
-    await persist(bw, { ...sp, quizDayStreak: dayStreak, quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT });
+    await persist(bw, {
+      ...sp,
+      quizDayStreak: dayStreak,
+      quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT,
+      // 本轮第一次露面（2026-10-24）：首答写一次 firstSeenAt，之后不覆盖（bw 已有值即写过）
+      ...(current.attemptNo === 1 && !bw.firstSeenAt ? { firstSeenAt: sp.lastQuizAt } : {}),
+    });
     if (autoSpeak && correct) {
       speak({ text: current.word.lemma, ipa: current.word.ipa, arpabet: current.word.arpabet, mode: 'word' }, current.word.id);
     }
@@ -328,7 +334,13 @@ export default function StageQuizPage() {
       advanced: s.advanced + (graduated ? 1 : 0),
       total: s.total,
     }));
-    await persist(bw, { ...sp, quizDayStreak: dayStreak, quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT });
+    await persist(bw, {
+      ...sp,
+      quizDayStreak: dayStreak,
+      quizDayPassed: dayStreak >= QUIZ_DAY_PASS_COUNT,
+      // 阶段四第一次拼写（2026-10-24）：同 firstSeenAt 语义，首答写一次
+      ...(current.attemptNo === 1 && !bw.firstSeenAt ? { firstSeenAt: sp.lastQuizAt } : {}),
+    });
   };
 
   const next = (): void => {

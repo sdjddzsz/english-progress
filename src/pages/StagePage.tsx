@@ -49,9 +49,11 @@ export default function StagePage() {
   const loadStats = useCallback(async () => {
     if (!userId || !activeBookId) return;
     try {
-      const all = await getRepos().word.listBookWords(activeBookId);
-      setStats(stageStats(all, new Date()));
-      setFullyGraduated(all.filter((bw) => bw.stage === 0).length);
+      // 云端聚合（2026-10-24）：各阶段词量/特种训练量由 ep_stage_stats 算好——
+      // 原实现拉整本 8296 行（9 个串行分页请求）只为数 6 个数，云拥挤时常失败。
+      const counts = await getRepos().word.stageStatsSummary(activeBookId);
+      setStats(stageStats(counts));
+      setFullyGraduated(counts.byStage[0]);
       setListError('');
     } catch (e) {
       setListError(e instanceof Error ? e.message : String(e));

@@ -85,6 +85,72 @@ async function main() {
     homeText.match(/今天：检测[^\n]*/g)?.[0] ?? '(未找到)',
   );
 
+  // ===== 0b) 云端聚合链路（用户 2026-10-24：统计改云端算）=====
+  // 背景：云资源拥挤、客户端拉全表 book_words（8296 行 / 9 个串行分页请求）常失败。
+  // 现在首页统计全部由 PG 函数 ep_home_summary / ep_today_quiz 在云端算好，客户端直拉。
+  const rpcLog = cloudLog.filter((c) => c.url.includes('/rpc/'));
+  const homeBwLog = cloudLog.filter((c) => c.url.includes('/book_words'));
+  check(
+    '首页统计走云端 RPC（ep_home_summary + ep_today_quiz）',
+    rpcLog.some((c) => c.url.includes('ep_home_summary')) && rpcLog.some((c) => c.url.includes('ep_today_quiz')),
+    rpcLog.map((c) => `${c.method} ${c.url.replace('/.cloud/database/rest', '')}`).join(' | ') || '(无)',
+  );
+  check(
+    '首页零 book_words 请求（旧实现 = 9 个全表分页请求拉 8296 行）',
+    homeBwLog.length === 0,
+    homeBwLog.map((c) => c.url.slice(0, 70)).join(' | ') || '(无)',
+  );
+  // 统计数值真值：直接打 mock 的 rpc 端点拿云端聚合结果，与页面显示逐项对账
+  // （防「请求走了 RPC 但页面数字还是客户端旧逻辑算的」这种半吊子改造）
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  const rpcHome = await (
+    await fetch(`${BASE}/.cloud/database/rest/rpc/ep_home_summary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_book_id: 'e2e-book-1' }),
+    })
+  ).json();
+  const rpcToday = await (
+    await fetch(`${BASE}/.cloud/database/rest/rpc/ep_today_quiz`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_book_id: 'e2e-book-1', p_today: todayUtc }),
+    })
+  ).json();
+  check(
+    '计划卡剩余/毕业数与云端聚合一致',
+    homeText.includes(`剩余 ${rpcHome.remaining} 词 · 已彻底毕业 ${rpcHome.graduated} 词`),
+    `页面期望「剩余 ${rpcHome.remaining} · 毕业 ${rpcHome.graduated}」`,
+  );
+  check(
+    '计划卡节奏天数与云端聚合一致（近 14 天学习 N 天）',
+    homeText.includes(`近 14 天：学习 ${rpcHome.dailyCounts.length} 天`),
+    `云端 dailyCounts=${rpcHome.dailyCounts.length} 天`,
+  );
+  check(
+    '今日检测数与云端聚合一致（检测/第一次出现两个数都对账）',
+    homeText.includes(`今天：检测 ${rpcToday.words} 词`) && homeText.includes(`其中第一次出现 ${rpcToday.firstSeen} 词`),
+    `云端 words=${rpcToday.words} / firstSeen=${rpcToday.firstSeen}`,
+  );
+  // 四阶段卡片词库量（2026-10-24 起也走云端 ep_stage_stats，首页不再拉全表）
+  const rpcStage = await (
+    await fetch(`${BASE}/.cloud/database/rest/rpc/ep_stage_stats`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_book_id: 'e2e-book-1' }),
+    })
+  ).json();
+  check(
+    '四阶段卡片词库量与云端聚合一致（阶段一/二有数，不再拉全表算）',
+    homeText.includes(`词库 ${rpcStage.byStage['1']} 词`) && homeText.includes(`词库 ${rpcStage.byStage['2']} 词`),
+    `云端 byStage=${JSON.stringify(rpcStage.byStage)}`,
+  );
+  check(
+    '特种训练词数与云端聚合一致（有才显示）',
+    rpcStage.specialByStage['1'] > 0 ? homeText.includes(`特种训练 ${rpcStage.specialByStage['1']} 词`) : true,
+    `云端 specialByStage=${JSON.stringify(rpcStage.specialByStage)}`,
+  );
+
   // ===== A) 词表页 =====
   cloudLog.length = 0;
   await page.getByRole('button', { name: '词表' }).first().click();

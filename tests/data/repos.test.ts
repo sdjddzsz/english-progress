@@ -9,7 +9,7 @@ import 'fake-indexeddb/auto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { Repository, type CloudDatabaseLike, type PostgrestQuery } from '../../src/data/repository';
+import { Repository, type CloudDatabaseLike, type Envelope, type PostgrestQuery } from '../../src/data/repository';
 import { createHitRepo } from '../../src/data/repos/hitRepo';
 import { createFeedbackRepo } from '../../src/data/repos/feedbackRepo';
 import { createWordRepo, ID_BATCH } from '../../src/data/repos/wordRepo';
@@ -281,6 +281,9 @@ class RecordingDb implements CloudDatabaseLike {
         },
       }) as PostgrestQuery;
     return wrap(this.inner.from(table));
+  }
+  rpc(fn: string, args?: Record<string, unknown>): Promise<Envelope<unknown>> {
+    return this.inner.rpc(fn, args);
   }
 }
 

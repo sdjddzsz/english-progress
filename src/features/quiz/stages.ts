@@ -16,6 +16,7 @@
  * 纯函数、零 IO、零 React 依赖。
  */
 import type { BookWord, Tier } from '../../types/domain';
+import type { StageStatsSummary } from '../../data/repos/wordRepo';
 import type { QuizVerdict } from './judging';
 
 export type WordStage = 0 | 1 | 2 | 3 | 4;
@@ -72,9 +73,17 @@ export function selectStagePool(all: BookWord[], stage: 1 | 2 | 3 | 4, _now: Dat
 }
 
 /** 阶段统计：各阶段词库量 / 特种训练量（首页四卡片用；待刷=词库量，不限一轮） */
+/**
+ * 四阶段卡片统计：各阶段词库量 / 待刷 / 特种训练词数。
+ *
+ * 2026-10-24 起原料由云端算好（PG 函数 ep_stage_stats 的 byStage/specialByStage
+ * 两个计数聚合）——原实现拉整本 8296 行只为数 6 个数，云资源拥挤时这 9 个
+ * 串行分页请求正是「数据更新常常出错」的失败面之一。
+ * 彻底毕业（stage=0）不计入任何阶段卡片（byStage 里没有 0 键或忽略它）。
+ * due = total：阶段池不限每天一轮，待刷就是词库量。
+ */
 export function stageStats(
-  all: BookWord[],
-  _now: Date = new Date(),
+  counts: StageStatsSummary,
 ): Record<1 | 2 | 3 | 4, { total: number; due: number; special: number; graduated: number }> {
   const out = {
     1: { total: 0, due: 0, special: 0, graduated: 0 },
@@ -82,12 +91,9 @@ export function stageStats(
     3: { total: 0, due: 0, special: 0, graduated: 0 },
     4: { total: 0, due: 0, special: 0, graduated: 0 },
   } as Record<1 | 2 | 3 | 4, { total: number; due: number; special: number; graduated: number }>;
-  for (const bw of all) {
-    if (bw.stage === 0) continue;
-    const s = out[bw.stage];
-    s.total += 1;
-    s.due += 1; // 不限每天一轮：待刷=词库量
-    if (bw.specialTraining) s.special += 1;
+  for (const n of [1, 2, 3, 4] as const) {
+    const total = counts.byStage[n] ?? 0;
+    out[n] = { total, due: total, special: counts.specialByStage[n] ?? 0, graduated: 0 };
   }
   return out;
 }

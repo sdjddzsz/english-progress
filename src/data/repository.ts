@@ -78,10 +78,25 @@ export interface Envelope<T> {
   data: T;
   error: PostgrestErrorLike | null;
   count?: number | null;
+  /** 真 SDK（processResponse）还带这三个字段；应用代码只读 data/error/count，mock 照抄以防失真 */
+  success?: boolean;
+  status?: number;
+  statusText?: string;
 }
 
 export interface CloudDatabaseLike {
   from(table: string): PostgrestQuery;
+  /**
+   * PostgREST RPC（2026-10-24 云端聚合用）：调用云端 PG 函数（SECURITY DEFINER，
+   * 函数体内显式 owner_id=auth.uid() 过滤），一个请求拿聚合好的统计，
+   * 替代「拉全表再客户端算」（首页原 9 个全表分页请求 ⇒ 2 个小请求）。
+   *
+   * ⚠ 返回值是 **SDK 信封** `{success, error, data, ...}`（processResponse 的形状），
+   *    不是裸函数结果——调用方必须拆信封（error 时抛出、取 data）。
+   *    2026-10-24 实测踩坑：直接 cast 成业务类型读字段 ⇒ 线上统计全 0
+   *    （mock 回裸值把缺陷兜住了）。类型在此收紧，杜绝第二次。
+   */
+  rpc(fn: string, args?: Record<string, unknown>): Promise<Envelope<unknown>>;
 }
 
 // ===== 查询描述 =====

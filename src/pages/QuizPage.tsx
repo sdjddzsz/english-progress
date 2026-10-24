@@ -435,6 +435,9 @@ export default function QuizPage() {
       quizDayPassed: nextDayStreak >= QUIZ_DAY_PASS_COUNT,
       stage: sp.stage,
       stageStreak: sp.stageStreak,
+      // 本轮第一次露面（用户 2026-10-24）：写一次 firstSeenAt，之后任何作答都不覆盖
+      // （bw.firstSeenAt 已有值 = 之前某轮/某设备写过）。答题写回本来就要发生，零额外请求。
+      ...(current.attemptNo === 1 && !bw.firstSeenAt ? { firstSeenAt: sp.lastQuizAt } : {}),
     };
     try {
       // 走离线队列统一入口：云端缺列（PGRST204）/ 断网时不弹红条阻断学习，

@@ -208,6 +208,12 @@ export interface BookWord {
   stage: 0 | 1 | 2 | 3 | 4;
   /** 当前阶段内连续「熟练」次数（阶段毕业判定用；晋级/降阶时清零；阶段四不使用） */
   stageStreak: number;
+  /**
+   * 该词本轮第一次露面的时间（用户 2026-10-24 云端统计）：首答时写一次、之后不覆盖。
+   * 让「今天其中多少第一次出现」变成云端可算的硬数据（跨设备准）——
+   * 老数据无此列，统计上按「没有」处理（回落本机当场补）。
+   */
+  firstSeenAt?: string;
 }
 
 export interface StudyPlan {
