@@ -1,0 +1,90 @@
+%% 英语学习进度系统 · MRCS 调度核心类图（TypeScript interface 级，纯函数模块）
+classDiagram
+    class PlanParams {
+        +Record~Tier,number~ tierRounds
+        +PlanMode planMode
+        +string startDate
+        +string deadlineDate
+        +string sprintStartDate
+        +number dailyBudgetMin
+        +number avgHitSec
+        +number gapMinDays
+        +Record~Tier,number~ modalRatio
+        +boolean masteryDecayEnabled
+        +Partial~Record~ tierRoundDays
+        +number listSize
+    }
+    class QueueEntry {
+        +string wordId
+        +Tier tier
+        +number roundNo
+        +number listNo
+        +Modality modality
+        +DayExplain explain
+    }
+    class ValidationResult {
+        +boolean pass
+        +number totalHits
+        +number dailyHits
+        +number dailyMinutes
+        +number marginRatio
+    }
+    class OverdueSummary {
+        +number count
+        +number threshold
+        +boolean mustReschedule
+    }
+    class StrategyPreview {
+        +RescheduleStrategy strategy
+        +string plainWords
+        +string newFinishDate
+        +number newDailyHits
+        +ValidationResult validation
+        +number affectedWordCount
+    }
+    class WordSteadiness {
+        +string wordId
+        +boolean steady
+    }
+
+    class Validator {
+        <<module validate.ts>>
+        +validatePlan(input) ValidationResult
+        +generateBothPlans(input) Recommended~Fallback~
+        +resolveDegradePath(input) DegradePath
+    }
+    class Mastery {
+        <<module mastery.ts>>
+        +skipAllowed(roundNo, R) boolean
+        +decayedHitsForWord(R, steady) number
+        +isSteadySignal(feedbacks) boolean
+    }
+    class Expander {
+        <<module expand.ts>>
+        +expandDay(params, tierCounts, date, steady) QueueEntry[]
+        +assignModality(tier, wordId, ratio, seed) Modality
+        +planRounds(params, tierCounts) PlanRoundWindow[]
+    }
+    class OverdueResolver {
+        <<module overdue.ts>>
+        +computeOverdue(hits, today, dailyHits) OverdueSummary
+        +previewStrategy(s, input, overdue) StrategyPreview
+        +applyStrategy(s, input, overdue, deferredIds) StrategyOutcome
+    }
+    class Previewer {
+        <<module preview.ts>>
+        +impactPreview(oldP, newP, tierCounts, steady) ImpactResult
+    }
+
+    Validator ..> PlanParams : 校验
+    Validator ..> ValidationResult : 产出
+    Expander ..> PlanParams : 展开
+    Expander ..> QueueEntry : 产出
+    OverdueResolver ..> PlanParams : 重排
+    OverdueResolver ..> StrategyPreview : 预览
+    OverdueResolver ..> ValidationResult : 复用校验
+    Previewer ..> ValidationResult : 复用校验
+    Mastery ..> PlanParams : 折减依据
+    Expander ..> Mastery : 首末轮保底(硬约束#4)
+    OverdueResolver ..> Expander : 重排后重新展开
+    OverdueResolver ..> OverdueSummary : 检测

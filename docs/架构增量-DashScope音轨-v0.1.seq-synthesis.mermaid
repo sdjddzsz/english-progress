@@ -1,0 +1,49 @@
+%% 架构增量：DashScope 音轨 v0.1 —— 时序图提取
+%% 来源：docs/架构增量-DashScope音轨-v0.1.md
+
+sequenceDiagram
+    actor U as 用户
+    participant UI as WordCard/useTTS
+    participant Orc as orchestrator
+    participant NP as neuralProvider
+    participant DS as synthesizeDashScope
+    participant HTTP as DashScope HTTP SpeechSynthesizer
+    participant WS as DashScope WebSocket
+    participant EP as espeakProvider
+
+    U->>UI: 点击发音
+    UI->>Orc: getAudio({text, ipa, arpabet, mode:'word'}, wordId)
+    Orc->>Orc: cacheKey（含 arpabet）
+    alt 缓存命中
+        Orc-->>UI: 播放（fromCache=true，不发请求）
+    else 未命中
+        Orc->>NP: synthesize(req, ctx)
+        NP->>DS: provider=dashscope 分发
+        Note over DS: buildSsml(req,'dashscope')<br/>arpabet 有值 → phoneme alphabet=cmu；无值 → 纯文本（P0-9）
+        alt transport=http（默认）
+            DS->>HTTP: POST Authorization: Bearer key<br/>X-DashScope-SSE: enable；input.enable_ssml=true
+            alt CORS 放行
+                HTTP-->>DS: SSE 分块 output.audio.data(base64) + usage.characters
+                DS-->>NP: ArrayBuffer(mp3), phonemeSource, usageChars
+            else 网络层失败（CORS/预检，TypeError）
+                DS->>WS: wss://.../inference/?api_key=key<br/>run-task(enable_ssml=true) → task-started → continue-task(SSML) → finish-task
+                WS-->>DS: binary mp3 帧流 → task-finished
+                DS-->>NP: ArrayBuffer(mp3)
+                Note over DS: 内存偏好 http→ws 翻转（仅网络层错误时）
+            end
+        else transport=ws（已翻转）
+            DS->>WS: 同上
+            WS-->>DS: binary mp3 帧流
+            DS-->>NP: ArrayBuffer(mp3)
+        end
+        alt 合成成功
+            NP-->>Orc: TTSResult(engine=neural_tts)
+            Orc->>Orc: 写缓存 + PronunciationLog(engine, chars, phonemeSource)
+        else 失败/超时 3s
+            Orc->>EP: 兜底合成（读 req.text）
+            Orc->>Orc: PronunciationLog(fallback_used=true, error) + 前台轻提示一次
+        end
+        Orc-->>UI: 播放
+    end
+
+%% ===== 3.2 CMUdict join 构建期管线（T1/T7）=====

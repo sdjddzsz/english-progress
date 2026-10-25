@@ -1,0 +1,159 @@
+%% 架构增量：DashScope 音轨 v0.1 —— 类图（数据模型 + 服务类，标注新增/修改）
+%% 来源：docs/架构增量-DashScope音轨-v0.1.md
+%% 图例：<<new>> 新增类/字段；<<ext>> 扩展字段
+
+classDiagram
+    direction LR
+
+    class TTSRequest {
+        <<ext>>
+        +string text
+        +string? ipa
+        +string? arpabet
+        +string? syllable
+        +TTSMode mode
+        +string? voice
+    }
+
+    class TTSResult {
+        <<ext>>
+        +ArrayBuffer audio
+        +TTSEngine engine
+        +boolean fromCache
+        +string? ssml
+        +PhonemeSource? phonemeSource
+        +number? usageChars
+    }
+
+    class PhonemeSource {
+        <<new>>
+        <<enumeration>> cmu
+        <<enumeration>> ipa
+        <<enumeration>> text
+    }
+
+    class TTSContext {
+        +TTSProviderConfig config
+        +string? apiKey
+        +AbortSignal? signal
+    }
+
+    class TTSProviderConfig {
+        <<ext>>
+        +string id
+        +string userId
+        +TTSProviderName provider
+        +string? endpoint
+        +string? apiKeyRef
+        +string? runtimeApiKey
+        +string? voice
+        +string? model
+        +boolean ssmlPhonemeEnabled
+        +TTSConfigStatus status
+        +string fallbackEngine
+        +string? lastTestAt
+    }
+
+    class TTSProviderName {
+        <<ext>>
+        <<enumeration>> azure
+        <<enumeration>> openai_compatible
+        <<enumeration>> dashscope
+    }
+
+    class Word {
+        <<ext>>
+        +string id
+        +string lemma
+        +string ipa
+        +string? arpabet
+        +string[] senses
+        +object[] examples
+        +number frequency
+        +string[] tags
+    }
+
+    class PronunciationLog {
+        <<ext>>
+        +string id
+        +string wordId
+        +TTSEngine engine
+        +boolean success
+        +boolean fallbackUsed
+        +string? error
+        +number? chars
+        +PhonemeSource? phonemeSource
+        +string createdAt
+    }
+
+    class ArpabetToIpaModule {
+        <<new>>
+        +arpabetToIpa(arpabet: string) string
+        +stripArpabetStress(arpabet: string) string
+        +splitArpabetSyllables(arpabet: string) string[]
+        +isArpabetVowel(phoneme: string) boolean
+    }
+
+    class SsmlModule {
+        <<ext>>
+        +buildSsml(req: TTSRequest, provider: TTSProviderName) string
+        +escapeXml(s: string) string
+        +speakXml(inner: string, voice?: string) string
+    }
+
+    class DashScopeSynthesizer {
+        <<new>>
+        +synthesizeDashScope(req: TTSRequest, ctx: TTSContext) Promise~TTSResult~
+        +dashScopeWsUrl(endpoint: string) string
+        +currentTransport() string
+        +resetTransport() void
+    }
+
+    class NeuralProvider {
+        <<ext>>
+        +synthesize(req: TTSRequest, ctx: TTSContext) Promise~TTSResult~
+    }
+
+    class Orchestrator {
+        <<ext>>
+        +getAudio(req: TTSRequest, wordId?: string) Promise~TTSResult~
+        +cacheKey(req: TTSRequest) string
+        +consumeFallbackNotice() boolean
+    }
+
+    class EspeakProvider {
+        +synthesize(req: TTSRequest) Promise~TTSResult~
+    }
+
+    class CmuJoinScript {
+        <<new>>
+        +selectMainEntry(dict: Record~string,string~, lemma: string) string?
+        +joinSeedWithCmu(seed: SeedWord[], dict: Record~string,string~) JoinOutcome
+    }
+
+    class BackfillService {
+        <<new>>
+        +backfillArpabetFromSeed(deps?: BackfillDeps) Promise~BackfillResult~
+    }
+
+    class UsageStatsModule {
+        <<new>>
+        +recordSynthesis(chars: number) void
+        +recordCacheHit() void
+        +getUsageStats() UsageStats
+    }
+
+    TTSRequest ..> Orchestrator : 消费
+    Orchestrator --> NeuralProvider : 主轨（缓存未命中）
+    Orchestrator --> EspeakProvider : 兜底
+    NeuralProvider --> DashScopeSynthesizer : provider=dashscope
+    NeuralProvider ..> SsmlModule : azure 分支
+    DashScopeSynthesizer ..> SsmlModule : 构造 SSML
+    DashScopeSynthesizer ..> ArpabetToIpaModule : stripArpabetStress（P0-7 开关）
+    SsmlModule ..> ArpabetToIpaModule : 音素分类
+    TTSContext *-- TTSProviderConfig
+    CmuJoinScript ..> ArpabetToIpaModule : 派生 ipa
+    BackfillService ..> ArpabetToIpaModule : 派生 ipa
+    BackfillService ..> Word : patch{arpabet,ipa}
+    Orchestrator ..> UsageStatsModule : 经 useTTS 记录
+    TTSResult ..> PhonemeSource

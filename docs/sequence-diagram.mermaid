@@ -1,0 +1,100 @@
+%% 英语学习进度系统 · 核心时序图汇总（4 张，详见架构设计文档 §3）
+%% 详细版（含参与者说明）见《架构设计-英语学习进度系统.md》第三部分
+
+%% ===== ① 每日学习流程 =====
+sequenceDiagram
+    participant Boot as app/boot.ts
+    participant Sched as MRCS(expand)
+    participant UI as StudyPage
+    participant Feed as FeedbackPanel
+    participant Repo as repos
+    participant IDB as Dexie 离线队列
+    participant Cloud as 云数据库
+    Boot->>Repo: 登录态检查
+    Boot->>Sched: getTodayQueue(today)
+    Sched->>Sched: expandSchedule(plan,date)（纯函数，确定性ID幂等写入）
+    Sched->>Repo: 读/写当日 hits
+    Repo->>IDB: 预缓存队列+音频
+    Boot->>Boot: 欠账检查（超阈值→拦截，见②）
+    UI->>Feed: hit完成：reaction_ms+L1(+L2/L3)
+    alt 在线
+        Repo->>Cloud: 写 hit.status=done + feedbacks
+    else 离线
+        Repo->>IDB: 入 pending_ops
+    end
+    Repo->>Cloud: sessions + session_summaries → sync 补传（5s跨端可见）
+
+%% ===== ② 欠账检测与重排 =====
+sequenceDiagram
+    participant Boot as boot
+    participant Sched as MRCS(overdue)
+    participant Repo as repos
+    actor 用户
+    participant Panel as ReschedulePanel
+    participant Ver as planVersion
+    Boot->>Sched: computeOverdue(today)
+    Sched->>Repo: 读 pending/overdue hits
+    alt count>2×dailyHits 或 连续3天未学
+        Boot-->>用户: 强制弹重排面板
+        用户->>Panel: 四选一（A展期/B压缩/C降轮/D冻结，配大白话）
+        Panel->>Sched: previewStrategy → 影响预览
+        用户->>Panel: 选定（可勾选 deferred 子集）
+        Panel->>Sched: applyStrategy
+        Sched->>Sched: 展期不得突破 2026-12-05
+        Sched->>Ver: 快照→新 PlanVersion
+        Sched->>Repo: 重写 hits，债务清零+变更日志
+        Panel->>Boot: 放行进入正常学习
+    end
+
+%% ===== ③ AI 提案→确认→生效→回滚 =====
+sequenceDiagram
+    participant Trig as 触发器(手动/事件/定时)
+    participant LLM as llmClient
+    participant Auth as authz
+    participant Prop as proposal
+    participant Log as ToolCallLog
+    actor 用户
+    participant Ver as planVersion
+    Trig->>LLM: 发起
+    LLM->>LLM: 读工具(get_*，只读)
+    LLM->>Auth: 写操作+diff+reason
+    Auth->>Log: 落 ToolCallLog
+    alt Auto
+        Auth->>Ver: 直接落地+记版本
+    else Confirm/Require
+        Auth->>Prop: AIProposal(pending, 必含reason+diff)
+        Prop-->>用户: diff+理由+影响预览
+        alt 确认
+            用户->>Ver: 生效→新PlanVersion
+        else 驳回
+            用户->>Log: rejected（连续3次→降级仅建议）
+        end
+    end
+    用户->>Ver: 回滚到 vN（也记版本）
+
+%% ===== ④ TTS 合成与回退 =====
+sequenceDiagram
+    actor 用户
+    participant UI as WordCard
+    participant Orc as tts/orchestrator
+    participant Cache as audioCache
+    participant NP as neuralProvider
+    participant EP as espeakProvider
+    participant Repo as pronunciationRepo
+    用户->>UI: 点击🔊
+    UI->>Orc: getAudio({text,ipa,mode})
+    Orc->>Cache: 查缓存
+    alt 命中
+        Cache-->>UI: 播放<800ms
+    else 未命中 & status=active
+        Orc->>NP: SSML(phoneme IPA)
+        alt 成功
+            NP-->>Orc: audio→写缓存→Log(neural_tts)
+        else 失败/超时
+            Orc->>EP: IPA直读→Log(fallback_used=true)+轻提示一次
+        end
+    else pending_user_setup
+        Orc->>EP: IPA直读兜底
+        EP-->>Orc: audio→Log(fallback_used=true)
+    end
+    Orc-->>UI: 播放

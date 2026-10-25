@@ -1,0 +1,27 @@
+%% 架构增量：DashScope 音轨 v0.1 —— 时序图提取
+%% 来源：docs/架构增量-DashScope音轨-v0.1.md
+
+sequenceDiagram
+    participant DEV as 开发者
+    participant SCRIPT as joinCmuDict.ts
+    participant CMU as CMUdict 源
+    participant SEED as seed-cet6.json
+    participant A2I as arpabetToIpa.ts
+
+    DEV->>SCRIPT: npm run seed:cmu [--cmudict-file 官方dict路径] [--report 路径]
+    SCRIPT->>CMU: 加载词库（npm 包对象 / 解析 dict 文本为同形态对象）
+    SCRIPT->>SEED: 读现有 seed（lemma/ipa/translation/frq/tags）
+    loop 每个 seed 词（按 lemma 小写）
+        SCRIPT->>SCRIPT: selectMainEntry：WORD 优先于 WORD(1)/WORD(2)…；无主词条取编号最小
+        alt 命中
+            SCRIPT->>A2I: arpabetToIpa(arpabet)
+            A2I-->>SCRIPT: /派生 IPA/
+            SCRIPT->>SCRIPT: arpabet=CMU原值；ipa=派生值（覆盖 ECDICT）
+        else 未命中
+            SCRIPT->>SCRIPT: 不写 arpabet 字段；ipa 保留 ECDICT 原值
+        end
+    end
+    SCRIPT->>SEED: 原地重写（字段顺序 lemma,arpabet,ipa,translation,frq,tags；2 空格缩进）
+    SCRIPT-->>DEV: 覆盖率报告：total/hit/miss/hitRate/misses 清单/variantCount
+
+%% ===== 3.3 存量云端 words 回填（T8，设置页入口）=====

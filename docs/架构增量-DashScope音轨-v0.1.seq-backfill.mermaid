@@ -1,0 +1,29 @@
+%% 架构增量：DashScope 音轨 v0.1 —— 时序图提取
+%% 来源：docs/架构增量-DashScope音轨-v0.1.md
+
+sequenceDiagram
+    actor U as 用户
+    participant SP as SettingsPage
+    participant BF as backfillArpabet.ts
+    participant SEED as /seed-cet6.json
+    participant A2I as arpabetToIpa.ts
+    participant REPO as wordRepo
+    participant CLOUD as 云端 words
+
+    U->>SP: 点击「升级发音真源」（可重复点击）
+    SP->>BF: backfillArpabetFromSeed({ onProgress })
+    BF->>SEED: fetch → Map<lemma, arpabet>（跳过无 arpabet 条目）
+    BF->>REPO: listBookWords('book_cet6_full') → wordIds
+    BF->>REPO: listWordsByIds（每块 200）
+    REPO->>CLOUD: 读 words
+    loop 每词（每 300 行 upsert 一次，onProgress 上报）
+        alt lemma 在 Map 中
+            BF->>A2I: arpabetToIpa(arpabet)
+            A2I-->>BF: /派生 IPA/
+            BF->>REPO: upsertWords([{ ...word, arpabet, ipa: 派生值 }])
+        else 未命中
+            BF->>BF: skipped++（保留原 ipa，不动 arpabet）
+        end
+    end
+    BF-->>SP: { total, updated, skipped, missed[], errors[] }
+    SP-->>U: 进度条 + 结果摘要；失败可原样重跑（幂等）
